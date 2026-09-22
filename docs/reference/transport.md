@@ -7,7 +7,7 @@ cleanup. Start with the [engine guide](../engine.md) and the
 ## Network transport
 
 libavformat's own network stack is gone. The owned build
-(`scripts/build-ffmpeg-format.py`) passes `--disable-network
+(`scripts/build-ffmpeg.py`) passes `--disable-network
 --disable-protocols --enable-protocol=file --enable-protocol=data`. The
 library used to speak HTTP, HTTPS and TLS itself; now it opens only local
 files and `data:` URIs. Nothing is left inside FFmpeg for a certificate to
@@ -17,7 +17,7 @@ That also dropped the GnuTLS, GMP, nettle and hogweed static libraries,
 along with the `--enable-version3` flag GnuTLS's license required.
 libavformat's build is now plain LGPL-2.1-or-later, and the xcframework
 shrank from 19 MB to 15 MB. libavcodec, libavutil and libswresample are
-still MPVKit's binaries, built upstream with version3 on.
+built by the same configure, so the same holds for all four.
 
 One patch remains: `Patches/0001-hls-scheme-without-network-protocols.patch`.
 hls.c refuses any child URL whose scheme has no registered protocol, and
@@ -82,7 +82,7 @@ protocol; left on, it falls back to `io_open` for every segment while
 keeping the previous context alive, leaking one `AVIOContext` per segment.
 With it off, each segment closes through `io_close2` as it finishes.
 
-Rebuild with `scripts/build-ffmpeg-format.py` and verify with
+Rebuild with `scripts/build-ffmpeg.py` and verify with
 `--verify-only`. That checks checksums, confirms the http/https/tls/tcp/udp
 protocol symbols are absent, confirms there are no gnutls/nettle/gmp
 references, and confirms `CONFIG_NETWORK 0` and `CONFIG_HLS_DEMUXER 1`.
@@ -100,7 +100,7 @@ A companion suite checks that network is compiled out of libavformat, that an in
 transport.
 
 Build provenance, exact behavior and prerequisites are documented in
-[`Libavformat.README.md`](../../Artifacts/Libavformat.README.md).
+[`FFmpeg.README.md`](../../Artifacts/FFmpeg.README.md).
 
 ## Malformed discs
 
