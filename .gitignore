@@ -1,0 +1,41 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Claude Code
+.claude/settings.local.json
+
+# Supplied artwork sources (see docs/design-system.md)
+art/
+
+# Sentry CLI auth token, if a wizard ever writes one again (HEL-159)
+.sentryclirc
+
+# Credentials, as a backstop rather than a rule anyone relies on. Nothing of
+# this kind has ever been tracked here and a device build's signing changes
+# are meant to stay local; this is so a mistake costs nothing (HEL-158).
+*.p12
+*.p8
+*.pem
+*.key
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.jks
+*.keystore
+.env
+.env.*
+*.xcconfig
+
+# The template is committed; the real file is not.
+!.env.example
