@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+#
+# Tags a version of the package and creates its GitHub release.
+#
+# Unlike an app, a package has dependents that resolve what it publishes, so a
+# tag is a promise rather than a record: somebody's build will pick this up
+# without being asked twice. A tag that does not build, or whose number
+# disagrees with the constant a host reports, is worse than no release at all.
+#
+#   scripts/publish-release.sh 1.1.0             # tags and releases
+#   scripts/publish-release.sh 1.1.0 --dry-run   # print what it would do
+#   scripts/publish-release.sh 1.1.0 --rev a1b2c
+#
+# Everything before the release itself is a guard. A published tag is hard to
+# take back: anyone who already resolved it keeps the old revision, and moving
+# it gives two people different source for one version.
+#
+# --no-verify skips the build and test gate. Only for re-releasing a revision
+# already proven green, never to get a failing one out.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+version_file="$root/Sources/LagoonEngine/EngineVersion.swift"
+changelog="$root/CHANGELOG.md"
+
+tag="${1:-}"
+[[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo "usage: $(basename "$0") <major.minor.patch> [--dry-run] [--rev <sha>] [--no-verify]" >&2
+    exit 2
+}
+shift
+
+dry_run=false
+verify=true
+rev="HEAD"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) dry_run=true ;;
+        --no-verify) verify=false ;;
+        --rev) rev="${2:?--rev needs a revision}"; shift ;;
+        *) echo "error: unknown option $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+ok() { printf '  \xe2\x9c\x93 %s\n' "$1"; }
+note() { printf '  - %s\n' "$1"; }
+die() { printf '\n  error: %s\n' "$1" >&2; exit 1; }
+
+echo
+echo "  LagoonEngine ${tag}"
+echo
+
+# 1. The constant and the tag are two copies of one number, and SwiftPM only
+#    knows the tag. A host reporting the other one would name a version that
+#    resolves to different source.
+declared="$(grep -m1 -oE 'current = "[0-9]+\.[0-9]+\.[0-9]+"' "$version_file" \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')" \
+    || die "could not read EngineVersion.current from ${version_file#$root/}"
+[ "$declared" = "$tag" ] \
+    || die "EngineVersion.current is ${declared}, not ${tag}. Set it, commit, then tag."
+ok "EngineVersion.current says ${tag}"
+
+# 2. The release body comes from the changelog rather than being typed, so
+#    what a consumer reads on GitHub is what the repository says.
+notes="$(awk -v v="## ${tag}" '
+    $0 == v { found = 1; next }
+    found && /^## / { exit }
+    found { print }
+' "$changelog")"
+[ -n "$(printf '%s' "$notes" | tr -d '[:space:]')" ] \
+    || die "CHANGELOG.md has no entry for ${tag}"
+ok "changelog entry read for ${tag}"
+
+# 3. gh creates the tag through the API, so the revision has to be one the
+#    remote already has. This is the guard that catches an unpushed main.
+sha="$(git -C "$root" rev-parse --verify "${rev}^{commit}")" \
+    || die "cannot resolve revision ${rev}"
+git -C "$root" fetch --quiet origin || die "could not reach origin"
+git -C "$root" merge-base --is-ancestor "$sha" origin/main 2>/dev/null \
+    || die "${rev} (${sha:0:9}) is not on origin/main yet. Push before releasing."
+ok "${sha:0:9} is on origin/main"
+
+# 4. Re-tagging is the one thing that cannot be undone cleanly.
+! git -C "$root" rev-parse -q --verify "refs/tags/${tag}" >/dev/null \
+    || die "${tag} already exists locally"
+[ -z "$(git -C "$root" ls-remote --tags origin "refs/tags/${tag}" 2>/dev/null)" ] \
+    || die "${tag} already exists on the remote"
+ok "${tag} is unused"
+
+slug="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" \
+    || die "this checkout has no GitHub remote gh can resolve"
+ok "releasing into ${slug}"
+
+# 5. A binary distributed under this licence has to be obtainable as source,
+#    and the vendored frameworks carry their own terms. GitHub attaches the
+#    source archive to a release, which is how that is satisfied — so the
+#    materials have to be in the tree being archived.
+missing=""
+for material in LICENSE Artifacts/Libavformat.README.md Artifacts/Libdovi.README.md; do
+    git -C "$root" cat-file -e "${sha}:${material}" 2>/dev/null || missing="${missing} ${material}"
+done
+[ -z "$missing" ] || die "the revision is missing dependency materials:${missing}"
+ok "licence and provenance materials are in the archive"
+
+# 6. A tag a consumer cannot build is the failure this whole script exists to
+#    prevent, and it is the one guard that costs real time.
+if [ "$verify" = true ]; then
+    note "building and testing both platforms, which takes a few minutes"
+    for destination in \
+        "generic/platform=tvOS Simulator" \
+        "generic/platform=iOS Simulator"; do
+        xcodebuild -scheme LagoonEngine -destination "$destination" build >/dev/null 2>&1 \
+            || die "the package does not build for ${destination#generic/platform=}"
+    done
+    ok "builds for tvOS and iOS"
+    xcodebuild test -scheme LagoonEngine \
+        -destination 'platform=tvOS Simulator,name=Apple TV 4K (3rd generation)' \
+        >/dev/null 2>&1 || die "the test suite does not pass"
+    ok "the test suite passes"
+else
+    note "skipping the build and test gate"
+fi
+
+# Below 1.0 is a pre-release: the badge keeps an unfinished API from being
+# served as Latest to somebody adding the dependency for the first time.
+set -- gh release create "$tag" --repo "$slug" --target "$sha" \
+    --title "$tag" --notes-file -
+case "$tag" in 0.*) set -- "$@" --prerelease ;; esac
+
+echo
+if [ "$dry_run" = true ]; then
+    echo "  would run: $*"
+    echo
+    echo "  with this body:"
+    printf '%s\n' "$notes" | sed 's/^/      /'
+    echo
+    echo "  (dry run, nothing was tagged or published)"
+    exit 0
+fi
+
+printf '%s\n' "$notes" | "$@"
+echo
+echo "  Fetch the tag it created: git fetch --tags origin"
