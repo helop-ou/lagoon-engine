@@ -1,0 +1,25 @@
+--- a/libavformat/hls.c	2026-09-08 14:55:26
++++ b/libavformat/hls.c	2026-09-08 14:55:26
+@@ -672,6 +672,22 @@
+ 
+     if (!proto_name)
+         proto_name = avio_find_protocol_name(url);
++
++    /* Lagoon: this libavformat is built without its network stack, so no
++     * protocol answers for http(s); the application's io_open serves those
++     * opens instead. Classify the scheme from the URL itself so the guards
++     * below still treat them as HTTP rather than refusing them. */
++    if (!proto_name) {
++        const char *inner = url;
++        if (av_strstart(url, "crypto", NULL) && (url[6] == '+' || url[6] == ':'))
++            inner = url + 7;
++        else if (av_strstart(url, "data", NULL) && (url[4] == '+' || url[4] == ':'))
++            inner = url + 5;
++        if (av_strstart(inner, "https:", NULL))
++            proto_name = "https";
++        else if (av_strstart(inner, "http:", NULL))
++            proto_name = "http";
++    }
+ 
+     if (!proto_name)
+         return AVERROR_INVALIDDATA;
