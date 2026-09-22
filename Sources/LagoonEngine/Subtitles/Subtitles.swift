@@ -589,7 +589,7 @@ nonisolated enum SubtitleTextDecoder {
     /// normalisation so both two- and three-letter forms resolve.
     static func legacyEncoding(forLanguage language: String?) -> String.Encoding? {
         guard let language,
-              let code = JellyfinSubtitleLanguageCode.twoLetter(for: language) else { return nil }
+              let code = SubtitleLanguageCode.twoLetter(for: language) else { return nil }
         switch code {
         case "ru", "uk", "bg", "be", "sr", "mk":
             return encoding(.windowsCyrillic)

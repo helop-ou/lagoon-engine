@@ -32,17 +32,17 @@ nonisolated enum ExternalSubtitleLoader {
 
     static func parse(_ data: Data, language: String?) async throws -> [SubtitleCue] {
         try Task.checkCancellation()
-        guard data.count <= DownloadLimit.subtitle else { throw SubtitleDownloadError.tooLarge }
+        guard data.count <= DownloadLimit.subtitle else { throw SubtitleFileError.tooLarge }
         let parsing = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
             let prefix = SubtitleTextDecoder.text(from: Data(data.prefix(1_024)), languageHint: language)?
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
             if ["<!doctype html", "<html", "<head", "<body"].contains(where: prefix.hasPrefix) {
-                throw SubtitleDownloadError.invalidFile
+                throw SubtitleFileError.invalidFile
             }
             let cues = SubtitleParser.cues(from: data, languageHint: language)
             try Task.checkCancellation()
-            guard !cues.isEmpty else { throw SubtitleDownloadError.unsupportedFile }
+            guard !cues.isEmpty else { throw SubtitleFileError.unsupportedFile }
             return cues
         }
         return try await withTaskCancellationHandler {
@@ -63,7 +63,7 @@ nonisolated enum ExternalSubtitleLoader {
                 case 404, 410: return "This subtitle file is no longer available. Choose another track or try again."
                 default: return "The subtitle server returned an error (\(status)). Try again."
                 }
-            case .tooLarge: return SubtitleDownloadError.tooLarge.localizedDescription
+            case .tooLarge: return SubtitleFileError.tooLarge.localizedDescription
             case .unsafeRedirect: return "The subtitle download redirected to an insecure or unsupported address."
             case .invalidResponse, .unexpectedContentType, .truncated:
                 return "The server returned an incomplete or unreadable subtitle file. Choose another track or try again."
@@ -78,7 +78,7 @@ nonisolated enum ExternalSubtitleLoader {
             default: return "The subtitle file could not be downloaded. Check your connection and try again."
             }
         }
-        if let subtitle = error as? SubtitleDownloadError {
+        if let subtitle = error as? SubtitleFileError {
             if subtitle == .unsupportedFile || subtitle == .invalidFile {
                 return "This file contains no readable subtitle cues. Choose another track or try again."
             }

@@ -1,10 +1,9 @@
 import Foundation
 
-/// One remote subtitle result as Jellyfin reports it. The player UI binds to
-/// this rather than to the wire DTO so the panel does not follow the server's
-/// shape. Jellyfin is the only source: its routes need
-/// the account's subtitle-management permission and persist the file for
-/// every client, and the server does the provider work with its own accounts.
+/// One subtitle a host has found and could fetch, in the engine's own terms.
+///
+/// A host maps whatever its server reports onto this, so neither the engine
+/// nor a player panel bound to it follows any one server's wire shape.
 nonisolated struct SubtitleCandidate: Identifiable, Equatable, Sendable {
     let id: String
     let name: String?
@@ -17,23 +16,6 @@ nonisolated struct SubtitleCandidate: Identifiable, Equatable, Sendable {
     let isForced: Bool
     let isMachineTranslated: Bool
     let isAITranslated: Bool
-    /// The identifier Jellyfin needs to fetch this result.
-    let jellyfinID: String
-
-    init(_ info: RemoteSubtitleInfo) {
-        id = "jellyfin:" + info.id
-        name = info.name
-        language = info.threeLetterISOLanguageName
-        providerName = info.providerName
-        format = info.format
-        downloadCount = info.downloadCount
-        isHashMatch = info.isHashMatch == true
-        isHearingImpaired = info.hearingImpaired == true
-        isForced = info.isForced == true
-        isMachineTranslated = info.machineTranslated == true
-        isAITranslated = info.aiTranslated == true
-        jellyfinID = info.id
-    }
 
     #if DEBUG
     /// Fixture for the Debug component gallery, which has no server to ask.
@@ -61,7 +43,6 @@ nonisolated struct SubtitleCandidate: Identifiable, Equatable, Sendable {
         self.isForced = isForced
         self.isMachineTranslated = isMachineTranslated
         self.isAITranslated = isAITranslated
-        jellyfinID = id
     }
     #endif
 }
