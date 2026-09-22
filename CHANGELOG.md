@@ -8,6 +8,20 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.0.3
+
+September 2026. No API change; upgrading is a version bump.
+
+### Fixed
+
+- After a seek, a packet dropped on the way to the first decodable picture no
+  longer sets the frame grid that the following pictures snap to.
+
+### Changed
+
+- Source comments and docs are shorter, and the README's install snippet
+  asks for `1.0.0` or later.
+
 ## 1.0.2
 
 September 2026. No API change; upgrading is a version bump.
