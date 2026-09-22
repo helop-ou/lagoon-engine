@@ -103,6 +103,9 @@ public protocol PlayerEngine: AnyObject, Observable {
     var currentSubtitleImages: [SubtitleImage] { get }
     /// mpv convention (M6): positive delays the audio relative to video.
     var audioDelay: Double { get }
+    /// What the byte cache is holding, for a scrub bar's buffered ranges.
+    /// `.empty` for an engine that caches nothing, and for a local file.
+    var bufferState: PlaybackBufferState { get }
     /// What the display should be asked to match (tvOS Match Content,
     /// the video's fully tagged format description — colorimetry,
     /// HDR10 metadata, DoVi atoms — plus its frame rate. nil until the
@@ -149,6 +152,7 @@ public extension PlayerEngine {
     func play(atHostTime hostTime: CMTime) { play() }
     func setCorrectionRate(_ multiplier: Double) {}
     var subtitleLoadState: SubtitleLoadState { .idle }
+    var bufferState: PlaybackBufferState { .empty }
     var subtitleSelectionRevision: Int { 0 }
     func retrySubtitleLoad() {}
     func setVideoOutputSuspended(_ suspended: Bool) {}

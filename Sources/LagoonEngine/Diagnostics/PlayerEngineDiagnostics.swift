@@ -55,6 +55,13 @@ public protocol PlayerEngineDiagnostics: AnyObject {
     /// asks for them rather than having them maintained continuously.
     func refreshVideoPerformanceMetrics()
 
+    // MARK: Byte cache
+
+    /// The active cache scope's counters, or nil when nothing is cached.
+    /// `PlayerEngine.bufferState` is the viewer-facing summary; this is the
+    /// whole of it, for a HUD and a decode trace.
+    var playbackCacheMetrics: PlaybackCacheMetrics? { get }
+
     // MARK: Queues and scheduling
 
     /// What the two queues are holding right now.

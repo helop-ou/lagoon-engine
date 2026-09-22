@@ -368,7 +368,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         if let stage = softwareDecodeStage { return stage.outputModeName }
         return videoDecoder != nil ? "videotoolbox" : "compressed"
     }
-    @ObservationIgnored nonisolated private let performanceSignpostID = OSSignpostID(log: PlaybackPerformance.log)
+    @ObservationIgnored nonisolated let performanceSignpostID = OSSignpostID(log: PlaybackPerformance.log)
     @ObservationIgnored nonisolated private let lifecycleID = UUID()
     @ObservationIgnored nonisolated private let audioContinuity = AudioContinuityMonitor()
     @ObservationIgnored nonisolated private let av1PipelineTimings = RendererPipelineTimings(
@@ -438,6 +438,22 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     @ObservationIgnored private var pendingURL: URL?
     @ObservationIgnored nonisolated(unsafe) private var pendingCacheSession: PlaybackCacheSession?
+    /// The session the fill loop works on. Distinct from the one handed to
+    /// the demuxer: a complete cache file plays straight from disk, but is
+    /// still worth finishing in the background.
+    @ObservationIgnored var cacheSessionForFill: PlaybackCacheSession?
+    @ObservationIgnored var bufferFillTask: Task<Void, Never>?
+    @ObservationIgnored var bufferFillGeneration: UUID?
+    @ObservationIgnored var successorWarmTask: Task<Void, Never>?
+    @ObservationIgnored var successorWarmGeneration: UUID?
+
+    /// What the cache is holding, for a scrub bar and a diagnostics line.
+    public internal(set) var bufferState = PlaybackBufferState.empty
+
+    /// The active scope's full counters, for a host's HUD and decode trace.
+    public var playbackCacheMetrics: PlaybackCacheMetrics? {
+        PlaybackCacheOwner.coordinator.current?.metrics
+    }
     @ObservationIgnored nonisolated(unsafe) private var pendingDisc: DiscPlaybackRequest?
     @ObservationIgnored private var pendingAuthorization: MediaRequestAuthorization?
     @ObservationIgnored private var pendingStartSeconds: Double = 0
@@ -451,6 +467,164 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         av1PipelineTimer?.cancel()
         externalLoadTask?.cancel()
         PlaybackLifecycleDiagnostics.engineDestroyed(lifecycleID)
+    }
+
+    /// Whether a cache would sit in front of these bytes.
+    ///
+    /// `prepare` decides this for itself and a host does not have to ask.
+    /// It is here because an incident report records how an attempt was
+    /// delivered *before* the attempt starts, and by the time the engine
+    /// could answer for itself the record is already open.
+    public nonisolated static func cachesPlayback(url: URL, delivery: MediaDelivery) -> Bool {
+        // A file on disk is either a finished cache file or a download, and
+        // either way the bytes are already local.
+        url.isFileURL || PlaybackBufferPolicy.customIOEnabled(for: delivery)
+    }
+
+    /// Opens a media source and gets ready to play it.
+    ///
+    /// Returns immediately; opening, probing and the first decode happen on
+    /// the engine's own queues. Watch `onPlaybackStarted` for the first
+    /// frame and `onError` for a failure it could not recover from.
+    ///
+    /// The engine decides for itself whether to put a cache in front of the
+    /// bytes, using `delivery`: a stable file can be cached and filled
+    /// ahead, a segmented manifest cannot. A host used to make that call and
+    /// hand a session in, which meant it also had to run the fill loop out
+    /// of engine state it was only relaying.
+    ///
+    /// - Parameters:
+    ///   - url: Where the media is. A file URL plays straight from disk.
+    ///   - itemID: The host's own identifier for this media, used to match a
+    ///     successor staged earlier by `stageSuccessor`. Opaque here.
+    ///   - delivery: Whether the bytes are a stable file or a manifest.
+    ///   - expectedLength: The content length if the host already knows it,
+    ///     which saves a probe request.
+    ///   - startSeconds: Where to begin.
+    ///   - initialAudioOrdinal: Which audio track to select, or nil to let
+    ///     the container decide.
+    ///   - authorization: A credential to send with every request.
+    public func prepare(
+        url: URL,
+        itemID: String,
+        delivery: MediaDelivery,
+        expectedLength: Int64? = nil,
+        disc: DiscPlaybackRequest? = nil,
+        startSeconds: Double,
+        initialAudioOrdinal: Int?,
+        initialSubtitleOrdinal: Int? = nil,
+        audioTrackMetadata: [PlayerTrackMetadata] = [],
+        embeddedSubtitleMetadata: [PlayerTrackMetadata] = [],
+        externalSubtitles: [ExternalSubtitleTrack] = [],
+        authorization: MediaRequestAuthorization? = nil
+    ) {
+        // A local file needs nothing in front of it.
+        let session: PlaybackCacheSession? = url.isFileURL ? nil
+            : PlaybackCacheOwner.coordinator.activate(
+                itemID: itemID,
+                url: url,
+                delivery: delivery,
+                expectedLength: expectedLength,
+                authorization: authorization
+            )
+        // A complete cache file plays from disk without the session, except
+        // a disc image, whose reader lives behind the session.
+        let playbackURL = session?.completeFileURL ?? url
+        let usesSession = PlaybackBufferPolicy.engineUsesCacheSession(
+            playsFromCompleteFile: playbackURL.isFileURL,
+            disc: disc != nil,
+            delivery: delivery
+        )
+        cacheSessionForFill = session
+        publishBufferState(session?.metrics)
+
+        prepare(
+            url: playbackURL,
+            cacheSession: usesSession ? session : nil,
+            disc: disc,
+            startSeconds: startSeconds,
+            initialAudioOrdinal: initialAudioOrdinal,
+            initialSubtitleOrdinal: initialSubtitleOrdinal,
+            audioTrackMetadata: audioTrackMetadata,
+            embeddedSubtitleMetadata: embeddedSubtitleMetadata,
+            externalSubtitles: externalSubtitles,
+            authorization: authorization
+        )
+    }
+
+    /// Warms a cache scope for media the host expects to play next.
+    ///
+    /// At most one successor is staged at a time. When `prepare` is called
+    /// with the same `itemID` and URL, the warmed scope is promoted instead
+    /// of a fresh one being opened, so an episode handoff keeps what it
+    /// already fetched.
+    ///
+    /// Staging suspends this engine's own fill: one proactive download at a
+    /// time, and near the end of an episode the bytes the viewer is about to
+    /// need are the next episode's. Cached bytes for the active file stay
+    /// readable throughout.
+    ///
+    /// - Parameter warms: Whether to fetch a bounded head start as well as
+    ///   opening the scope. False when the handoff is already happening and
+    ///   nothing should be between it and the link.
+    public func stageSuccessor(
+        itemID: String,
+        url: URL,
+        delivery: MediaDelivery,
+        expectedLength: Int64? = nil,
+        authorization: MediaRequestAuthorization? = nil,
+        warms: Bool
+    ) {
+        suspendBufferFillInternal()
+        let staged = PlaybackCacheOwner.coordinator.stageNext(
+            itemID: itemID,
+            url: url,
+            delivery: delivery,
+            expectedLength: expectedLength,
+            authorization: authorization
+        )
+        guard warms, let staged else {
+            stopSuccessorWarm()
+            return
+        }
+        startSuccessorWarm(staged)
+    }
+
+    /// Stops warming a staged successor without discarding what it holds.
+    /// The handoff is starting and must not queue behind the warm-up.
+    public func endSuccessorWarming() {
+        stopSuccessorWarm()
+    }
+
+    /// Throws away a staged successor, if there is one. A non-nil `itemID`
+    /// only discards a scope staged for that item, so a cancelled
+    /// preparation cannot remove its own replacement.
+    public func discardStagedSuccessor(itemID: String? = nil) {
+        stopSuccessorWarm()
+        PlaybackCacheOwner.coordinator.discardNext(itemID: itemID)
+    }
+
+    /// Retires the active scope. A handoff keeps the staged successor, which
+    /// the next engine's `prepare` promotes.
+    public func discardPlaybackCache(preservingStagedSuccessor: Bool) {
+        suspendBufferFillInternal()
+        if !preservingStagedSuccessor { stopSuccessorWarm() }
+        cacheSessionForFill = nil
+        PlaybackCacheOwner.coordinator.discardCurrent(preservingNext: preservingStagedSuccessor)
+        publishBufferState(nil)
+    }
+
+    /// Stops filling ahead without discarding what is cached. For a host
+    /// going to the background.
+    public func suspendBufferFill() {
+        suspendBufferFillInternal()
+    }
+
+    /// Resumes filling after a suspension. A successor being warmed keeps
+    /// the link; nothing restarts underneath it.
+    public func resumeBufferFill() {
+        guard bufferFillTask == nil, successorWarmTask == nil else { return }
+        startBufferFill()
     }
 
     public func prepare(
@@ -885,6 +1059,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         guard !shutdownRequested else { return }
         shutdownRequested = true
         cancelExternalSubtitleLoad()
+        suspendBufferFillInternal()
         PlaybackLifecycleDiagnostics.engineShutdownStarted(lifecycleID)
         for token in rendererNotificationTokens {
             NotificationCenter.default.removeObserver(token)
@@ -1299,6 +1474,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         rearmBench(at: time.seconds)
         if !didNotifyPlaybackStarted {
             didNotifyPlaybackStarted = true
+            // Fill starts once the picture is up, never before: the
+            // foreground read has the link until then.
+            startBufferFill()
             onPlaybackStarted?()
         }
         // Every open and every seek: the position asked for is now anchored
@@ -2236,7 +2414,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 demuxer.close()
                 deliveryIsCached = false
                 EngineDiagnostics.record(.playbackCacheFallback, ["recovery": .string("cacheFallback")])
-                Task { @MainActor in self.onPlaybackCacheFallback?() }
+                Task { @MainActor in
+                    // The scope this playback was reading through cannot
+                    // serve it. Retire it — keeping any staged successor,
+                    // which is a different resource — and tell the host, so
+                    // an incident report can record the demotion.
+                    self.discardPlaybackCache(preservingStagedSuccessor: true)
+                    self.onPlaybackCacheFallback?()
+                }
                 try demuxer.open(
                     url: openTarget,
                     cacheSession: nil,
