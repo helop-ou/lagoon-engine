@@ -6,8 +6,9 @@ FFmpeg libraries remain at their Package.swift pins. Networking (HTTP/HTTPS/TLS/
 TCP/UDP protocols and everything GnuTLS/GMP/nettle/hogweed) is compiled out;
 the app reaches the server over Foundation's URLSession instead, so this build
 carries only the local-file protocols libavformat itself still needs (opening
-temporary files, `data:` URIs). Downloads are SHA-256 checked. Work/downloads
-stay outside the repository. See the artifact README.
+temporary files, `data:` URIs). The only download is FFmpeg's own source
+tarball, SHA-256 checked; everything else the build needs is in this
+repository. Work/downloads stay outside it. See the artifact README.
 """
 import argparse
 import hashlib
@@ -16,14 +17,11 @@ import os
 from pathlib import Path
 import plistlib
 import re
-import shlex
 import shutil
-import stat
 import subprocess
 import tarfile
 import tempfile
 import urllib.request
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT
@@ -31,8 +29,12 @@ PATCHES = sorted((PACKAGE / "Patches").glob("*.patch"))
 VERSION = "8.1.2"
 SOURCE_URL = "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2"
 SOURCE_SHA = "9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7"
-UPSTREAM_FORMAT_URL = "https://github.com/mpvkit/MPVKit/releases/download/1.0.0/Libavformat.xcframework.zip"
-UPSTREAM_FORMAT_SHA = "2afb601375929640e743e7bdaa6c4a88e2b582a07e1c5f2dc95cc7f5b26a0810"
+SELECTIONS = Path(__file__).resolve().parent / "ffmpeg-format-selections.txt"
+# The public headers this framework vends, taken from the source being compiled
+# so they cannot drift from it. This is the set upstream's build shipped, and
+# the module umbrella exports exactly it; config.h and config_components.h are
+# written alongside them from the build itself.
+PUBLIC_HEADERS = ("avformat.h", "avio.h", "os_support.h", "version.h", "version_major.h")
 GROUPS = {
     "ios": ("iphoneos", "iPhoneOS", "ios-arm64", "ios26.0", ["arm64"]),
     "ios-simulator": ("iphonesimulator", "iPhoneSimulator", "ios-arm64_x86_64-simulator", "ios26.0-simulator", ["arm64", "x86_64"]),
@@ -78,6 +80,22 @@ def nm_symbols(binary, arch):
         symtype, name = fields[-2], fields[-1]
         (undefined if symtype == "U" else defined).add(name)
     return defined, undefined
+
+
+def read_selections():
+    """The muxer/demuxer/encoder/decoder flags, in file order.
+
+    Committed rather than derived, so the build needs nothing but the FFmpeg
+    tarball. See the file itself for its provenance and how to regenerate it.
+    """
+    flags = [line.strip() for line in SELECTIONS.read_text().splitlines()]
+    flags = [flag for flag in flags if flag and not flag.startswith("#")]
+    if not flags:
+        raise RuntimeError(f"No configure flags in {SELECTIONS}")
+    for flag in flags:
+        if not flag.startswith("--"):
+            raise RuntimeError(f"{SELECTIONS}: not a configure flag: {flag}")
+    return flags
 
 
 def read_config_header(artifact, library, work):
@@ -174,43 +192,15 @@ def main():
         with patch.open() as stream:
             subprocess.run(["patch", "-p1", "--batch"], cwd=source, stdin=stream, check=True)
 
-    # The original format configuration is itself checksum-pinned. Retain its
-    # muxer/demuxer set and in-tree codec options for internal ABI compatibility.
-    # (hls is a demuxer, carried over below; its keepalive code is compiled
-    # out on its own, guarded by `#if CONFIG_HTTP_PROTOCOL` in hls.c.)
-    manifest = (PACKAGE / "Package.swift").read_text()
-    pins = {name: (url, checksum) for name, url, checksum in re.findall(
-        r'name: "([^"]+)",\s*url: "([^"]+)",\s*checksum: "([^"]+)"', manifest)}
-    pins["Libavformat"] = (UPSTREAM_FORMAT_URL, UPSTREAM_FORMAT_SHA)
-    dependencies = {}
-    for name in ("Libavformat",):
-        url, checksum = pins[name]
-        archive = work / f"{name}.xcframework.zip"
-        download(url, checksum, archive)
-        directory = work / "dependencies" / name
-        if directory.exists():
-            shutil.rmtree(directory)
-        directory.mkdir(parents=True)
-        with zipfile.ZipFile(archive) as zipped:
-            zipped.extractall(directory)
-            # macOS frameworks use Versions/Current symlinks. zipfile otherwise
-            # writes the link target as text, which is not a static archive.
-            for member in zipped.infolist():
-                if stat.S_ISLNK(member.external_attr >> 16):
-                    link = directory / member.filename
-                    link.unlink()
-                    link.symlink_to(zipped.read(member).decode())
-        dependencies[name] = directory / f"{name}.xcframework"
-    header = dependencies["Libavformat"] / "ios-arm64/Libavformat.framework/Headers/config.h"
-    original = re.search(r'^#define FFMPEG_CONFIGURATION "(.*)"$', header.read_text(), re.M)[1]
-    selections = [flag for flag in shlex.split(original) if flag.startswith((
-        "--disable-muxers", "--enable-muxer=", "--disable-demuxers", "--enable-demuxer=",
-        "--disable-encoders", "--enable-encoder=", "--disable-decoders", "--enable-decoder="))
-        and "libdav1d" not in flag and "libuavs3d" not in flag]
+    # Retains upstream's muxer/demuxer set and in-tree codec options for
+    # internal ABI compatibility with the Libavcodec/Libavutil/Libswresample
+    # pins. (hls is a demuxer, carried over here; its keepalive code is
+    # compiled out on its own, guarded by `#if CONFIG_HTTP_PROTOCOL` in hls.c.)
+    selections = read_selections()
     frameworks = []
     configurations = {}
     for group in args.groups:
-        sdk, platform, dep_slice, target_os, architectures = GROUPS[group]
+        sdk, platform, _slice, target_os, architectures = GROUPS[group]
         sysroot = run(["xcrun", "--sdk", sdk, "--show-sdk-path"])
         libs = []
         for arch in architectures:
@@ -257,9 +247,12 @@ def main():
             shutil.rmtree(framework)
         framework.mkdir(parents=True)
         run(["lipo", "-create", *libs, "-output", framework / "Libavformat"])
-        # Upstream public headers match this exact source release and preserve
-        # its framework module layout (including libavutil/libavcodec includes).
-        shutil.copytree(dependencies["Libavformat"] / dep_slice / "Libavformat.framework/Headers", framework / "Headers")
+        # Public headers come from the source that was just compiled, so they
+        # cannot drift from it. Their own includes of libavutil/libavcodec
+        # resolve against those frameworks, as they did before.
+        (framework / "Headers").mkdir()
+        for name in PUBLIC_HEADERS:
+            shutil.copyfile(source / "libavformat" / name, framework / f"Headers/{name}")
         shutil.copyfile(build / "config.h", framework / "Headers/config.h")
         # FFmpeg 8.x moves per-component enables (CONFIG_*_DEMUXER, CONFIG_*_PROTOCOL, ...)
         # out of config.h into this sibling; verify() needs both to confirm the build.
