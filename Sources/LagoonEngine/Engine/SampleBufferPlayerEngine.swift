@@ -298,6 +298,13 @@ final class SampleBufferPlayerEngine: PlayerEngine {
     /// delivery of the same media might work, so the controller can drop to
     /// the next rung of the fallback ladder instead of stranding the viewer.
     @ObservationIgnored var onError: ((PlaybackEngineFailure) -> Void)?
+
+    /// Extra `key="value"` fragments a host wants on the bench result line.
+    ///
+    /// The engine used to read the app's display-mode matcher directly for
+    /// this. Matching a television's refresh rate is the host's job — it owns
+    /// the window and the display manager — so the host supplies the text.
+    @ObservationIgnored var benchGatesSupplement: (() -> String)?
     @ObservationIgnored var onTrackSelectionChanged: (() -> Void)?
     /// Fires once the initial audio/video cushion is enqueued and the media
     /// clock is anchored. Episode handoff metrics use this rather than stream
@@ -1907,9 +1914,9 @@ final class SampleBufferPlayerEngine: PlayerEngine {
                 gates += " output=\"\(stage.outputModeName)\""
             }
             gates += " hud=\"\(UserDefaults.standard.bool(forKey: "debug.playbackHUD") ? "on" : "off")\""
-            #if os(tvOS)
-            gates += " display=\"\(DisplayModeMatcher.statusDescription)\""
-            #endif
+            if let supplement = benchGatesSupplement?(), !supplement.isEmpty {
+                gates += " " + supplement
+            }
             if let size = videoSize {
                 gates += " playing=\"\(Int(size.width))x\(Int(size.height))\""
             }
