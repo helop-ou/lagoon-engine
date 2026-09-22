@@ -172,14 +172,16 @@ The Lagoon name is not part of that grant. Give a fork its own name —
 ### Third-party notices
 
 The native libraries carry their own licences, and the texts travel with the
-artifacts. libavformat is built by this repository without its network stack,
-making it LGPL-2.1-or-later; the three MPVKit binaries keep upstream's
-version3 election and are LGPL-3.0-or-later. dav1d and uavs3d are BSD, lcms2
-is MIT, libdovi is MIT.
+artifacts. The four FFmpeg libraries are built by this repository without
+their network stack and are LGPL-2.1-or-later. dav1d and uavs3d are BSD,
+lcms2 is MIT, libdovi is MIT. Everything but libdovi is built here from
+checksum-pinned upstream source, and nothing is downloaded when the package
+resolves.
 
 Provenance and rebuild instructions sit beside the artifacts, in
-[`Libavformat.README.md`](Artifacts/Libavformat.README.md) and
-[`Libdovi.README.md`](Artifacts/Libdovi.README.md).
+[`FFmpeg.README.md`](Artifacts/FFmpeg.README.md) and
+[`Libdovi.README.md`](Artifacts/Libdovi.README.md), and in the header of each
+`scripts/build-*` script.
 
 ## Documentation
 
