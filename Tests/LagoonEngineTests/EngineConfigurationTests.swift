@@ -42,6 +42,17 @@ struct EngineConfigurationTests {
         #expect(answers.reads == 2)
     }
 
+    @Test func theVersionIsSomethingAHostCanReportAndParse() {
+        // A consumer cannot ask SwiftPM what it resolved, so this constant
+        // is the only answer — and a report that cannot be parsed back into
+        // a version is no better than none.
+        let parts = EngineVersion.current.split(separator: ".")
+        #expect(parts.count == 3)
+        #expect(parts.allSatisfy { Int($0) != nil })
+        #expect(EngineVersion.ffmpeg.hasPrefix("lavf"))
+        #expect(EngineVersion.summary == "\(EngineVersion.current) (\(EngineVersion.ffmpeg))")
+    }
+
     @Test func diagnosticsAreDiscardedUntilAHostInstallsASink() {
         let sink = RecordingSink()
         EngineDiagnostics.use(sink)

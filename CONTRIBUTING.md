@@ -49,6 +49,29 @@ commits, usually one file each, ordered so every intermediate state builds. A
 substantial `fix:` earns a body explaining the mechanism; a mechanical one
 stays subject-only. Keep structural moves separate from behaviour changes.
 
+## Releasing
+
+The package's version is a git tag. SwiftPM reads it from there, and a
+consumer has no way to ask what it resolved — so `EngineVersion.current`
+carries the same number for a host to report, and the two move together:
+
+```sh
+# 1. set EngineVersion.current to the new version, and commit it
+# 2. tag that commit, and push both
+git tag 1.2.0
+git push origin main 1.2.0
+```
+
+Real semantic versioning, because the package has real dependents: a
+breaking change to anything `public` is a major bump. What counts as public
+is decided by whether a host names a type or can reach it from one it does —
+a type nothing outside can reach is internal, and changing it is not a
+breaking change. Keep it that way and most releases stay minor.
+
+A consumer pins a version range, so a release that does not build from a
+clean checkout on both platforms is worse than no release. Build and test
+both before tagging.
+
 ## Dependencies
 
 This package takes no third-party Swift dependency, and that is deliberate.
