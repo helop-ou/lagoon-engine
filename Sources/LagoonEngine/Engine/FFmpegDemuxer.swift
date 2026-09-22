@@ -1158,6 +1158,11 @@ nonisolated final class FFmpegDemuxer {
                     strippedPayload = filtered
                 }
             }
+            // Drop mid-GOP and leading pictures after a seek. Before the snap,
+            // so a dropped packet never anchors the frame grid.
+            if case .drop = postSeekVideoDecision(packet: packet, payload: strippedPayload) {
+                return .skipped
+            }
             // Snap pts to the frame grid; dts stays the container's.
             var timing: CMSampleTimingInfo?
             if videoTimeline != nil, packet.pointee.pts != avNoPTS {
@@ -1178,10 +1183,6 @@ nonisolated final class FFmpegDemuxer {
                         decodeTimeStamp: dts
                     )
                 }
-            }
-            // Drop mid-GOP and leading pictures after a seek.
-            if case .drop = postSeekVideoDecision(packet: packet, payload: strippedPayload) {
-                return .skipped
             }
             guard let buffer = SampleBufferFactory.sampleBuffer(
                 packet: packet,
