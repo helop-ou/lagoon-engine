@@ -40,9 +40,8 @@ engine uses — `Duration`, and `os_proc_available_memory()`, which is
 unavailable on macOS at any version. The failure looks like a broken checkout
 and is not one.
 
-The first build resolves the package's binary targets: some are
-checksum-pinned artifacts from MPVKit, fetched over the network, and the rest
-are the vendored xcframeworks in this repository.
+Every binary target is an xcframework in this repository, so resolving the
+package downloads nothing.
 
 ## Tests
 
@@ -94,12 +93,17 @@ A new one needs a real argument.
 
 ## Native artifacts
 
-Three xcframeworks are vendored rather than fetched, and two are built here.
-Each rebuild recipe sits beside its artifact, and both scripts have a
-`--verify-only` mode that checks a packaged framework.
+Every native library is an xcframework in this repository, and all but one
+are built here. Each build script has a `--verify-only` mode that checks a
+packaged framework. Build them in this order, because libavcodec links the
+three before it:
 
-- libavformat, built without its network stack:
-  [`Artifacts/Libavformat.README.md`](Artifacts/Libavformat.README.md). Needs
+- dav1d, lcms2 and uavs3d: `scripts/build-dav1d.sh`, `scripts/build-lcms2.sh`
+  and `scripts/build-uavs3d.sh`, each with its provenance in its header
+  comment. dav1d and lcms2 need meson and ninja; uavs3d needs only Xcode.
+- libavutil, libavcodec, libavformat and libswresample, from one configure
+  and without the network stack:
+  [`Artifacts/FFmpeg.README.md`](Artifacts/FFmpeg.README.md). Needs
   Python 3.12+ and pkg-config.
 - dav1d, built with its arm64 assembly kept: see the header comment of
   [`scripts/build-dav1d.sh`](scripts/build-dav1d.sh), which needs meson and
