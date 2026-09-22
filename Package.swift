@@ -10,13 +10,13 @@
 // lagoon-engine as a dependency would fail to resolve. One package, many
 // targets, one product.
 //
-// libavformat is built by this repository without its network stack
-// (scripts/build-ffmpeg-format.py): HTTP goes through URLSession in
-// `FFmpegNetworkTransport`, which is also where certificate trust lives, so
-// the GnuTLS/GMP/nettle/hogweed static libraries — and the --enable-version3
-// that GnuTLS's license required — are gone, making the repo-built
-// libavformat LGPL-2.1-or-later. The three MPVKit binaries still carry
-// upstream's version3 election until they are rebuilt here too.
+// Every native library is built by this repository, or vendored here with its
+// provenance, and nothing is fetched at resolve time. The four FFmpeg
+// libraries come from one configure (scripts/build-ffmpeg.py) without the
+// network stack: HTTP goes through URLSession in `FFmpegNetworkTransport`,
+// which is also where certificate trust lives, so GnuTLS and the
+// --enable-version3 its licence required are gone, and all four are
+// LGPL-2.1-or-later. Artifacts/FFmpeg.README.md has the detail.
 
 import PackageDescription
 
@@ -97,25 +97,27 @@ let package = Package(
         ),
         .binaryTarget(
             name: "Libavcodec",
-            url: "https://github.com/mpvkit/MPVKit/releases/download/1.0.0/Libavcodec.xcframework.zip",
-            checksum: "136e432919a8a7b5b80155c68e9dc91b0ef3ae6623970b87bb8bd96a452543cf"
+            // Rebuild/provenance: scripts/build-ffmpeg.py, which builds all
+            // four FFmpeg libraries together.
+            path: "Artifacts/Libavcodec.xcframework"
         ),
         .binaryTarget(
             name: "Libavformat",
-            // Same FFmpeg release, built with networking compiled
-            // out (--disable-network --disable-protocols, file/data only).
-            // Rebuild/provenance: scripts/build-ffmpeg-format.py.
+            // Rebuild/provenance: scripts/build-ffmpeg.py, which builds all
+            // four FFmpeg libraries together.
             path: "Artifacts/Libavformat.xcframework"
         ),
         .binaryTarget(
             name: "Libavutil",
-            url: "https://github.com/mpvkit/MPVKit/releases/download/1.0.0/Libavutil.xcframework.zip",
-            checksum: "5dc251c8807c501982edfb0bc9bddfee4148733142d6ebb947738c60fb3bf8d8"
+            // Rebuild/provenance: scripts/build-ffmpeg.py, which builds all
+            // four FFmpeg libraries together.
+            path: "Artifacts/Libavutil.xcframework"
         ),
         .binaryTarget(
             name: "Libswresample",
-            url: "https://github.com/mpvkit/MPVKit/releases/download/1.0.0/Libswresample.xcframework.zip",
-            checksum: "d5c36acf2ff944e15706f4b7bfbf18bb1993ffc5b446c9f67f1aa79de5441f15"
+            // Rebuild/provenance: scripts/build-ffmpeg.py, which builds all
+            // four FFmpeg libraries together.
+            path: "Artifacts/Libswresample.xcframework"
         ),
         // This repository also builds dav1d itself. mpvkit's dav1d is
         // compiled with -Denable_asm=false, to silence an Xcode 15 linker
@@ -147,13 +149,14 @@ let package = Package(
         ),
         .binaryTarget(
             name: "lcms2",
-            url: "https://github.com/mpvkit/lcms2-build/releases/download/2.17.0/lcms2.xcframework.zip",
-            checksum: "dc0dce0606f6ab6841a8ec5a6bd4448e2f3ef00661a050460f806c9393dc6982"
+            // Little CMS 2.17, MIT. Rebuild/provenance: scripts/build-lcms2.sh.
+            path: "Artifacts/lcms2.xcframework"
         ),
         .binaryTarget(
             name: "Libuavs3d",
-            url: "https://github.com/mpvkit/libuavs3d-build/releases/download/1.2.1-fix/Libuavs3d.xcframework.zip",
-            checksum: "bd5256081486d16c51c868d755bf70266c424b54c895269580de44ec6707f789"
+            // uavs3d, BSD-3-Clause, at a pinned upstream commit.
+            // Rebuild/provenance: scripts/build-uavs3d.sh.
+            path: "Artifacts/Libuavs3d.xcframework"
         ),
     ]
 )
