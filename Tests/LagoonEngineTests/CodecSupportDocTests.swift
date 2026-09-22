@@ -18,10 +18,21 @@ struct CodecSupportDocTests {
         // Printed rather than written to a file: a package test target runs
         // in a generic runner whose container is cleared once the run ends,
         // so a path reported from inside it is gone by the time a script
-        // looks. The markers are what the script cuts between.
-        print("CODEC_SUPPORT_DOC_BEGIN")
-        print(CodecSupportDocument.render())
-        print("CODEC_SUPPORT_DOC_END")
+        // looks.
+        //
+        // Every line carries its own pair of markers, rather than the whole
+        // document sitting between one begin/end pair. The test runner writes
+        // its own progress to the same stream and its writes land adjacent to
+        // these, inside the line rather than on their own: an end marker came
+        // back as `CODEC_DOC_END✔ Test ...`, which an anchored pattern stops
+        // matching, and the extraction then ran on past it and swallowed the
+        // log. Per-line markers make that noise something the script can trim
+        // off either end instead of something that loses the document.
+        for line in CodecSupportDocument.render().split(
+            separator: "\n", omittingEmptySubsequences: false
+        ) {
+            print("CODEC_DOC|\(line)|CODEC_DOC")
+        }
     }
 
     @Test func theTableAgreesWithTheCompressedPath() {
