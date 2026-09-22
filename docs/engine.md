@@ -67,8 +67,8 @@ policy. Failures stay failures: only a successfully read resource's end is
 EOF.
 
 TLS validation is recorded in [transport
-details](reference/transport.md), and the build itself in the [libavformat
-build record](../Artifacts/Libavformat.README.md).
+details](reference/transport.md), and the build itself in the [FFmpeg build
+record](../Artifacts/FFmpeg.README.md).
 
 ## Lifecycle
 
