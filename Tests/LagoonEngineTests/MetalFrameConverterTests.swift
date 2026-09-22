@@ -3,11 +3,10 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// The Metal output stage replaced two CPU passes, so what it
-/// writes is pinned: the repack is exact, and the tone map matches its own
-/// specification for grey, keeps black black, reaches white at the source
-/// peak, never inverts, and leaves grey neutral. The kernel runs on the
-/// simulator's GPU through the converter's copy path.
+/// Pins what the Metal output stage writes: an exact repack, and a tone map
+/// that matches its spec for grey, keeps black black, reaches white at the
+/// source peak, never inverts and stays neutral. Runs on the simulator GPU via
+/// the copy path.
 struct MetalFrameConverterTests {
     private static let width = 64
     private static let height = 32
@@ -37,8 +36,8 @@ struct MetalFrameConverterTests {
     }
 
     @Test func toneMapMatchesItsReferenceForGreyAndNeverInverts() throws {
-        // A limited-range PQ ramp down the rows, black at the top, code 940
-        // at the bottom, neutral chroma throughout.
+        // A limited-range PQ ramp down the rows, black to code 940, neutral
+        // chroma.
         var frame = Self.PlanarFrame(
             luma: Array(repeating: 0, count: Self.width * Self.height),
             cb: Array(repeating: 512, count: Self.width * Self.height / 4),
@@ -75,17 +74,14 @@ struct MetalFrameConverterTests {
         #expect(chromaDrift <= 2, "grey picked up a tint of \(chromaDrift) codes")
     }
 
-    // The no-copy wrap itself cannot be tested: it is compiled out of the
-    // simulator, whose driver traps on malloc pages. The decision that guards
-    // it can be. libdav1d's pooled pictures are one block with an alignment
-    // gap between planes; VP9 Profile 2 decodes to the same format through
-    // FFmpeg's default allocator, which pools a buffer per plane, and wrapping
-    // that span would hand the GPU the unmapped heap between them.
+    // The no-copy wrap is compiled out of the simulator (its driver traps on
+    // malloc pages), but the guard is testable. dav1d's pooled pictures are one
+    // block; VP9 Profile 2 gets a buffer per plane from FFmpeg's default
+    // allocator, and wrapping that span would hand the GPU unmapped heap.
     @Test func onlyPlanesFromOneAllocationMayBeWrappedWithoutCopying() {
-        // A 4K 10-bit picture, the size that actually reaches this path, laid
-        // out the way FFmpeg lays a dav1d one out: 2160 visible rows inside
-        // regions allocated for 2176, so the planes are one block with about
-        // 150 KB of padding rows between them.
+        // A 4K 10-bit picture laid out like FFmpeg's dav1d output: 2160 visible
+        // rows in regions allocated for 2176, one block with about 150 KB of
+        // padding between planes.
         let pageSize = Int(getpagesize())
         let (width, height, allocatedHeight) = (3840, 2160, 2176)
         let (lumaStride, chromaStride) = (width * 2, width)
@@ -104,9 +100,8 @@ struct MetalFrameConverterTests {
         ]
         #expect(MetalFrameConverter.planesShareOneAllocation(pooled, pageSize: pageSize))
 
-        // A buffer per plane, which is what VP9 Profile 2 decodes into: the
-        // span reaches across heap this frame does not own, on either side of
-        // the luma plane at that.
+        // A buffer per plane, as VP9 Profile 2 decodes into: the span crosses
+        // heap this frame does not own, on both sides of luma.
         let perPlane = [
             luma,
             plane(at: start + 0x1000_0000, stride: chromaStride, rows: height / 2),
@@ -117,9 +112,9 @@ struct MetalFrameConverterTests {
 
     // MARK: - Reference
 
-    /// The shader's arithmetic for a grey sample, in Double: BT.2020 Y'CbCr
-    /// with neutral chroma, PQ EOTF, BT.2390 EETF on luminance, the
-    /// 2020-to-709 matrix, 1/2.4 encoding, BT.709 luma, limited-range code.
+    /// The shader's arithmetic for a grey sample, in Double: BT.2020 Y'CbCr, PQ
+    /// EOTF, BT.2390 EETF on luminance, 2020-to-709, 1/2.4 encoding, BT.709
+    /// luma, limited-range code.
     private static func referenceSDRCode(limitedPQCode code: Int) -> Int {
         let sourcePeak = 1000.0
         let targetPeak = 203.0

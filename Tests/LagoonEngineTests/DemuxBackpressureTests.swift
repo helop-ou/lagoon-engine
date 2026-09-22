@@ -2,14 +2,12 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// How far the demuxer reads ahead, and when it is told to wait. The
-/// watermarks differ between a cached stream and an uncached one, because
-/// without a byte cache in front of it the only cushion is the one these
-/// queues hold.
+/// How far the demuxer reads ahead and when it waits. Without a byte cache the
+/// queues are the only cushion, so uncached watermarks are deeper.
 @Suite("Demux backpressure")
 struct DemuxBackpressureTests {
-    /// Audio grows and video does not, which is the whole design: a decoded
-    /// 4K frame is 24.9 MB and a second of compressed audio is about 80 KB.
+    /// Only audio grows: a decoded 4K frame is 24.9 MB, a second of compressed
+    /// audio about 80 KB.
     @Test func onlyTheAudioCushionGrowsWithoutACache() {
         #expect(
             DemuxBackpressurePolicy.audioCushionTarget(deliveryIsCached: false)
@@ -20,9 +18,8 @@ struct DemuxBackpressureTests {
         #expect(DemuxBackpressurePolicy.videoHardLimit(videoIsDecoded: false) == 120)
     }
 
-    /// The cached profile is unchanged, so a direct play behaves exactly as
-    /// it did before this existed. Video has to be off the floor first:
-    /// the policy never parks on audio while video is the starved one.
+    /// Cached watermarks are unchanged. Video must be off the floor first: the
+    /// policy never parks on audio while video starves.
     @Test func aCachedStreamKeepsTheWatermarksItAlwaysHad() {
         #expect(DemuxBackpressurePolicy.audioCushionTarget(deliveryIsCached: true) == 180)
         #expect(DemuxBackpressurePolicy.decision(
@@ -35,8 +32,7 @@ struct DemuxBackpressureTests {
         ) == .waitForAudio(below: 144))
     }
 
-    /// The same queue depth that parks a cached stream keeps reading on an
-    /// uncached one, which is the cushion actually being built.
+    /// The depth that parks a cached stream keeps an uncached one reading.
     @Test func anUncachedStreamKeepsReadingWhereACachedOneParks() {
         #expect(DemuxBackpressurePolicy.decision(
             videoCount: 12,
@@ -49,13 +45,12 @@ struct DemuxBackpressureTests {
         ) == .read)
     }
 
-    /// Video may not park on its own high water while audio is short of the
-    /// drain it would have to survive, and without a cache that margin is
-    /// larger because the drain is a network round trip rather than a cache
-    /// read.
+    /// Video may not park at high water while audio is short of the drain it
+    /// must survive. Uncached, that margin is larger because the drain is a
+    /// network round trip.
     @Test func videoWaitsLongerForAudioWithoutACache() {
-        // 18 frames of 24 fps video drains to 12 in 0.25 s; a cached stream
-        // needs 1.25 s + that, an uncached one 3 s + that.
+        // 18 frames of 24 fps video drain to 12 in 0.25 s; cached needs 1.25 s
+        // more, uncached 3 s more.
         let betweenTheTwo = 2.0
         #expect(DemuxBackpressurePolicy.decision(
             videoCount: 18,
@@ -77,8 +72,7 @@ struct DemuxBackpressureTests {
         ) == .read)
     }
 
-    /// The absolute bound still holds: a deeper cushion is not an unbounded
-    /// one, and video's hard limit is untouched by any of this.
+    /// A deeper cushion is still bounded, and video's hard limit is unchanged.
     @Test func theHardLimitsStillBound() {
         #expect(DemuxBackpressurePolicy.decision(
             videoCount: 30,
@@ -89,8 +83,8 @@ struct DemuxBackpressureTests {
             hasAudio: true,
             deliveryIsCached: false
         ) == .read)
-        // The decoded queue's own bound hands over to the intake's, which is
-        // what still bounds it once that fills too.
+        // The decoded queue's bound hands over to the intake's, which still
+        // bounds it.
         #expect(DemuxBackpressurePolicy.decision(
             videoCount: 30,
             audioCount: 40,
@@ -111,8 +105,7 @@ struct DemuxBackpressureTests {
             hasAudio: true,
             deliveryIsCached: false
         ) == .waitForAudio(below: 288))
-        // and is stopped by the absolute bound even when video is starved
-        // and the loop would otherwise keep reading for it.
+        // and is stopped by the absolute bound even when video is starved.
         #expect(DemuxBackpressurePolicy.decision(
             videoCount: 0,
             audioCount: 540,
@@ -124,11 +117,9 @@ struct DemuxBackpressureTests {
         ) == .waitForAudio(below: 540))
     }
 
-    /// At the hard limit on every decode path, with audio still short of
-    /// its own high water, the loop reads on instead of parking. Once it
-    /// does, video parked in the intake does not count against the decoded
-    /// queue's own hard limit, so the same shape keeps reading even once
-    /// `videoCount` has run past it.
+    /// At the hard limit on every decode path, with audio short of high water,
+    /// the loop reads on. Video parked in the intake does not count against the
+    /// decoded queue's limit, so it keeps reading even past `videoCount`.
     @Test func fullDecodedQueueReadsAheadForAudio() {
         #expect(DemuxBackpressurePolicy.decision(
             videoCount: 30,
@@ -165,9 +156,8 @@ struct DemuxBackpressureTests {
         ) == .read)
     }
 
-    /// A silent title cannot starve on audio, so it never reaches this
-    /// branch at all: `audioCanCoverDrain` is vacuously true without audio,
-    /// which is the pre-existing one-slot-below-the-high-water pacing.
+    /// Without audio `audioCanCoverDrain` is vacuously true, so the usual one
+    /// slot below high water pacing applies.
     @Test func silentTitleKeepsOneSlotPacing() {
         #expect(DemuxBackpressurePolicy.decision(
             videoCount: 30,
@@ -179,10 +169,8 @@ struct DemuxBackpressureTests {
         ) == .waitForVideo(below: 12))
     }
 
-    /// The read-ahead only exists to keep audio from starving, so it stops
-    /// the moment audio itself has enough queued: 180 packets is the cached
-    /// profile's own high water, and going uncached moves that ceiling to
-    /// 360 rather than changing the rule.
+    /// The read-ahead stops once audio has enough: 180 packets cached, 360
+    /// uncached.
     @Test func audioHighWaterStopsTheReadAhead() {
         #expect(DemuxBackpressurePolicy.decision(
             videoCount: 30,
@@ -212,11 +200,8 @@ struct DemuxBackpressureTests {
         ) == .waitForVideo(below: 30))
     }
 
-    /// The intake this rule reads into is bounded on its own, both by count
-    /// and by bytes, so a stuck audio track cannot turn it into an unbounded
-    /// compressed-packet queue: hitting either cap falls back to the
-    /// ordinary hard-limit pacing even while audio is short of its own high
-    /// water.
+    /// The intake is bounded by count and bytes, so a stuck audio track cannot
+    /// grow it without limit: either cap falls back to hard-limit pacing.
     @Test func intakeBoundsStopTheReadAhead() {
         #expect(DemuxBackpressurePolicy.decision(
             videoCount: 30,
@@ -249,11 +234,8 @@ struct DemuxBackpressureTests {
         ) == .read)
     }
 
-    /// Below the hard limit this is all unchanged: over the high water but
-    /// short of the hard limit already read on for audio before any of this
-    /// existed, because the batch-drain branch above it returns `.read`
-    /// directly whenever audio cannot cover the drain and the hard limit has
-    /// not been reached.
+    /// Between high water and the hard limit, the batch-drain branch already
+    /// reads on whenever audio cannot cover the drain.
     @Test func belowTheHardLimitNothingChanged() {
         #expect(DemuxBackpressurePolicy.decision(
             videoCount: 20,

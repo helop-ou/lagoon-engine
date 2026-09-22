@@ -5,16 +5,13 @@ import Libavutil
 import Testing
 @testable import LagoonEngine
 
-/// The compressed-audio format descriptions the renderer is handed, pinned
-/// byte for byte. The E-AC-3 JOC recipe was settled on hardware
-/// (2026-08-17): the `ec+3` media subtype plus a 16-channel presentation is
-/// what engages Atmos, and the synthesized `dec3` box rides along as the
-/// sample description atom. A wrong bit here decodes as plain DD+ with
-/// every counter healthy, so the shape is worth a test that fails loudly.
+/// Compressed-audio format descriptions, pinned byte for byte. The E-AC-3 JOC
+/// recipe was settled on hardware: `ec+3` plus a 16-channel presentation
+/// engages Atmos, with the synthesized `dec3` box as the sample description
+/// atom. A wrong bit plays as plain DD+ with every counter healthy.
 ///
-/// JOC detection is FFmpeg's, from the bitstream: its E-AC-3 parser sets
-/// profile 30 (`AV_PROFILE_EAC3_DDP_ATMOS`) when a frame carries the JOC
-/// extension. Nothing here infers Atmos from a track name.
+/// JOC detection is FFmpeg's: its E-AC-3 parser sets profile 30
+/// (`AV_PROFILE_EAC3_DDP_ATMOS`) from the bitstream, never a track name.
 @Suite("Audio format descriptions")
 struct AudioFormatDescriptionTests {
     /// `'ec+3'`, the subtype Apple's own JOC descriptions carry.
@@ -31,8 +28,8 @@ struct AudioFormatDescriptionTests {
         #expect(asbd.mFramesPerPacket == 1_536)
         #expect(framesPerPacket == 1_536)
         // dec3 for 5.1 at 768 kbps, 48 kHz, one independent substream, with
-        // flag_ec3_extension_type_a set and 16 objects: FFmpeg's mp4 muxer
-        // writes the same first five bytes for a plain 5.1 768 kbps stream.
+        // flag_ec3_extension_type_a and 16 objects. The first five bytes match
+        // FFmpeg's mp4 muxer for plain 5.1 768 kbps.
         #expect(try dec3Atom(of: description) == Data([0x18, 0x00, 0x20, 0x0F, 0x00, 0x01, 0x10]))
         #expect(try magicCookie(of: description) == Data([0x18, 0x00, 0x20, 0x0F, 0x00, 0x01, 0x10]))
     }
@@ -55,8 +52,7 @@ struct AudioFormatDescriptionTests {
         let asbd = try #require(CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee)
         #expect(asbd.mFormatID == jocFormatID)
         #expect(asbd.mChannelsPerFrame == 16)
-        // num_dep_sub = 1 with the Lrs/Rrs channel location, then the JOC
-        // extension.
+        // num_dep_sub = 1 with the Lrs/Rrs location, then the JOC extension.
         #expect(try dec3Atom(of: description) == Data([0x30, 0x00, 0x20, 0x0F, 0x02, 0x02, 0x01, 0x10]))
     }
 
@@ -81,18 +77,16 @@ struct AudioFormatDescriptionTests {
             description, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms
         ) == nil)
 
-        // TrueHD, Atmos profile or not, has no renderer format: the engine
-        // decodes it to LPCM, which carries no objects. A switch from it to
-        // a JOC track therefore changes the renderer's format entirely.
+        // TrueHD has no renderer format: it decodes to LPCM, without objects,
+        // so a switch to a JOC track changes the format entirely.
         let trueHD = try codecParameters(codec: AV_CODEC_ID_TRUEHD, profile: 30, channels: 8, bitRate: 0)
         defer { free(trueHD) }
         #expect(SampleBufferFactory.audioFormatDescription(codecpar: trueHD) == nil)
     }
 
     @Test func twoJOCTracksWithTheSameParametersDescribeTheSameFormat() throws {
-        // What a mid-play switch back to an equivalent track hands the
-        // renderer must compare equal, or the renderer reconfigures for
-        // nothing.
+        // Switching back to an equivalent track must compare equal, or the
+        // renderer reconfigures for nothing.
         let first = try codecParameters(codec: AV_CODEC_ID_EAC3, profile: 30, channels: 6, bitRate: 768_000)
         let second = try codecParameters(codec: AV_CODEC_ID_EAC3, profile: 30, channels: 6, bitRate: 768_000)
         defer { free(first); free(second) }

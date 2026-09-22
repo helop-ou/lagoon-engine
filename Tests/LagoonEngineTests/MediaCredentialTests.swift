@@ -2,9 +2,8 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// Every media consumer attaches the Jellyfin credential as
-/// a request header instead of a URL query token, so a failed task's URL —
-/// which CFNetwork logs into the unified log — never carries it.
+/// Every media consumer sends the credential as a header, never a query token,
+/// because CFNetwork logs a failed task's URL.
 @Suite("Media credential travels as a header", .serialized)
 struct MediaCredentialTests {
     private static let authorization = MediaRequestAuthorization(
@@ -137,20 +136,15 @@ struct MediaCredentialTests {
     }
 }
 
-// TrickplayLoader's `fetch(_:authorization:)` is a private static method that
-// builds its request through the same `MediaRequestAuthorization.request(for:)`
-// path already covered above; it has no seams left to exercise separately
-// without driving the (@MainActor, UI-facing) loader itself.
+// TrickplayLoader builds its request through `request(for:)`, covered above.
 
 private nonisolated struct MediaCredentialFixture: Sendable {
     var body = Data()
 }
 
-/// A minimal per-path scripted `URLProtocol`, modeled on `TransportStub` in
-/// URLSessionByteSourceTests.swift: honours `Range` when the request sends
-/// one (partial-content, for the range loader), serves the whole body as a
-/// plain 200 otherwise (for the subtitle downloader), and records every
-/// request's URL and headers for assertions.
+/// A scripted per-path `URLProtocol`: honours `Range` when sent (for the range
+/// loader), serves the whole body as 200 otherwise (for subtitles), and records
+/// each request's URL and headers.
 private nonisolated final class MediaCredentialStub: URLProtocol {
     static let host = "media-credential.test"
 

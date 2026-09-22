@@ -227,8 +227,7 @@ struct URLSessionByteSourceTests {
         let contextB = try #require(ioB)
         #expect(transport.close(contextA) == 0)
         #expect(transport.close(contextB) == 0)
-        // Closing every remaining context should also be safe to call again
-        // once nothing is left open.
+        // Safe to call again with nothing open.
         transport.closeAll()
     }
 
@@ -304,9 +303,7 @@ struct URLSessionByteSourceTests {
     }
 }
 
-/// Parses the leading offset out of an open-ended `Range: bytes=<offset>-`
-/// header. Shared by the stub (to answer with the right slice) and the
-/// tests (to assert what a retry actually requested).
+/// The offset from an open-ended `Range: bytes=<offset>-` header.
 nonisolated private func parseRangeStart(_ header: String?) -> Int? {
     guard let header, header.hasPrefix("bytes=") else { return nil }
     let spec = header.dropFirst("bytes=".count)
@@ -319,27 +316,22 @@ private nonisolated struct TransportFixture: Sendable {
     var ranged = true
     var body = Data()
     var chunkSize = 64 * 1_024
-    /// Fails the response with `.networkConnectionLost` the first time this
-    /// many bytes have been streamed for its path, then behaves normally on
-    /// every later request for the same path.
+    /// Fails with `.networkConnectionLost` once this many bytes have streamed
+    /// for the path, then behaves normally.
     var dropAfterBytes: Int?
-    /// Delivers headers, then never delivers a body or finishes, until the
-    /// loading system cancels the task (`stopLoading`).
+    /// Sends headers, then no body, until the task is cancelled.
     var holdBody = false
-    /// When set, `respond` reports an HTTP redirect to this URL instead of
-    /// serving a body — used to test that a credential header does not
-    /// follow a request across origins.
+    /// Redirects to this URL instead of serving a body, to test that the
+    /// credential header does not cross origins.
     var redirectTo: URL?
 }
 
-/// A minimal per-path scripted `URLProtocol`, modeled on
-/// `DownloadHardeningTests.DownloadProtocol`: honours `Range` for paths
-/// marked `ranged`, ignores it (serving the full body as 200) otherwise, and
-/// records every request's URL and Range header for assertions.
+/// A scripted per-path `URLProtocol`: honours `Range` for `ranged` paths,
+/// serves the full body as 200 otherwise, and records each URL and Range
+/// header.
 private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable {
     static let host = "byte-source.test"
-    /// A second origin the stub also answers for, so a redirect fixture can
-    /// send a request somewhere genuinely cross-origin.
+    /// A second origin, so a redirect is genuinely cross-origin.
     static let redirectHost = "byte-source-redirect.test"
 
     private static let lock = NSLock()
@@ -397,11 +389,9 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
 
     private func respond(url: URL, range: String?) {
         if let redirectTo = fixture.redirectTo {
-            // Simulates what a real redirect hands the session delegate:
-            // the new request starts from this one's headers, Authorization
-            // included, so the test actually exercises the delegate's own
-            // cross-origin stripping rather than relying on this stub to do
-            // it.
+            // Like a real redirect, the new request carries this one's headers,
+            // Authorization included, so the delegate's stripping is what gets
+            // tested.
             var newRequest = URLRequest(url: redirectTo)
             newRequest.allHTTPHeaderFields = request.allHTTPHeaderFields
             let redirectResponse = HTTPURLResponse(
@@ -433,9 +423,8 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
     }
 
     private func deliverHeaders(url: URL, status: Int, extra: [String: String]) {
-        // Without a MIME type Foundation may wait for body bytes to sniff
-        // content before forwarding the response to its session delegate,
-        // which would stall the held-body fixture forever.
+        // Without a MIME type Foundation may wait for body bytes to sniff,
+        // stalling the held-body fixture forever.
         let headers = ["Content-Type": "application/octet-stream"].merging(extra) { _, supplied in supplied }
         client?.urlProtocol(self, didReceive: HTTPURLResponse(
             url: url, statusCode: status, httpVersion: nil, headerFields: headers

@@ -2,9 +2,8 @@ import CoreMedia
 import Testing
 @testable import LagoonEngine
 
-/// The video timestamp normalizer: every quantized container PTS lands
-/// exactly on the frame grid, including through B-frame reordering where
-/// stamps arrive out of presentation order.
+/// Every quantized container PTS lands exactly on the frame grid, including
+/// through B-frame reordering.
 struct VideoFrameTimelineTests {
     private let period = 1001.0 / 24_000
 
@@ -26,9 +25,8 @@ struct VideoFrameTimelineTests {
         }
     }
 
-    /// Decode order: stamps step backwards and forwards by whole frames
-    /// (I P B B → pts order 0, 3, 1, 2). The chain must follow signed
-    /// steps, not assume monotonic input.
+    /// Decode order steps back and forth by whole frames (I P B B, pts 0, 3, 1,
+    /// 2), so the chain follows signed steps.
     @Test func bFrameReorderingFollowsSignedSteps() throws {
         var timeline = try #require(VideoFrameTimeline(frameRateNum: 24_000, frameRateDen: 1001))
         let presentationOrder: [Int64] = [0, 3, 1, 2, 6, 4, 5, 9, 7, 8]
@@ -40,9 +38,8 @@ struct VideoFrameTimelineTests {
         }
     }
 
-    /// A stamp far off the grid (VFR, broken mux) passes through — nil —
-    /// and re-anchors the chain there instead of forcing it onto a grid
-    /// the content doesn't follow.
+    /// A stamp far off the grid (VFR, broken mux) passes through as nil and
+    /// re-anchors the chain there.
     @Test func offGridStampPassesThroughAndReanchors() throws {
         var timeline = try #require(VideoFrameTimeline(frameRateNum: 24_000, frameRateDen: 1001))
         _ = timeline.snapped(containerSeconds: 0)
@@ -60,9 +57,8 @@ struct VideoFrameTimelineTests {
         #expect(timeline.snapped(containerSeconds: 5.0) == nil)
     }
 
-    /// Chaining is relative, so a grid built from a slightly-off reported
-    /// rate (23.976 exactly vs 24000/1001) never accumulates drift past
-    /// the tolerance the way a fixed anchor would.
+    /// Chaining is relative, so a slightly-off rate (23.976 vs 24000/1001)
+    /// never drifts past the tolerance as a fixed anchor would.
     @Test func relativeChainingAbsorbsRateRoundingDrift() throws {
         var timeline = try #require(VideoFrameTimeline(frameRateNum: 23_976, frameRateDen: 1000))
         for index in 0..<5000 {
@@ -72,8 +68,7 @@ struct VideoFrameTimelineTests {
         }
     }
 
-    /// Exact-millisecond rates (25 fps PAL) produce stamps identical to
-    /// the container's — the rewrite is a no-op by construction.
+    /// Exact-millisecond rates (25 fps) match the container's stamps: a no-op.
     @Test func exactRateIsNoOp() throws {
         var timeline = try #require(VideoFrameTimeline(frameRateNum: 25, frameRateDen: 1))
         for index in 0..<100 {
@@ -84,8 +79,8 @@ struct VideoFrameTimelineTests {
         }
     }
 
-    /// reset() forgets the chain: the next stamp anchors fresh (the
-    /// seek/flush contract).
+    /// reset() forgets the chain; the next stamp anchors fresh (the seek/flush
+    /// contract).
     @Test func resetReanchors() throws {
         var timeline = try #require(VideoFrameTimeline(frameRateNum: 24_000, frameRateDen: 1001))
         _ = timeline.snapped(containerSeconds: 100)

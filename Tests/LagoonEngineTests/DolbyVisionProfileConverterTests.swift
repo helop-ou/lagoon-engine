@@ -4,27 +4,19 @@ import Libavutil
 import Testing
 @testable import LagoonEngine
 
-/// The profile 7 → 8.1 RPU rewrite: `DolbyVisionProfileConverter` rewrites
-/// every RPU (unspec-62) NAL with libdovi's
-/// `dovi_convert_rpu_with_mode(rpu, 2)` and drops the enhancement layer
-/// (unspec-63), using `HEVCNALUnitRewriter.rewrite` to walk packets.
+/// The profile 7 to 8.1 rewrite: `DolbyVisionProfileConverter` converts every
+/// RPU (unspec-62) NAL with libdovi's `dovi_convert_rpu_with_mode(rpu, 2)` and
+/// drops the enhancement layer (unspec-63).
 ///
-/// Fixtures are dovi_tool's own MEL/FEL pairs from `assets/tests` at
-/// libdovi-3.4.0: `*_orig` are real profile 7 RPUs, `*_to_81` what its
-/// `mel_conversions`/`fel_conversions` tests expect. The first two tests
-/// exercise no Lagoon code — they confirm the vendored library converts the
-/// way dovi_tool's tests say before anything here trusts it.
-///
-/// Each constant is the file as shipped: a 4-byte Annex B start code then one
-/// *escaped* RPU (first byte 0x19, no 0x7C 0x01 NAL header), hence
-/// `dovi_parse_unspec62_nalu` rather than `dovi_parse_rpu`.
+/// Fixtures are dovi_tool's MEL/FEL pairs from `assets/tests` at libdovi-3.4.0:
+/// `*_orig` are real profile 7 RPUs, `*_to_81` what its conversion tests
+/// expect. The first two tests check only the vendored library. Each constant
+/// is a 4-byte start code then one escaped RPU (first byte 0x19, no 0x7C 0x01
+/// header), hence `dovi_parse_unspec62_nalu`.
 @Suite("Dolby Vision profile 7 conversion")
 struct DolbyVisionProfileConverterTests {
-    /// `DoviRpuOpaque *` is an opaque, forward-declared C struct with no
-    /// visible fields, so the ClangImporter has nothing to bridge but the
-    /// pointer itself, as `OpaquePointer` — the same pattern as
-    /// `resampler: OpaquePointer?` for `SwrContext *` in AudioDecoder.swift.
-    /// This alias just keeps call sites readable.
+    /// `DoviRpuOpaque *` is an opaque C struct, imported as `OpaquePointer`;
+    /// the alias keeps call sites readable.
     private typealias DoviRpuOpaque = OpaquePointer
 
     // MARK: - Fixtures (dovi_tool's own test suite, libdovi 3.4.0 tag)
@@ -58,15 +50,14 @@ struct DolbyVisionProfileConverterTests {
     """.filter { !$0.isWhitespace }
 
     struct RPUFixture: Sendable {
-        /// "MEL" or "FEL" — also the enhancement-layer type libdovi reports
-        /// off the parsed header, and what the converter's stats should say.
+        /// "MEL" or "FEL", as libdovi reports it and the converter's stats
+        /// should say.
         let label: String
         let originalBase64: String
         let convertedBase64: String
-        /// Whether one direct mode-2 call — what the converter ships —
-        /// reproduces `convertedBase64`. True for MEL. False for FEL: mode 2
-        /// on a FEL source also resets the base-layer mapping curves to the
-        /// identity polynomial, which upstream's MEL-first reference path
+        /// Whether one direct mode-2 call, as the converter does, reproduces
+        /// `convertedBase64`. False for FEL: mode 2 also resets the base-layer
+        /// mapping curves to identity, which upstream's MEL-first reference
         /// never does.
         let directMode2MatchesFixture: Bool
     }
@@ -93,9 +84,8 @@ struct DolbyVisionProfileConverterTests {
         try #require(Data(base64Encoded: base64))
     }
 
-    /// Parses a fixture, or a written NAL, the way dovi_tool's `_parse_file`
-    /// does: `parse_unspec62_nalu` trims a leading start code or 0x7C 0x01
-    /// header itself and clears emulation prevention before decoding.
+    /// Parses like dovi_tool's `_parse_file`: `parse_unspec62_nalu` trims a
+    /// start code or 0x7C 0x01 header and clears emulation prevention.
     private func parseNAL(_ data: Data) -> DoviRpuOpaque? {
         data.withUnsafeBytes { buffer -> DoviRpuOpaque? in
             guard let base = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return nil }
@@ -103,19 +93,15 @@ struct DolbyVisionProfileConverterTests {
         }
     }
 
-    /// `DoviData.data` is an implicitly-unwrapped optional pointer; unwrap
-    /// it explicitly with `guard let` (as the rest of the codebase's
-    /// FFmpeg/DoVi bridging does, e.g. `codecpar.pointee.extradata` in
-    /// FFmpegDemuxer.swift) rather than lean on a force-unwrap-plus-
-    /// typed-to-raw-pointer conversion happening together at a call site.
+    /// `DoviData.data` is an implicitly unwrapped pointer; unwrap it
+    /// explicitly.
     private func bytes(from doviData: DoviData) -> Data {
         guard let base = doviData.data else { return Data() }
         return Data(bytes: base, count: doviData.len)
     }
 
-    /// The escaped, 0x7C 0x01-prefixed NAL unit a real packet carries for
-    /// an *unconverted* RPU — this is how the tests below build the type-62
-    /// unit that goes into a synthetic access unit.
+    /// The escaped, 0x7C 0x01-prefixed NAL a real packet carries for an
+    /// unconverted RPU.
     private func nal62(from fixture: Data) throws -> Data {
         let rpu = try #require(parseNAL(fixture))
         defer { dovi_rpu_free(rpu) }
@@ -124,8 +110,7 @@ struct DolbyVisionProfileConverterTests {
         return bytes(from: written.pointee)
     }
 
-    /// The same, but mode-2 converted first — what the converter under test
-    /// should be producing in place of the original RPU unit.
+    /// The same, mode-2 converted: what the converter should produce.
     private func convertedNal62(from fixture: Data) throws -> Data {
         let rpu = try #require(parseNAL(fixture))
         defer { dovi_rpu_free(rpu) }
@@ -164,9 +149,8 @@ struct DolbyVisionProfileConverterTests {
         return units
     }
 
-    /// A profile 7, dual-layer (FEL/MEL) decoder configuration record —
-    /// dv_version 1.0, level 6, compatibility id 6 (the "backward
-    /// compatible with neither BL nor EL alone" id real P7 remuxes use).
+    /// A profile 7 dual-layer configuration record: dv_version 1.0, level 6,
+    /// compatibility id 6, as real P7 remuxes use.
     private func profileSevenRecord() -> AVDOVIDecoderConfigurationRecord {
         AVDOVIDecoderConfigurationRecord(
             dv_version_major: 1,
@@ -183,10 +167,9 @@ struct DolbyVisionProfileConverterTests {
 
     // MARK: - libdovi itself, against dovi_tool's own reference output
 
-    /// Byte for byte what dovi_tool's `fel_conversions`/`mel_conversions`
-    /// assert: parse, convert to MEL (mode 1), convert to 8.1 (mode 2), and
-    /// the written NAL minus its 0x7C 0x01 header equals the shipped
-    /// `_to_81` fixture minus its start code.
+    /// Byte for byte what dovi_tool's conversion tests assert: parse, mode 1,
+    /// mode 2, and the written NAL minus its header equals `_to_81` minus its
+    /// start code.
     @Test(arguments: fixtures)
     func vendoredLibdoviMatchesDoviToolsReferenceOutput(_ fixture: RPUFixture) throws {
         let expected = try decodeFixture(fixture.convertedBase64)
@@ -203,12 +186,10 @@ struct DolbyVisionProfileConverterTests {
         #expect(bytes(from: written.pointee).dropFirst(2) == expected.dropFirst(4))
     }
 
-    /// What the converter ships is one direct mode-2 call. For MEL that is
-    /// identical to the reference above. For FEL, libdovi 3.x's mode 2 also
-    /// resets the base layer's luma and chroma mapping curves to the
-    /// identity polynomial (a FEL mapping was designed to be applied with
-    /// the residual; mode 4 is the old mapping-preserving behaviour), so the
-    /// RPU shrinks — and must still read back as profile 8.
+    /// The converter makes one direct mode-2 call. For MEL that matches the
+    /// reference. For FEL, libdovi 3.x mode 2 also resets the mapping curves to
+    /// identity (mode 4 preserves them), so the RPU shrinks but must still read
+    /// back as profile 8.
     @Test(arguments: fixtures)
     func directMode2ReadsBackAsProfile8(_ fixture: RPUFixture) throws {
         let expected = try decodeFixture(fixture.convertedBase64)
@@ -276,8 +257,7 @@ struct DolbyVisionProfileConverterTests {
 
         let result = packet.withUnsafeBytes { converter.convert(payload: $0, lengthSize: 4) }
         #expect(result == nil)
-        // Nothing to rewrite: the packet keeps its zero-copy path, and the
-        // stats stay exactly as they were — not just zeroed, untouched.
+        // Nothing to rewrite: zero-copy, and the stats untouched.
         #expect(converter.stats == statsBefore)
     }
 

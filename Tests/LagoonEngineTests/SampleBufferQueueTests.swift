@@ -2,12 +2,9 @@ import CoreMedia
 import Testing
 @testable import LagoonEngine
 
-/// Priming after a seek lands inside a fragment whose audio block
-/// starts at the keyframe, so audio queued from before the seek target is
-/// audio the renderer will discard, not a cushion. `bufferedDuration(after:)`
-/// is what tells the demux loop and `primeAndStart` how much of the queue
-/// actually lands after that target, as opposed to plain `bufferedDuration`,
-/// which counts everything queued regardless of where playback is headed.
+/// After a seek, audio queued before the target is discarded by the renderer,
+/// so it is not a cushion. `bufferedDuration(after:)` counts only what lands
+/// after the target; plain `bufferedDuration` counts everything.
 struct SampleBufferQueueTests {
     @Test func bufferedDurationAfterIgnoresAudioBeforeTheTarget() throws {
         let queue = SampleBufferQueue()
@@ -21,23 +18,19 @@ struct SampleBufferQueueTests {
 
         // Before the first buffer even starts, the whole 3 s counts.
         #expect(abs(queue.bufferedDuration(after: 0) - 3.0) < 0.001)
-        // Straddling the second buffer: only the second half of it plus
-        // the third buffer count — 1.5 s, not the 3 s still queued.
+        // Straddling the second buffer: its second half plus the third, 1.5 s.
         #expect(queue.bufferedDuration(after: 1.5) == 1.5)
         // Exactly at the end: nothing queued lands after it.
         #expect(queue.bufferedDuration(after: 3.0) == 0)
         // Past the end entirely: still nothing.
         #expect(queue.bufferedDuration(after: 5.0) == 0)
-        // At or before the first buffer's own PTS, the target cannot pull
-        // anything backward, so this matches plain bufferedDuration exactly.
+        // At or before the first PTS this matches plain bufferedDuration.
         #expect(queue.bufferedDuration(after: -1) == queue.bufferedDuration)
     }
 }
 
-/// A ready sample buffer stamped at `presentationSeconds` with a
-/// `durationSeconds`-long duration, on a timescale fine enough to hold both
-/// exactly — cribbed from `VideoIntakeQueueTests`' `makeSampleBuffer`, which
-/// only needed a fixed zero PTS and had no reason to vary it.
+/// A ready sample buffer at `presentationSeconds` lasting `durationSeconds`, on
+/// a timescale that holds both exactly.
 private func makeTimedSampleBuffer(
     presentationSeconds: Double,
     durationSeconds: Double

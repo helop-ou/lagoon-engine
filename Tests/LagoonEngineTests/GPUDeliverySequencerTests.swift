@@ -2,9 +2,8 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// The GPU output stage delivers frames from Metal's completion
-/// threads, which promise no order, into a renderer that needs decode
-/// order. The sequencer is the whole guarantee, so it is pinned here.
+/// Metal completion threads promise no order, but the renderer needs decode
+/// order. The sequencer is the whole guarantee.
 struct GPUDeliverySequencerTests {
     @Test func completionsAreDeliveredInReservationOrderWhateverOrderTheyArrive() {
         let sequencer = GPUDeliverySequencer(capacity: 3)
@@ -67,10 +66,9 @@ struct GPUDeliverySequencerTests {
         #expect(sequencer.pendingCount == 0)
     }
 
-    // The ordering has to be the sequencer's own guarantee. Production
-    // completions happen to reach it through a serial queue, which would hide
-    // a sequencer that only orders what one thread hands it, so this drives it
-    // from many threads at once with nothing serial in front.
+    // Production completions arrive through a serial queue, which would hide a
+    // sequencer that only orders one thread's input, so this drives it from
+    // many threads at once.
     @Test func concurrentCompletionsAreStillDeliveredInOrderAndOneAtATime() {
         let count = 200
         let sequencer = GPUDeliverySequencer(capacity: count)
@@ -98,8 +96,7 @@ struct GPUDeliverySequencerTests {
         /// The most bodies ever inside at once. Anything above one is the race.
         var peakOverlap: Int { lock.withLock { peak } }
         func append(_ value: UInt64) { lock.withLock { storage.append(value) } }
-        /// Appends and then lingers, so a body that runs alongside this one is
-        /// wide enough to be caught rather than a matter of timing luck.
+        /// Appends and then lingers, so an overlapping body is caught reliably.
         func run(_ value: UInt64) {
             lock.withLock {
                 storage.append(value)

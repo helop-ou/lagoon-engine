@@ -2,15 +2,11 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// `HEVCNALUnitRewriter` replaced the strip-only `HEVCEnhancementLayerFilter`:
-/// it still knows how to drop the Dolby Vision profile 7
-/// enhancement layer (unspec-63) and RPU (unspec-62) wholesale, but it can
-/// also walk a length-prefixed access unit applying an arbitrary per-NAL
-/// transform — the primitive the P7→8.1 RPU rewrite is built on. These tests
-/// are what keeps that honest: only the NALs a transform touches change,
-/// every kept byte survives verbatim, and anything that doesn't parse (or
-/// can't be re-expressed within the prefix width it was given) passes
-/// through untouched or is dropped rather than mangled.
+/// `HEVCNALUnitRewriter` drops the Dolby Vision profile 7 enhancement layer
+/// (unspec-63) and RPU (unspec-62), and applies per-NAL transforms for the P7
+/// to 8.1 rewrite. Only NALs a transform touches change, kept bytes survive
+/// verbatim, and anything unparseable or too large for its prefix passes
+/// through or is dropped, never mangled.
 struct HEVCNALUnitRewriterTests {
     /// One length-prefixed NAL unit: 4-byte (or shorter) big-endian length,
     /// then the two HEVC header bytes, then filler.
@@ -26,9 +22,8 @@ struct HEVCNALUnitRewriterTests {
         return data
     }
 
-    /// A length-prefixed NAL unit built from already-encoded unit bytes
-    /// (header + payload, no prefix of its own) — used to predict what
-    /// `rewrite` writes for a `.replace(_:)` result.
+    /// A length-prefixed NAL from already-encoded unit bytes, to predict what
+    /// `rewrite` writes for `.replace(_:)`.
     private func prefixed(_ unit: Data, lengthSize: Int = 4) -> Data {
         var data = Data()
         for shift in stride(from: (lengthSize - 1) * 8, through: 0, by: -8) {
@@ -44,8 +39,8 @@ struct HEVCNALUnitRewriterTests {
         }
     }
 
-    /// The realistic access unit: parameter sets, SEI, a VCL slice, and
-    /// the DoVi RPU (62) + EL (63) interleaved the way P7 remuxes do.
+    /// A realistic access unit: parameter sets, SEI, a slice, and RPU (62) + EL
+    /// (63) interleaved as P7 remuxes do.
     @Test func stripsOnlyEnhancementLayerAndRPU() {
         let kept = nal(type: 32, payloadBytes: 4) + nal(type: 33, payloadBytes: 6)
             + nal(type: 39, payloadBytes: 10) + nal(type: 1, payloadBytes: 500, filler: 0xCD)
@@ -62,9 +57,8 @@ struct HEVCNALUnitRewriterTests {
     }
 
     @Test func entirePayloadStrippableLeavesEmptyData() {
-        // Degenerate but well-formed: an AU of nothing but EL. The empty
-        // result is the caller's cue to keep behavior sane (the factory
-        // rejects zero-size payloads rather than enqueue an empty sample).
+        // An AU of only EL. The empty result is fine: the factory rejects
+        // zero-size payloads.
         let payload = nal(type: 63, payloadBytes: 10)
         #expect(strip(payload) == Data())
     }
@@ -107,18 +101,16 @@ struct HEVCNALUnitRewriterTests {
 
     // MARK: - rewrite(payload:lengthSize:transform:)
 
-    /// The primitive the RPU rewrite is built on: a transform can replace
-    /// one unit while everything around it survives untouched, and the
-    /// replaced unit gets a length prefix computed from its *new* size.
+    /// A transform replaces one unit, the rest survive, and the replacement's
+    /// length prefix is computed from its new size.
     @Test func rewriteReplacesOneUnitAndKeepsTheRestWithFreshLengthPrefixes() {
         let before = nal(type: 32, payloadBytes: 4)
         let target = nal(type: 62, payloadBytes: 20)
         let after = nal(type: 1, payloadBytes: 500, filler: 0xCD)
         let payload = before + target + after
 
-        // Deliberately a different length than the unit it replaces, so a
-        // stale length prefix (copied rather than recomputed) would be
-        // caught by this assertion.
+        // A different length from the original, so a copied prefix would be
+        // caught.
         let replacement = Data([0x7C, 0x01, 0x11, 0x22, 0x33])
 
         let result = payload.withUnsafeBytes { bytes in
@@ -139,10 +131,8 @@ struct HEVCNALUnitRewriterTests {
         #expect(result == nil)
     }
 
-    /// A 1-byte length prefix can express at most 255. A transform handing
-    /// back more than that for one unit can't be written without lying
-    /// about the unit's length, so the rewrite drops the unit instead of
-    /// truncating or overflowing the prefix.
+    /// A 1-byte prefix holds at most 255, so a larger replacement is dropped
+    /// rather than truncated or overflowed.
     @Test func rewriteTreatsAReplacementTooLargeForThePrefixAsADrop() {
         let kept = nal(type: 32, payloadBytes: 4, lengthSize: 1)
         let target = nal(type: 62, payloadBytes: 10, lengthSize: 1)
@@ -176,10 +166,9 @@ struct HEVCNALUnitRewriterTests {
         return data
     }
 
-    /// The exact 23-byte record from the file that found this: an hvcC whose
-    /// header is entirely valid and which declares no parameter sets at all.
-    /// The decoder cannot be configured from it, and nothing says so until
-    /// VTDecompressionSessionCreate refuses.
+    /// The exact 23-byte record from a real file: a valid header declaring no
+    /// parameter sets. Nothing fails until VTDecompressionSessionCreate
+    /// refuses.
     @Test func anEmptyParameterSetListIsRecognised() {
         let empty = Data([
             0x01, 0x02, 0x20, 0x00, 0x00, 0x00, 0x90, 0x00,
@@ -188,8 +177,7 @@ struct HEVCNALUnitRewriterTests {
         ])
         #expect(empty.count == 23)
         #expect(SampleBufferFactory.hevcExtradataCarriesParameterSets(empty) == false)
-        // The length prefix is still described correctly, which is what the
-        // harvest relies on to walk the packets.
+        // The length prefix is still read correctly, which the harvest needs.
         #expect(HEVCNALUnitRewriter.nalLengthSize(hvcc: empty) == 4)
     }
 
@@ -209,8 +197,8 @@ struct HEVCNALUnitRewriterTests {
         ))
     }
 
-    /// A record that lies about its own lengths is treated as carrying
-    /// nothing rather than read past its end.
+    /// A record that lies about its lengths carries nothing; it is never
+    /// overread.
     @Test func aTruncatedRecordIsRejectedRatherThanOverread() {
         var truncated = hvcC(arrays: [(32, 24), (33, 58), (34, 7)])
         truncated = truncated.prefix(30)

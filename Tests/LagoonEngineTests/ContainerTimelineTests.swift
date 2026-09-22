@@ -6,9 +6,8 @@ import Testing
 @Suite("Container timelines")
 struct ContainerTimelineTests {
     @Test func aContainerThatStartsAtZeroIsLeftExactlyAsItWas() {
-        // Every source the engine had before disc images: MP4, Matroska, and
-        // Jellyfin's fMP4 remux and transcode. The offset has to be zero for
-        // these, so their arithmetic is untouched.
+        // MP4, Matroska, fMP4 remux and transcode: the offset must be zero,
+        // leaving their arithmetic untouched.
         #expect(ContainerTimeline.startOffset(
             startTime: 0,
             timeBase: AVRational(num: 1, den: 90_000)
@@ -30,12 +29,10 @@ struct ContainerTimelineTests {
     }
 
     @Test func aBlurayStartsSeventyMinutesIntoItsOwnClock() {
-        // WALL·E's disc, measured: the format reports 4198.333333 s and the
-        // streams' first timestamp is 377850000 at 90 kHz. Reproducing that
-        // number exactly is the whole job, because it is what gets subtracted
-        // from every packet: without it the film opens reading 1:10:00 and
-        // every seek lands 70 minutes before the first frame, which the
-        // demuxer clamps to the start.
+        // Measured on WALL·E's disc: the format reports 4198.333333 s and the
+        // first timestamp is 377850000 at 90 kHz. This is subtracted from every
+        // packet; without it the film opens at 1:10:00 and every seek lands
+        // before the first frame.
         #expect(ContainerTimeline.startOffset(
             startTime: 4_198_333_333,
             timeBase: AVRational(num: 1, den: 90_000)
@@ -43,8 +40,8 @@ struct ContainerTimelineTests {
     }
 
     @Test func theOffsetIsExpressedInTheStreamsOwnTimeBase() {
-        // Streams in one container can count at different rates, so the
-        // format's origin has to be converted per stream rather than shared.
+        // Streams can count at different rates, so the origin converts per
+        // stream.
         let startTime: Int64 = 4_198_333_333
         #expect(ContainerTimeline.startOffset(
             startTime: startTime,

@@ -3,31 +3,17 @@ import Libavcodec
 import Testing
 @testable import LagoonEngine
 
-/// Renders `EngineCodecSupport` as the published codec table, and pins that
-/// table against the code that actually routes a stream.
-///
-/// Generated rather than written by hand, for the reason a hand-written list
-/// always ends up wrong: it drifts from the switches the moment somebody adds
-/// a codec to one of them. Here the drift is a test failure instead.
-///
+/// Renders `EngineCodecSupport` as the published codec table and pins it to the
+/// code that routes streams, so drift fails a test.
 /// `scripts/generate-codec-support.sh` runs this and copies the result into
-/// `docs/codec-support.md`; its `--check` mode fails instead of copying.
+/// `docs/codec-support.md`; `--check` fails instead of copying.
 @Suite("Codec support document")
 struct CodecSupportDocTests {
     @Test func writesTheCodecSupportDocument() {
-        // Printed rather than written to a file: a package test target runs
-        // in a generic runner whose container is cleared once the run ends,
-        // so a path reported from inside it is gone by the time a script
-        // looks.
-        //
-        // Every line carries its own pair of markers, rather than the whole
-        // document sitting between one begin/end pair. The test runner writes
-        // its own progress to the same stream and its writes land adjacent to
-        // these, inside the line rather than on their own: an end marker came
-        // back as `CODEC_DOC_END✔ Test ...`, which an anchored pattern stops
-        // matching, and the extraction then ran on past it and swallowed the
-        // log. Per-line markers make that noise something the script can trim
-        // off either end instead of something that loses the document.
+        // Printed, not written to a file: the runner's container is cleared
+        // when the run ends. Every line has its own markers because runner
+        // progress lands inside printed lines; the script trims that noise off
+        // either end.
         for line in CodecSupportDocument.render().split(
             separator: "\n", omittingEmptySubsequences: false
         ) {
@@ -36,9 +22,8 @@ struct CodecSupportDocTests {
     }
 
     @Test func theTableAgreesWithTheCompressedPath() {
-        // Every codec the table calls VideoToolbox must be one the demuxer
-        // actually sends there, and nothing the table calls software-only
-        // may be.
+        // Every codec the table calls VideoToolbox must be routed there, and
+        // nothing called software-only may be.
         let capabilities = PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: true)
         for entry in EngineCodecSupport.video {
             let compressed = FFmpegDemuxer.usesCompressedVideoPath(
@@ -67,9 +52,8 @@ struct CodecSupportDocTests {
     }
 
     @Test func nothingTheEngineDecodesIsMissingFromTheTable() {
-        // The other direction: a codec added to either router without a table
-        // entry would otherwise publish a document that understates the
-        // engine, which is the drift that is easy to miss.
+        // The other direction: a routed codec with no table entry would
+        // understate the engine.
         let documented = Set(EngineCodecSupport.video.map(\.id.rawValue))
         let everyCodec = [
             AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_AV1, AV_CODEC_ID_VP9,

@@ -3,11 +3,8 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// Compiles the usage example from README.md.
-///
-/// Nothing here runs — there is no media and no display. The point is that
-/// the README stops compiling if the API it shows changes, so the first
-/// thing a newcomer reads cannot quietly go stale.
+/// Compiles the usage example from README.md. Nothing runs; the README stops
+/// compiling if the API it shows changes.
 struct READMEUsageTests {
     @MainActor
     private func readmeExample(url: URL, serverURL: URL, token: String) {

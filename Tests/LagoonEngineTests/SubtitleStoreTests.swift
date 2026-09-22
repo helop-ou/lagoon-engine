@@ -9,8 +9,8 @@ struct SubtitleStoreTests {
         let store = SubtitleStore()
         let releases = BitmapReleases()
 
-        // A whole stream of distinct providers detects retained image
-        // backing, which Instruments' unreachable-leak check cannot find.
+        // Many distinct providers expose retained image backing, which
+        // Instruments' leak check cannot find.
         for index in 0..<250 {
             let start = Double(index * 2)
             store.add(try bitmapCue(start: start, end: start + 1, releases: releases))
@@ -59,8 +59,8 @@ struct SubtitleStoreTests {
         #expect(store.active(at: 100).images.count == 1)
         #expect(releases.count == 0)
 
-        // A clear can be decoded ahead of the clock; it must close the cue
-        // at its media timestamp, not remove a still-visible image early.
+        // A clear decoded ahead of the clock closes the cue at its media time,
+        // not early.
         store.closeOpenCues(at: 105)
         #expect(store.active(at: 104).images.count == 1)
         #expect(store.active(at: 105).images.isEmpty)
@@ -82,8 +82,7 @@ struct SubtitleStoreTests {
         store.add(cue("first pass", start: 1, end: 3))
         #expect(texts(store, at: 100).isEmpty)
 
-        // A late decoder result may arrive between display ticks. It is
-        // removed on the next refresh instead of accumulating in history.
+        // A late decoder result between ticks is removed on the next refresh.
         store.add(cue("late", start: 20, end: 21))
         #expect(texts(store, at: 100).isEmpty)
         #expect(store.count == 0)
@@ -190,8 +189,8 @@ struct SubtitleStoreTests {
     }
 }
 
-/// CoreGraphics may release a provider on any thread. The lock also lets
-/// the lifetime assertions observe its callback without a test data race.
+/// CoreGraphics may release a provider on any thread; the lock keeps the
+/// assertions race-free.
 private nonisolated final class BitmapReleases: @unchecked Sendable {
     private let lock = NSLock()
     private var releases = 0

@@ -2,9 +2,8 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// A plane laid out the way a decoder hands one over: `height` rows of
-/// `width` bytes, at some stride wider than the row itself, so a deinterlacer
-/// that ignores the stride is caught here rather than on a television.
+/// A plane as a decoder hands it over: `height` rows of `width` bytes at a
+/// wider stride, so ignoring the stride fails here.
 private struct TestPlane {
     let width: Int
     let height: Int
@@ -42,11 +41,9 @@ private struct TestPlane {
 @Suite("Deinterlacing")
 struct DeinterlacerTests {
     @Test func aStillPictureComesOutUntouched() {
-        // Both fields agree, so nothing is moving and every original sample
-        // is detail no prediction could put back. Weaving is the right answer
-        // and full vertical resolution survives. No wrap-around in the
-        // pattern: that would be a discontinuity the motion test is right to
-        // refuse to weave across.
+        // Both fields agree, so nothing moves and weaving keeps full
+        // resolution. No wrap-around in the pattern, which the motion test
+        // would rightly refuse to weave across.
         var plane = TestPlane(width: 32, height: 16) { row, column in
             UInt8(100 + row * 2 + column % 3)
         }
@@ -56,8 +53,8 @@ struct DeinterlacerTests {
     }
 
     @Test func combedRowsAreReplacedRatherThanWoven() {
-        // The two fields disagree completely, which is what motion looks like
-        // in an interlaced frame. The dropped field's rows have to go.
+        // The fields disagree completely, as motion does, so the dropped
+        // field's rows must go.
         var plane = TestPlane(width: 32, height: 16) { row, _ in
             row % 2 == 0 ? 20 : 220
         }
@@ -67,8 +64,8 @@ struct DeinterlacerTests {
                 if row % 2 == 0 {
                     #expect(plane[row, column] == 20, "the kept field must survive")
                 } else {
-                    // Predicted from the rows either side, both of which are
-                    // the kept field's 20.
+                    // Predicted from the rows either side, both the kept
+                    // field's 20.
                     #expect(plane[row, column] == 20, "row \(row) still carries the other field")
                 }
             }
@@ -76,8 +73,7 @@ struct DeinterlacerTests {
     }
 
     @Test func theKeptFieldFollowsTheFieldOrder() {
-        // Bottom field first keeps the odd rows, and the even ones are the
-        // ones predicted away.
+        // Bottom field first keeps the odd rows and predicts the even ones.
         var plane = TestPlane(width: 16, height: 8) { row, _ in
             row % 2 == 0 ? 0 : 255
         }
@@ -88,11 +84,9 @@ struct DeinterlacerTests {
     }
 
     @Test func aPredictionFollowsTheEdgeItSitsOn() {
-        // A diagonal edge: everything left of the line is dark, right of it
-        // bright, and the boundary moves one column per row. Interpolating
-        // straight up and down across such an edge lands halfway between the
-        // two sides, which is the staircase artefact this avoids; following
-        // the diagonal lands on the edge's own values.
+        // A diagonal edge moving one column per row. Vertical interpolation
+        // would land halfway between the sides (the staircase artefact);
+        // following the diagonal lands on the edge's own values.
         var plane = TestPlane(width: 40, height: 12) { row, column in
             column > row + 8 ? 240 : 16
         }
@@ -103,16 +97,15 @@ struct DeinterlacerTests {
             }
         }
         plane.deinterlace(keepingTopField: true)
-        // On a predicted row, the pixel well inside each side of the edge
-        // takes that side's value rather than an average of the two.
+        // Well inside each side, a predicted pixel takes that side's value, not
+        // an average.
         #expect(plane[5, 2] == 16)
         #expect(plane[5, 38] == 240)
     }
 
     @Test func interleavedChromaNeverMixesItsComponents() {
-        // NV12 chroma is U,V,U,V along a row. A prediction that stepped one
-        // byte sideways would average a U sample with a V one and tint the
-        // picture, so it steps two.
+        // NV12 chroma is U,V,U,V. A one-byte sideways step would mix U with V
+        // and tint the picture, so it steps two.
         var plane = TestPlane(width: 32, height: 8) { row, column in
             if row % 2 == 0 {
                 return column % 2 == 0 ? 40 : 200

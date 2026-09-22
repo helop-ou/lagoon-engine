@@ -2,11 +2,9 @@ import CoreMedia
 import Testing
 @testable import LagoonEngine
 
-/// The demuxer parks compressed video read past the decoded-frame
-/// limit here so it can keep reading on to a fragment's audio instead of
-/// stalling behind its video block. The queue's FIFO order, its count/byte
-/// bookkeeping, and the peak the HUD and regression probe rely on are the
-/// whole contract, so they are pinned here.
+/// The demuxer parks compressed video read past the decoded-frame limit here,
+/// so it can read on to a fragment's audio. FIFO order, count/byte bookkeeping
+/// and the peak the HUD and regression probe read are the contract.
 struct VideoIntakeQueueTests {
     @Test func popsInAppendOrderThenReportsEmpty() throws {
         let queue = VideoIntakeQueue()
@@ -68,9 +66,8 @@ struct VideoIntakeQueueTests {
     }
 }
 
-/// A ready, compressed H.264 sample buffer carrying `byteCount` bytes of
-/// filler payload, with a valid 16x16 format description and timing —
-/// enough for `VideoIntakeItem.byteCount` to have something real to measure.
+/// A ready compressed H.264 sample buffer with `byteCount` bytes of filler and
+/// a valid 16x16 format description.
 private func makeSampleBuffer(byteCount: Int) -> CMSampleBuffer? {
     var formatDescription: CMFormatDescription?
     guard CMVideoFormatDescriptionCreate(

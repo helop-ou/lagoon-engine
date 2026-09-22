@@ -2,11 +2,8 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// One length-prefixed access unit made of NALs of the given types.
-///
-/// Only the header byte of each unit carries the type, so the payload bytes
-/// behind it are arbitrary — what is being pinned down is the walk and the
-/// classification, not a decoder.
+/// One length-prefixed access unit of NALs of the given types. Only the header
+/// byte carries the type; the payload is arbitrary.
 private func accessUnit(
     types: [UInt8],
     codec: VideoRandomAccessPoint.Codec,
@@ -42,13 +39,11 @@ private func isStartPoint(
 
 @Suite("Video random-access points")
 struct VideoRandomAccessPointTests {
-    /// The access unit `avformat_seek_file` landed on in Exit 8 (2025),
-    /// h264 High 1080p 23.976 in Matroska, as the demuxer trace printed it:
-    /// `key=1 size=324156 nals=7,8,6,6,6,1,1,1,1`. The container flags it a
-    /// keyframe, it carries its own SPS and PPS and a recovery-point SEI —
-    /// and every slice in it is type 1, a coded slice of a *non-IDR*
-    /// picture. That is an open GOP, and the two packets behind it in decode
-    /// order were presented before it.
+    /// The access unit `avformat_seek_file` landed on in Exit 8 (h264 High
+    /// 1080p 23.976, Matroska): `key=1 size=324156 nals=7,8,6,6,6,1,1,1,1`.
+    /// Flagged a keyframe with SPS, PPS and a recovery-point SEI, but every
+    /// slice is non-IDR type 1: an open GOP whose next two packets in decode
+    /// order present before it.
     @Test func theOpenGOPPictureExit8SeeksToIsNotADecoderStartPoint() {
         let unit = accessUnit(types: [7, 8, 6, 6, 6, 1, 1, 1, 1], codec: .h264)
         let types = unit.withUnsafeBytes {
@@ -59,8 +54,7 @@ struct VideoRandomAccessPointTests {
     }
 
     @Test func anIDRIsADecoderStartPoint() {
-        // What the same seek produces on the HLS transcode rung: one NAL,
-        // type 5.
+        // The same seek on the HLS transcode rung: one NAL, type 5.
         #expect(isStartPoint(accessUnit(types: [5], codec: .h264), codec: .h264) == true)
         // And the ordinary in-band-parameter-set shape.
         #expect(
@@ -69,8 +63,8 @@ struct VideoRandomAccessPointTests {
     }
 
     @Test func parameterSetsAloneDoNotMakeAStartPoint() {
-        // The trap this exists to avoid: SPS + PPS present, so nothing is
-        // *missing*, and the picture still cannot start a decoder.
+        // The trap: SPS and PPS present, nothing missing, and still not a start
+        // point.
         #expect(
             isStartPoint(accessUnit(types: [7, 8, 1], codec: .h264), codec: .h264) == false
         )
@@ -83,8 +77,7 @@ struct VideoRandomAccessPointTests {
                 "NAL type \(type) is an IRAP"
             )
         }
-        // Trailing pictures, leading pictures and the reserved IRAP types
-        // are not assumed decodable.
+        // Trailing, leading and reserved IRAP types are not assumed decodable.
         for type in [UInt8(0), 1, 8, 9, 15, 22, 23] {
             #expect(
                 isStartPoint(accessUnit(types: [type], codec: .hevc), codec: .hevc) == false,
@@ -98,9 +91,8 @@ struct VideoRandomAccessPointTests {
     }
 
     @Test func theTypeIsReadOutOfTheRightBitsForEachCodec() {
-        // 0x65 is an H.264 IDR slice with nal_ref_idc 3; the same byte read
-        // as HEVC is type 50, which is not an IRAP. Reading it the wrong way
-        // round is the whole failure mode.
+        // 0x65 is an H.264 IDR slice (nal_ref_idc 3); read as HEVC it is type
+        // 50, not an IRAP. Mixing them up is the failure mode.
         #expect(VideoRandomAccessPoint.Codec.h264.nalType(0x65) == 5)
         #expect(VideoRandomAccessPoint.Codec.hevc.nalType(0x65) == 50)
         #expect(VideoRandomAccessPoint.Codec.hevc.nalType(0x26) == 19)
@@ -116,9 +108,8 @@ struct VideoRandomAccessPointTests {
         }
     }
 
-    /// nil is "cannot tell", and every caller treats that as "leave the
-    /// packet alone" — a payload this cannot read must never be classified
-    /// as droppable.
+    /// nil is "cannot tell", which every caller treats as "leave the packet
+    /// alone"; an unreadable payload is never droppable.
     @Test func anUnreadablePayloadIsNotClassified() {
         // A length prefix that runs past the end of the payload.
         let truncated = Data([0x00, 0x00, 0x10, 0x00, 0x65, 0xAA])
@@ -145,8 +136,8 @@ struct VideoRandomAccessPointTests {
                 codec: .h264
             ) == 1
         )
-        // hvcC puts the same field at byte 21, which is what the existing
-        // rewriter reads — the two must agree.
+        // hvcC keeps the field at byte 21, as the rewriter reads it; the two
+        // must agree.
         var hvcC = Data(repeating: 0, count: 23)
         hvcC[0] = 0x01
         hvcC[21] = 0xF3

@@ -27,12 +27,11 @@ struct PlaybackCacheTests {
     }
 
     @Test func directFilesUseCachedTransportWhileManifestsStayNative() {
-        // Nothing installed: a host that says nothing gets the safe answer.
+        // Nothing installed gets the safe answer.
         #expect(PlaybackBufferPolicy.customIOEnabled(for: .stableFile, tuning: EngineTuning()))
         #expect(!PlaybackBufferPolicy.customIOEnabled(for: .segmentedManifest, tuning: EngineTuning()))
 
-        // A manifest is cached only when a host asks for it, because the
-        // manifest is mutable and the cache assumes one stable resource.
+        // A mutable manifest is cached only when a host asks.
         var tuning = EngineTuning()
         tuning.cachesSegmentedManifests = true
         #expect(PlaybackBufferPolicy.customIOEnabled(for: .segmentedManifest, tuning: tuning))
@@ -47,9 +46,8 @@ struct PlaybackCacheTests {
         // A complete ordinary file plays straight from disk.
         #expect(!PlaybackBufferPolicy.engineUsesCacheSession(
             playsFromCompleteFile: true, disc: false, delivery: .stableFile, tuning: tuning))
-        // A complete disc image still needs the session: the UDF reader
-        // mounts it through the session's byte source, and without one the
-        // raw image reached libavformat and fell to a server remux.
+        // A complete disc image still needs the session: the UDF reader mounts
+        // it through the session's byte source.
         #expect(PlaybackBufferPolicy.engineUsesCacheSession(
             playsFromCompleteFile: true, disc: true, delivery: .stableFile, tuning: tuning))
         // A manifest never gets the session by default, disc or not.
@@ -58,24 +56,21 @@ struct PlaybackCacheTests {
     }
 
     @Test func aHostIsToldWhetherBytesWillBeCachedBeforeAnEngineCanAnswer() {
-        // An incident report records how an attempt is delivered before the
-        // attempt opens, which is the whole reason this is answerable
-        // without an engine. A file on disk is already local — a finished
-        // cache file or a download — and counts as cached either way.
+        // Answerable before an engine opens, for incident reports. A file on
+        // disk is already local and counts as cached.
         #expect(SampleBufferPlayerEngine.cachesPlayback(
             url: URL(fileURLWithPath: "/tmp/episode.mkv"), delivery: .stableFile))
         #expect(SampleBufferPlayerEngine.cachesPlayback(
             url: URL(string: "https://media.test/episode.mkv")!, delivery: .stableFile))
-        // A manifest stays on the native transport under the release policy,
-        // so nothing is cached in front of it.
+        // A manifest is not cached under the default policy.
         #expect(!SampleBufferPlayerEngine.cachesPlayback(
             url: URL(string: "https://media.test/master.m3u8")!, delivery: .segmentedManifest))
     }
 
     @MainActor
     @Test func unnamedMediaPlaysWithoutOpeningAScope() {
-        // No item ID is a host saying it has nothing to file these bytes
-        // under, so there is nothing to match a successor against either.
+        // No item ID: nothing to file the bytes under or match a successor
+        // against.
         let engine = SampleBufferPlayerEngine()
         defer { engine.shutdown() }
         engine.prepare(
@@ -185,8 +180,8 @@ struct PlaybackCacheTests {
         )
         defer { scope.cancelAndRemove() }
 
-        // Establish the ordinary byte-zero prefix, then model FFmpeg's real
-        // high-priority range read after a seek to the middle of the file.
+        // Cache the byte-zero prefix, then model FFmpeg's high-priority read
+        // after a seek to the middle.
         #expect((await scope.prefetchNextChunk()).advanced)
         #expect(try scope.read(offset: 128, length: 8) == payload.subdata(in: 128..<136))
         #expect(loader.requestedRanges == [
@@ -194,8 +189,8 @@ struct PlaybackCacheTests {
             PlaybackByteRange(128, 160),
         ])
 
-        // Proactive traffic must continue after the seek's cached island,
-        // not resume at byte 32. Both islands remain visible to the UI.
+        // Fill continues after the seek's island, not at byte 32, and both
+        // islands stay visible.
         #expect((await scope.prefetchNextChunk()).advanced)
         #expect(loader.requestedRanges.last == PlaybackByteRange(160, 192))
         #expect(scope.metrics.cachedByteRanges == [
@@ -208,8 +203,8 @@ struct PlaybackCacheTests {
         ])
         #expect(scope.metrics.playheadPrefetchCount == 1)
 
-        // Finish playhead-to-EOF first, then verify the scheduler wraps back
-        // to the earliest hole and can still promote a complete sparse file.
+        // Finish playhead-to-EOF first, then wrap back to the earliest hole and
+        // still promote a complete file.
         #expect((await scope.prefetchNextChunk()).advanced)
         #expect(loader.requestedRanges.last == PlaybackByteRange(192, 224))
         #expect((await scope.prefetchNextChunk()).advanced)
@@ -248,7 +243,7 @@ struct PlaybackCacheTests {
         #expect(ranges[1].lowerFraction < 0.5)
         #expect(ranges[1].upperFraction > 0.5)
         #expect(abs(ranges[1].upperFraction - 0.8) < 0.000_001)
-        // The legacy prefix metric remains byte-based for diagnostics.
+        // The prefix metric stays byte-based.
         #expect(metrics.bufferedFraction == 0.1)
     }
 
@@ -295,10 +290,9 @@ struct PlaybackCacheTests {
         )
         defer { scope.cancelAndRemove() }
 
-        // The first read may still buffer a whole request ahead. The second
-        // cannot store anything — the cap is reached and these byte ranges are
-        // too small for the filesystem to punch back out — so it must ask for
-        // the 16 bytes it needs rather than a full request it would discard.
+        // The first read may buffer a whole request ahead. The second cannot
+        // store anything (cap reached, ranges too small to punch), so it asks
+        // for only the 16 bytes it needs.
         #expect(try scope.read(offset: 0, length: 16).count == 16)
         #expect(try scope.read(offset: 128, length: 16).count == 16)
         #expect(scope.metrics.cachedBytes == 32)
@@ -356,16 +350,15 @@ struct PlaybackCacheTests {
         try PlaybackCacheTests.play(scope, payload: payload, from: 0, to: 12 * requestSize, step: requestSize)
 
         let metrics = scope.metrics
-        // Playing three times the cap must not cost more than one request per
-        // read: the window gives bytes back instead of refusing new ones.
+        // Three times the cap costs one request per read: the window gives
+        // bytes back instead of refusing new ones.
         #expect(loader.requestCount == 12)
         #expect(loader.requestedRanges.allSatisfy { $0.count == requestSize })
         #expect(metrics.evictionCount > 0)
         #expect(metrics.cachedBytes <= byteLimit)
         #expect(metrics.cachedByteRanges.first?.lowerBound ?? 0 > 0)
 
-        // What the window kept is the recent past, so playback that pauses and
-        // resumes does not pay for the same bytes twice.
+        // The window keeps the recent past, so pause and resume do not refetch.
         let hits = metrics.cacheHitBytes
         _ = try scope.read(offset: 11 * requestSize, length: Int(requestSize))
         #expect(scope.metrics.cacheHitBytes == hits + requestSize)
@@ -391,11 +384,8 @@ struct PlaybackCacheTests {
         defer { scope.cancelAndRemove() }
         #expect(scope.metrics.isWindowed)
 
-        // The demuxer reads the opening chunk and the viewer pauses, so the
-        // playhead stops one request in — nearer the start than the reserve
-        // behind it. That reserve has nothing to hold, and read-ahead must
-        // get it: the window used to hang off the front of the file and leave
-        // that much of the cap unspent.
+        // Paused one request in, nearer the start than the behind-reserve. The
+        // reserve has nothing to hold, so read-ahead gets that capacity.
         _ = try scope.read(offset: 0, length: Int(requestSize))
         var chunks = 0
         while chunks < 64, (await scope.prefetchNextChunk()).advanced { chunks += 1 }
@@ -404,8 +394,8 @@ struct PlaybackCacheTests {
         #expect(filled.cachedBytes == byteLimit)
         #expect(filled.evictionCount == 0)
 
-        // Full, with nothing outside the window to give back: proactive fill
-        // has to stop rather than spend requests it cannot keep.
+        // Full, with nothing outside the window to give back: fill stops rather
+        // than spend requests it cannot keep.
         let requests = loader.requestCount
         let outcome = await scope.prefetchNextChunk()
         #expect(outcome == .exhausted)
@@ -434,13 +424,13 @@ struct PlaybackCacheTests {
         #expect(scope.metrics.cachedByteRanges.first?.lowerBound ?? 0 > 0)
         let evictionsBeforeSeek = scope.metrics.evictionCount
 
-        // Back to the start. Those blocks were deallocated, so this has to come
-        // back from the network byte-exact — a hole must never read as zeros.
+        // Those blocks were deallocated, so this comes from the network
+        // byte-exact; a hole never reads as zeros.
         #expect(try scope.read(offset: 0, length: Int(requestSize))
             == payload.subdata(in: 0..<Int(requestSize)))
 
-        // Playing on from the new position re-centres the window; the island
-        // left far ahead is what pays for the room now.
+        // Playing on re-centres the window; the island far ahead pays for the
+        // room.
         try PlaybackCacheTests.play(scope, payload: payload, from: requestSize, to: 5 * requestSize, step: requestSize)
 
         let metrics = scope.metrics
@@ -510,7 +500,7 @@ struct PlaybackCacheTests {
             )
             Issue.record("A whole-body response was accepted as seekable range data")
         } catch PlaybackCacheError.rangeUnsupported {
-            // Expected: the engine can now reopen through native HTTP.
+            // Expected: rejected before the body is buffered.
         }
         #expect(PlaybackCacheURLProtocol.rangeHeaders == ["bytes=0-15"])
     }
@@ -829,8 +819,8 @@ struct PlaybackCacheTests {
         #expect(bytes == 32)
         #expect(scope.metrics.contiguousCachedBytes == 32)
 
-        // Fill's momentum survives the failure: it resumes without any seek
-        // or new session and still reaches a complete file.
+        // Fill resumes after the failure without a seek or new session and
+        // still completes the file.
         #expect((await scope.prefetchNextChunk()).advanced)
         #expect((await scope.prefetchNextChunk()).advanced)
         #expect(scope.metrics.bufferedFraction == 1)
@@ -916,9 +906,8 @@ struct PlaybackCacheTests {
         let prefetch = Task { await scope.prefetchNextChunk() }
         try await Self.eventually { loader.requestCount == 1 }
 
-        // Never release before the read comes back: the shared-fetch wait
-        // must time out and fall through to its own request rather than
-        // hang behind a prefetch that never lands.
+        // Never released: the shared-fetch wait must time out and fall through
+        // to its own request.
         let readResult = try await Self.blockingRead(
             scope, offset: 0, length: 16, priority: URLSessionTask.highPriority
         )
@@ -929,8 +918,7 @@ struct PlaybackCacheTests {
         loader.release()
         _ = await prefetch.value
 
-        // The prefetch's bytes were already cached by the foreground's own
-        // request by the time it landed.
+        // The foreground's own request had already cached the prefetch's bytes.
         #expect(scope.metrics.duplicateNetworkBytes > 0)
     }
 
@@ -986,13 +974,10 @@ struct PlaybackCacheTests {
         throw PlaybackCacheError.cancelled
     }
 
-    /// Runs a blocking `PlaybackCacheScope.read` on a dedicated thread rather
-    /// than the cooperative pool. `read` can block for real (an `NSCondition`
-    /// wait up to `sharedFetchWaitSeconds`) while promoting an in-flight
-    /// prefetch; parking that wait on the pool competes with the pool thread
-    /// the test itself needs to wake from `Task.sleep` and call `release()`,
-    /// which is what turned a same-run promotion into a false shared-fetch
-    /// timeout under load.
+    /// Runs a blocking `read` on a dedicated thread. `read` can wait on an
+    /// `NSCondition` for up to `sharedFetchWaitSeconds`; parking that on the
+    /// cooperative pool starves the thread the test needs to call `release()`,
+    /// which caused false shared-fetch timeouts under load.
     private static func blockingRead(
         _ scope: PlaybackCacheScope,
         offset: Int64,
@@ -1109,9 +1094,8 @@ private nonisolated final class PlaybackCacheLoaderStub: PlaybackRangeLoading, @
     }
 
     /// Makes the next `load` for exactly this range block outside the lock
-    /// until `release()` is called, so a test can land a foreground read
-    /// while the matching prefetch is still in flight. Consumed by
-    /// the first matching call; later calls for the same range are unaffected.
+    /// until `release()`, so a foreground read can land while the prefetch is
+    /// in flight. Only the first matching call blocks.
     func hold(range: PlaybackByteRange) {
         lock.lock()
         heldRange = range
@@ -1134,12 +1118,9 @@ private nonisolated final class PlaybackCacheLoaderStub: PlaybackRangeLoading, @
             throw PlaybackCacheError.cancelled
         }
         requests += 1
-        // Capture the semaphore without clearing the stored property: `hold`
-        // and `release` race with this call from another thread, and if
-        // `release` ran first (or `holdSemaphore` were cleared here before
-        // waiting) the signal would land on nobody and this wait would never
-        // return. Only the matched range is consumed, so a later `load` for
-        // the same range does not also block.
+        // Capture the semaphore without clearing it: `hold` and `release` race
+        // with this from another thread, and a signal sent before the wait must
+        // not be lost. Only the matched range is consumed.
         var waitSemaphore: DispatchSemaphore?
         if heldRange == range {
             heldRange = nil

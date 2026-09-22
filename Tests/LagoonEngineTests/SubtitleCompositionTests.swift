@@ -2,9 +2,8 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// Parsing a subtitle file into cues, and keeping independently authored
-/// compositions apart: ASS and SSA can place two speakers and a sign on
-/// screen at once, and flattening them into one cue loses the placement.
+/// Parsing subtitle files into cues, keeping separately authored compositions
+/// apart: flattening two speakers and a sign into one cue loses the placement.
 @Suite("Subtitle composition")
 struct SubtitleCompositionTests {
     @Test func remoteSubtitleFallbackAcceptsTextCuesAndRejectsOtherFiles() {

@@ -2,15 +2,11 @@ import CoreMedia
 import Testing
 @testable import LagoonEngine
 
-/// A renderer that has just been flushed starts on a random-access point or
-/// on nothing: hand it anything else and it answers
-/// `didFailToDecodeNotification`, which the delivery ladder reads as a
-/// verdict on the bitstream and pays for with a server-side transcode.
-///
-/// The sample that reaches it that way need not be the seek's landing. It
-/// can be the packet a read already in flight returned, delivered into the
-/// emptied queue before the demux loop noticed the seek. So the question is
-/// asked at the pump, of the sample itself.
+/// A flushed renderer starts on a random-access point or nothing. Anything else
+/// raises `didFailToDecodeNotification`, which the ladder reads as a bitstream
+/// verdict and pays for with a transcode. The offending sample may come from a
+/// read already in flight at the seek, so the check runs at the pump, on the
+/// sample itself.
 struct PlaybackRendererStartTests {
     @Test func aStaleSampleIsRefusedAsARenderersFirst() {
         #expect(
@@ -22,9 +18,8 @@ struct PlaybackRendererStartTests {
         )
     }
 
-    /// Including the open-GOP I picture the demuxer deliberately keeps: the
-    /// container calls it a keyframe, and the leading pictures that would
-    /// have broken it are dropped before they get here.
+    /// Including the open-GOP I picture the demuxer keeps: the container calls
+    /// it a keyframe, and its leading pictures are dropped earlier.
     @Test func aKeyframeStartsTheRenderer() {
         #expect(
             PlaybackRendererStartPolicy.admits(
@@ -35,10 +30,8 @@ struct PlaybackRendererStartTests {
         )
     }
 
-    /// Only the first sample is asked about. Once the renderer has started,
-    /// the P and B pictures behind the keyframe are exactly what it wants,
-    /// and stopping to inspect every one of them would be a per-frame cost
-    /// for a question that has already been answered.
+    /// Only the first sample is checked; after that the P and B pictures are
+    /// what the renderer wants, and a per-frame check would be wasted cost.
     @Test func everySampleAfterTheFirstIsAdmittedUnasked() {
         #expect(
             PlaybackRendererStartPolicy.admits(
@@ -49,10 +42,8 @@ struct PlaybackRendererStartTests {
         )
     }
 
-    /// A stream whose keyframes are never flagged must not lose its picture
-    /// altogether — the same escape the demuxer's keyframe search keeps.
-    /// Behaving exactly as it did before is the right answer where this
-    /// cannot tell.
+    /// A stream that never flags keyframes must not lose its picture; where
+    /// this cannot tell, behave as before.
     @Test func theSearchGivesUpRatherThanShowingNothing() {
         let limit = PlaybackRendererStartPolicy.startPointSearchLimit
         #expect(
@@ -83,15 +74,14 @@ struct PlaybackRendererStartTests {
         #expect(SampleBufferFactory.isSyncSample(buffer) == false)
     }
 
-    /// The factory writes `NotSync` only for a non-keyframe, so a keyframe
-    /// carries the attachment set false or not at all. Both are sync.
+    /// The factory writes `NotSync` only for non-keyframes, so false or absent
+    /// both mean sync.
     @Test func aNotSyncAttachmentSetFalseIsStillAStart() throws {
         let buffer = try #require(Self.sampleBuffer(notSync: false))
         #expect(SampleBufferFactory.isSyncSample(buffer))
     }
 
-    /// `nil` leaves the attachment off entirely, which is what a decoded
-    /// frame arrives with.
+    /// `nil` omits the attachment, as on a decoded frame.
     private static func sampleBuffer(notSync: Bool?) -> CMSampleBuffer? {
         var formatDescription: CMFormatDescription?
         guard CMVideoFormatDescriptionCreate(

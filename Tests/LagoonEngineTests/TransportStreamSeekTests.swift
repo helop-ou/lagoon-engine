@@ -5,18 +5,14 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// Opt-in check on a real progressive MPEG-TS transcode — the shape a
-/// download arrives in: `Videos/{id}/stream.ts`, H.264 High with
-/// AAC, no index and no segment boundaries.
+/// Opt-in check on a real progressive MPEG-TS transcode, the shape a download
+/// arrives in: `Videos/{id}/stream.ts`, H.264 High and AAC, no index. A seek
+/// that lands mid-GOP fails with `kVTVideoDecoderBadDataErr` (-8969) and drops
+/// a playable file to a server transcode.
 ///
-/// Resuming one at 24.8 s used to hand `AVSampleBufferVideoRenderer` the
-/// packet the container's binary search landed on, mid-GOP, which came back
-/// as `kVTVideoDecoderBadDataErr` (-8969) and dropped the viewer onto a
-/// server transcode of a file that plays perfectly.
-///
-/// Point `LAGOON_TS_SEEK_FIXTURE_URL` at the file; `xcodebuild` injects
-/// `TEST_RUNNER_LAGOON_TS_SEEK_FIXTURE_URL` under that name with the prefix
-/// stripped, so both spellings are read.
+/// Set `LAGOON_TS_SEEK_FIXTURE_URL`; `xcodebuild` passes
+/// `TEST_RUNNER_LAGOON_TS_SEEK_FIXTURE_URL` with the prefix stripped, so both
+/// are read.
 @Suite("Transport-stream seek landing", .serialized)
 struct TransportStreamSeekTests {
     nonisolated static let fixture: URL? = {
@@ -40,9 +36,8 @@ struct TransportStreamSeekTests {
         let description = try #require(demuxer.videoStream?.formatDescription)
         #expect(CMFormatDescriptionGetMediaSubType(description) == kCMVideoCodecType_H264)
 
-        // Twice, and not to the same place: libavformat's binary search
-        // records index entries as it goes, so a later seek into the same
-        // file takes a different route to its landing.
+        // Two different targets: libavformat's binary search records index
+        // entries, so a later seek takes a different route.
         for target in [24.8, 96.5] {
             try check(demuxer: demuxer, description: description, target: target)
         }
@@ -53,9 +48,8 @@ struct TransportStreamSeekTests {
         let samples = Self.readVideo(from: demuxer, count: 12)
         let first = try #require(samples.first, "the seek delivered no video at all")
 
-        // 1. The first sample after the renderer flush has to be a random
-        // access point the decoder can be started on, not merely a packet the
-        // container was willing to seek to.
+        // 1. The first sample after the flush must be a random-access point a
+        // decoder can start on, not just a packet the container would seek to.
         let payload = try Self.bytes(of: first)
         let types = try #require(
             payload.withUnsafeBytes {
@@ -69,17 +63,15 @@ struct TransportStreamSeekTests {
         )
         #expect(Self.isSyncSample(first), "the first sample must not be marked NotSync")
 
-        // 2. It has to land at or before the request, the way an indexed
-        // container's seek does: the clock stays on the requested time and
-        // the run-in is discarded, where a late landing silently skips
-        // content. And it has to stay near it, since the head of the file
-        // would satisfy the check above and be useless.
+        // 2. It must land at or before the request, like an indexed seek, so
+        // the run-in is discarded rather than content skipped. And near it, or
+        // the file's head would pass.
         let start = first.presentationTimeStamp.seconds
         #expect(start <= target + 0.05, "first sample at \(start) s is past the \(target) s request")
         #expect(start > target - 24, "first sample at \(start) s for a \(target) s seek")
 
-        // 3. And VideoToolbox has to accept it: this is the -8969 the
-        // renderer answered with, asked of the same samples directly.
+        // 3. VideoToolbox must accept the same samples directly (the -8969
+        // case).
         try Self.decode(samples, description: description)
     }
 

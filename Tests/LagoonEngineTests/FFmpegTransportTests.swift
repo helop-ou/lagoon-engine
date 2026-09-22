@@ -7,10 +7,8 @@ import Testing
 
 @Suite("Native FFmpeg transport", .serialized)
 struct FFmpegTransportTests {
-    /// libavformat is now repo-built without its network stack:
-    /// every network fetch must go through `FFmpegNetworkTransport`'s
-    /// URLSession-backed io_open, never a native protocol. This fails until
-    /// the rebuilt library lands; that is expected and wanted.
+    /// libavformat is built without its network stack: every fetch must go
+    /// through `FFmpegNetworkTransport`, never a native protocol.
     @Test func nativeNetworkingIsCompiledOut() throws {
         #expect(avio_protocol_get_class("http") == nil)
         #expect(avio_protocol_get_class("tls") == nil)
@@ -35,9 +33,8 @@ struct FFmpegTransportTests {
         #expect(io == nil)
     }
 
-    // Run scripts/test-ffmpeg-tls.py for controlled certificates, HTTP logs and
-    // simulator-only trust roots. Ordinary unit runs still check the binary's
-    // default, without depending on network access or third-party servers.
+    // scripts/test-ffmpeg-tls.py runs these with controlled certificates.
+    // Ordinary runs still check the binary's default without network access.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["LAGOON_TLS_FIXTURES"] != nil))
     func certificateAndNestedRequestMatrix() async throws {
         let base = try #require(ProcessInfo.processInfo.environment["LAGOON_TLS_FIXTURES"])
@@ -46,8 +43,8 @@ struct FFmpegTransportTests {
         #expect(cases.count >= 20)
         for fixture in cases {
             let result = fixture.hls ? readHLS(fixture.url) : readNative(fixture)
-            // Each valid HLS fixture has three one-second AAC segments. This
-            // catches failures after the initial segment, including keepalive.
+            // Each valid HLS fixture has three one-second AAC segments, so this
+            // catches failures after the first, keepalive included.
             let completed = fixture.hls ? result >= 120 : result > 0
             #expect(completed == fixture.allowed, "\(fixture.name): read result \(result)")
         }
@@ -65,14 +62,10 @@ struct FFmpegTransportTests {
         let reconnect: Bool
     }
 
-    /// Scopes a synthetic credential header to a fixture URL's own origin,
-    /// exactly what `JellyfinClient.mediaRequestAuthorization()` does for
-    /// the real server — so the `api_key` query item every fixture URL
-    /// carries is stripped before URLSession ever sees it. CFNetwork logs a
-    /// failed task's full URL (`NSErrorFailingURLKey`) into the unified
-    /// log, which is what `test-ffmpeg-tls.py`'s "token appeared in
-    /// test.log" guard checks for; leaving the token in the query here
-    /// would make every invalid-peer fixture fail that guard.
+    /// Scopes a credential header to the fixture's origin, as a host would, so
+    /// the fixture URL's `api_key` is stripped before URLSession sees it.
+    /// CFNetwork logs a failed task's full URL, and the TLS script fails if the
+    /// token appears in its log.
     private nonisolated static func authorization(for urlString: String) -> MediaRequestAuthorization? {
         guard let url = URL(string: urlString), let scheme = url.scheme, let host = url.host else { return nil }
         var components = URLComponents()
@@ -94,9 +87,8 @@ struct FFmpegTransportTests {
         var options: OpaquePointer?
         av_dict_set(&options, "rw_timeout", "5000000", 0)
         if fixture.enforce {
-            // A caller cannot accidentally weaken the application policy —
-            // there is no longer an unpoliced avio_open2 fallback to escape
-            // through, so these attempts are expected to have no effect.
+            // A caller cannot weaken the policy: there is no unpoliced
+            // avio_open2 path, so these have no effect.
             av_dict_set(&options, "tls_verify", "0", 0)
             av_dict_set(&options, "verifyhost", "wrong.invalid", 0)
         }

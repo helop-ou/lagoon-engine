@@ -2,15 +2,10 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// A UDF 2.50 image small enough to live in a test, laid out the way BD-ROM
-/// lays one out: a metadata partition holding every file entry, directories
-/// both embedded and not, and a stream fragmented across two extents of the
-/// physical partition.
-///
-/// Built rather than recorded. A slice of a real disc would be a large
-/// opaque blob that pins the same behaviour without saying what any of it
-/// means, and the structures this reader has to survive — the metadata
-/// indirection above all — are exactly the ones worth spelling out.
+/// A small UDF 2.50 image laid out like BD-ROM: a metadata partition holding
+/// every file entry, embedded and non-embedded directories, and a stream split
+/// across two physical extents. Built rather than recorded, so each structure
+/// the reader must survive is spelled out.
 private struct DiscImageFixture {
     static let sectorSize = 2_048
     static let sectors = 420
@@ -73,7 +68,7 @@ private struct DiscImageFixture {
         write(descriptors, sector: sector, 176)
     }
 
-    /// One directory entry. Returns its length so entries can be packed.
+    /// One directory entry.
     static func identifier(name: String, block: UInt32, partition: UInt16, isDirectory: Bool) -> [UInt8] {
         var entry = [UInt8](repeating: 0, count: 38)
         // Tag 257, little-endian like everything else in the filesystem.
@@ -106,8 +101,7 @@ private struct DiscImageFixture {
     }
 }
 
-/// The bytes a fixture image is made of, addressed the way a server serves
-/// them.
+/// A fixture image's bytes, addressed the way a server serves them.
 private final class InMemoryDiscSource: DiscImageSource {
     private let data: Data
     private let reportsLength: Bool
@@ -214,8 +208,8 @@ private func makeFixture(playlist: [UInt8]) -> [UInt8] {
         descriptors: F.identifier(name: "PLAYLIST", block: 3, partition: 1, isDirectory: true)
             + F.identifier(name: "STREAM", block: 4, partition: 1, isDirectory: true)
     )
-    // PLAYLIST's contents live in the metadata partition rather than inside
-    // its entry, which is the indirection a naive reader gets wrong.
+    // PLAYLIST's contents live in the metadata partition, not inside its entry:
+    // the indirection a naive reader gets wrong.
     image.fileEntry(
         sector: F.metadata(3),
         descriptorType: 0,
@@ -231,15 +225,14 @@ private func makeFixture(playlist: [UInt8]) -> [UInt8] {
         sector: F.metadata(5),
         0
     )
-    // The playlist's bytes are in the physical partition, addressed by a
-    // long descriptor that names it.
+    // The playlist's bytes are in the physical partition, via a long
+    // descriptor.
     image.fileEntry(
         sector: F.metadata(6),
         descriptorType: 1,
         descriptors: F.long(length: UInt32(playlist.count), block: 50, partition: 0)
     )
-    // The clip, fragmented: 4 KiB then 2 KiB, which is what makes a per-file
-    // mapping insufficient.
+    // The clip, fragmented 4 KiB + 2 KiB, so a per-file mapping is not enough.
     image.fileEntry(
         sector: F.metadata(7),
         descriptorType: 1,
@@ -255,8 +248,7 @@ private func makeFixture(playlist: [UInt8]) -> [UInt8] {
 
 
 /// A DVD-shaped image: one physical partition, no metadata indirection, and
-/// `VIDEO_TS` instead of `BDMV`. Real DVD images are UDF 1.02, which is this
-/// reader minus the part 2.50 adds, so both shapes are worth pinning.
+/// `VIDEO_TS` instead of `BDMV` (UDF 1.02).
 private func makeDVDFixture() -> [UInt8] {
     var image = DiscImageFixture()
     typealias F = DiscImageFixture
@@ -477,10 +469,9 @@ struct DiscImageTests {
     }
 
     @Test func aUDFVolumeResolvesNamesThroughTheMetadataPartition() throws {
-        // UDF 2.50 keeps file entries inside a metadata file and the data
-        // they describe outside it. A reader that resolves every extent in
-        // the entry's own partition finds empty directories — which is
-        // exactly what the first draft of this did against WALL·E.
+        // File entries live in the metadata file and their data outside it.
+        // Resolving every extent in the entry's own partition finds empty
+        // directories.
         let source = InMemoryDiscSource(makeFixture(playlist: makePlaylist(
             items: [("00001", 60), ("00001", 60)]
         )))
@@ -522,9 +513,9 @@ struct DiscImageTests {
     }
 
     @Test func somethingThatIsNotAnImageIsDeclinedRatherThanGuessedAt() {
-        // The anchor is at a fixed sector, so "is this a disc at all" costs
-        // one read and a tag comparison. A file that is not one has to fail
-        // here, where the ladder can still fall to the server.
+        // The anchor is at a fixed sector, so detection costs one read. A
+        // non-disc must fail here, where the host can still ask for the media
+        // another way.
         let source = InMemoryDiscSource([UInt8](repeating: 0, count: 600 * 2_048))
         #expect(throws: DiscImageError.notUDF) {
             _ = try UDFVolume(source: source)
@@ -558,8 +549,8 @@ struct DiscImageTests {
         let title = try DiscTitle.mainTitle(in: volume, runtimeSeconds: nil)
         // A DVD has no playlist to name.
         #expect(title.playlist == nil)
-        // Title set 1 (12 KiB across two parts, the first fragmented) beats
-        // title set 2, and neither menu is included.
+        // Title set 1 (12 KiB over two parts, the first fragmented) beats title
+        // set 2; neither menu is included.
         #expect(title.stream.length == 12_288)
         let sector = Int64(DiscImageFixture.sectorSize)
         #expect(title.stream.extents.map(\.offset) == [70, 80, 90].map { Int64($0 + DiscImageFixture.partitionStart) * sector })
@@ -586,8 +577,8 @@ struct DiscImageTests {
         #expect(map.locate(99)?.imageOffset == 1_099)
         #expect(map.locate(100)?.imageOffset == 50_000)
         #expect(map.locate(149)?.imageOffset == 50_049)
-        // A read is never allowed to run past the extent it started in: the
-        // bytes after it belong somewhere else in the image entirely.
+        // A read never runs past its extent: the next bytes live elsewhere in
+        // the image.
         #expect(map.locate(90)?.available == 10)
         #expect(map.locate(0)?.available == 100)
         // Past the end, and before it.
@@ -596,9 +587,8 @@ struct DiscImageTests {
     }
 
     @Test func theServersRuntimePicksBetweenTitlesOfSimilarLength() {
-        // WALL·E's disc offers four plausible titles between 98.2 and 98.7
-        // minutes. Jellyfin's own 98.11 resolves it; nothing else on the
-        // disc does.
+        // From a real disc: four titles between 98.2 and 98.7 minutes, and only
+        // the server's 98.11 picks the right one.
         let candidates = [
             BlurayPlaylist(name: "00004.mpls", items: [.init(clip: "00056", seconds: 5_892)]),
             BlurayPlaylist(name: "00801.mpls", items: [.init(clip: "00056", seconds: 5_922)]),
@@ -608,9 +598,8 @@ struct DiscImageTests {
     }
 
     @Test func aMenuLoopNeverWinsTheTitle() {
-        // 00020.mpls on WALL·E's disc plays two clips 303 times and reports
-        // 323 minutes — more film than the image physically holds. Counting
-        // each clip once collapses it to two minutes.
+        // A real menu loop: two clips played 303 times report 323 minutes, more
+        // than the disc holds. Counting each clip once gives two minutes.
         let loop = BlurayPlaylist(
             name: "00020.mpls",
             items: Array(repeating: .init(clip: "00041", seconds: 64), count: 303)
@@ -622,8 +611,7 @@ struct DiscImageTests {
     }
 
     @Test func identicalTitlesResolveByNameSoTheChoiceIsStable() {
-        // 00004 and 00800 are the same film on this disc. Which one plays
-        // must not depend on the order the directory happened to list.
+        // 00004 and 00800 are the same film; directory order must not decide.
         let items: [BlurayPlaylist.Item] = [.init(clip: "00056", seconds: 5_892)]
         let forwards = [
             BlurayPlaylist(name: "00800.mpls", items: items),
@@ -634,10 +622,9 @@ struct DiscImageTests {
     }
 
     @Test func aTitleStreamNeverReadsPastTheExtentItStartedIn() throws {
-        // The AVIO shim above this asks for whole buffers. Serving one across
-        // an extent boundary would splice in bytes from elsewhere in the
-        // image — silent corruption rather than a failure — so a short read
-        // is the only correct answer.
+        // AVIO asks for whole buffers. Serving one across an extent boundary
+        // would silently splice in bytes from elsewhere, so a short read is the
+        // only right answer.
         let underlying = RecordingByteSource()
         let stream = DiscImageStream(
             source: underlying,

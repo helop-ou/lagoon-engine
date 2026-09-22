@@ -71,22 +71,20 @@ struct ApplePlaybackAlignmentTests {
         #expect(!VideoToolboxDecoder.isRecoverableFrameError(kVTInvalidSessionErr))
     }
 
-    /// A lost session is not a verdict on the bitstream, so it must not be
-    /// read as one — `LAGOON-A`/`LAGOON-G` descended to transcode on
-    /// `-12903`, which only ever meant the session needed remaking.
+    /// A lost session (`-12903`) only means the session needs remaking; it is
+    /// not a verdict on the bitstream.
     @Test func lostSessionsAreFaultsInTheSessionNotTheStream() {
         #expect(VideoToolboxDecoder.isSessionFault(kVTInvalidSessionErr))
         #expect(VideoToolboxDecoder.isSessionFault(kVTVideoDecoderMalfunctionErr))
         #expect(VideoToolboxDecoder.isSessionFault(kVTVideoDecoderNotAvailableNowErr))
-        // A frame the decoder refused inside a session that is still alive is
-        // the other thing entirely, and so is a real verdict on the samples.
+        // A refused frame in a live session is a real verdict on the samples.
         #expect(!VideoToolboxDecoder.isSessionFault(kVTVideoDecoderReferenceMissingErr))
         #expect(!VideoToolboxDecoder.isSessionFault(kVTVideoDecoderBadDataErr))
         #expect(!VideoToolboxDecoder.isSessionFault(kVTVideoDecoderUnsupportedDataFormatErr))
     }
 
-    /// Every case carries the status, because the classification above is
-    /// worthless if the funnel cannot get at it.
+    /// Every case carries the status, or the classification above is
+    /// unreachable.
     @Test func decoderErrorsCarryTheirStatus() {
         #expect(VideoToolboxDecoder.DecoderError.decode(-12903).status == -12903)
         #expect(VideoToolboxDecoder.DecoderError.sessionCreation(-12903).status == -12903)
@@ -299,15 +297,10 @@ struct ApplePlaybackAlignmentTests {
     }
 
     @Test func AV1CompressedRoutingIsOfferedAndSettledAtRuntime() {
-        // This pinned "AV1 goes compressed only with hardware" until software
-    // decode arrived.
-        // The question it encoded was the wrong one: VTIsHardwareDecodeSupported
-        // reports silicon, and Apple ships a software AV1 decoder inside
-        // VideoToolbox on some platforms, so a false never meant VideoToolbox
-        // could not decode AV1. It is offered either way now, and
-        // VideoToolboxDecoder.canDecode settles it per stream by trying to
-        // create a session — on an A15 that answers no and the engine reopens
-        // on the software path.
+        // VTIsHardwareDecodeSupported reports silicon, and VideoToolbox has a
+        // software AV1 decoder on some platforms, so AV1 is offered either way.
+        // `VideoToolboxDecoder.canDecode` settles it per stream; where it says
+        // no the engine reopens on the software path.
         #expect(FFmpegDemuxer.usesCompressedVideoPath(
             codecID: AV_CODEC_ID_AV1,
             capabilities: PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: false)
@@ -346,11 +339,9 @@ struct ApplePlaybackAlignmentTests {
         #expect(subtype == kCMVideoCodecType_AV1)
     }
 
-    /// Opt-in same-process sink ladder. Set
-    /// `LAGOON_AV1_FIXTURE_URL` to a local or remote AV1 file and this reports
-    /// the libdav1d ceiling separately from the complete P010/output path.
-    /// Simulator values compare Lagoon revisions on the same Mac; they do not
-    /// predict A15 throughput or Apple TV display behaviour.
+    /// Opt-in. Set `LAGOON_AV1_FIXTURE_URL` to an AV1 file to report the
+    /// libdav1d ceiling apart from the full P010/output path. Simulator values
+    /// compare revisions on one Mac; they do not predict device throughput.
     @Test func av1FixtureReportsDecodeOnlyAndOutputCeilings() throws {
         guard let rawURL = ProcessInfo.processInfo.environment["LAGOON_AV1_FIXTURE_URL"],
               !rawURL.isEmpty else { return }
@@ -405,10 +396,9 @@ struct ApplePlaybackAlignmentTests {
         )
     }
 
-    /// Opt-in real-bitstream check used by the playback verification command.
-    /// Keeping the fixture URL outside the repository avoids shipping a large
-    /// third-party media file while still exercising libavformat → VC-1 decode
-    /// → CVPixelBuffer → CMSampleBuffer end to end.
+    /// Opt-in real-bitstream check. The fixture URL stays outside the
+    /// repository so no large third-party file ships, while still exercising
+    /// libavformat, VC-1 decode, CVPixelBuffer and CMSampleBuffer end to end.
     @Test func vc1FixtureProducesReadyCoreVideoFrames() throws {
         guard let rawURL = ProcessInfo.processInfo.environment["LAGOON_VC1_FIXTURE_URL"],
               !rawURL.isEmpty else { return }
@@ -463,17 +453,17 @@ struct ApplePlaybackAlignmentTests {
     }
 
     @Test func squareAndNearSquarePixelsCarryNoAspectExtension() {
-        // Unknown (libavformat's 0/1) and exactly square must stay nil so the
-        // format description handed to the renderer, AVDisplayCriteria and
-        // VideoToolbox is byte-identical to what shipped before.
+        // Unknown (0/1) and exactly square stay nil, so the format description
+        // handed to the renderer, AVDisplayCriteria and VideoToolbox is
+        // unchanged.
         #expect(SampleBufferFactory.pixelAspectRatio(AVRational(num: 0, den: 1)) == nil)
         #expect(SampleBufferFactory.pixelAspectRatio(AVRational(num: 1, den: 1)) == nil)
         #expect(SampleBufferFactory.pixelAspectRatio(AVRational(num: 1920, den: 1920)) == nil)
         // Malformed values fail closed rather than dividing by zero.
         #expect(SampleBufferFactory.pixelAspectRatio(AVRational(num: 16, den: 0)) == nil)
         #expect(SampleBufferFactory.pixelAspectRatio(AVRational(num: -16, den: 15)) == nil)
-        // Rounding artifacts observed in real files: a 3840x1744 HDR remux
-        // and a 624x352 AVI. Both are a hundredth of a percent off square.
+        // Rounding artifacts from real files (a 3840x1744 remux, a 624x352
+        // AVI), a hundredth of a percent off square.
         #expect(SampleBufferFactory.pixelAspectRatio(AVRational(num: 1_744, den: 1_745)) == nil)
         #expect(SampleBufferFactory.pixelAspectRatio(AVRational(num: 180_224, den: 180_219)) == nil)
     }
@@ -551,17 +541,14 @@ struct ApplePlaybackAlignmentTests {
             }
         }
         #expect(decodedFrames == 24)
-        // A woven field pair on motion alternates row by row, so adjacent
-        // rows differ far more than rows two apart; a progressive picture
-        // has adjacent rows at least as alike as rows two apart. yadif on
-        // the synthetic fixture lands around 0.7; the woven frames land
+        // A woven field pair in motion makes adjacent rows differ far more than
+        // rows two apart. yadif on this fixture lands near 0.7; woven frames
         // above 1.5.
         #expect(worstCombing < 1.0, "worst combing ratio \(worstCombing)")
     }
 
-    /// Mean absolute difference between adjacent luma rows, over the same
-    /// between rows two apart. Above one the rows alternate, which on a
-    /// moving picture is what a woven field pair looks like.
+    /// Mean difference between adjacent luma rows over that between rows two
+    /// apart. Above one, rows alternate like a woven field pair.
     private static func combingRatio(luma image: CVPixelBuffer) -> Double {
         CVPixelBufferLockBaseAddress(image, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
@@ -583,11 +570,10 @@ struct ApplePlaybackAlignmentTests {
         return apart == 0 ? 0 : Double(adjacent) / Double(apart)
     }
 
-    /// Point `LAGOON_MPEG4_FIXTURE_URL` at a Jellyfin direct-play URL for an
-    /// MPEG-4 Part 2 (Xvid/DivX) AVI. Packed-bitstream rips are the
-    /// interesting case: one chunk can carry two VOPs, so the decoder returns
-    /// several frames for one packet and none for the next, and the "VOP not
-    /// coded" markers arrive as 7-byte packets.
+    /// Set `LAGOON_MPEG4_FIXTURE_URL` to an MPEG-4 Part 2 (Xvid/DivX) AVI.
+    /// Packed-bitstream rips matter: one chunk can carry two VOPs, so a packet
+    /// yields two frames and the next none, and "VOP not coded" markers are
+    /// 7-byte packets.
     @Test func mpeg4FixtureProducesReadyCoreVideoFrames() throws {
         guard let rawURL = ProcessInfo.processInfo.environment["LAGOON_MPEG4_FIXTURE_URL"],
               !rawURL.isEmpty else { return }
@@ -616,8 +602,8 @@ struct ApplePlaybackAlignmentTests {
                 #expect(CMSampleBufferDataIsReady(buffer))
                 #expect(CMSampleBufferGetImageBuffer(buffer) != nil)
                 let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
-                // Frames leave libavcodec in presentation order even when a
-                // packed chunk carried two of them.
+                // Frames leave libavcodec in presentation order, even from a
+                // packed chunk.
                 if let lastVideoPTS, pts.isValid, pts < lastVideoPTS {
                     videoWentBackwards += 1
                 }
@@ -746,8 +732,8 @@ struct ApplePlaybackAlignmentTests {
 
         #expect(decision == .read)
 
-        // The compressed path's own hard limit hands over to the intake's
-        // once that fills too, which is what keeps this bounded.
+        // The compressed path's hard limit hands over to the intake's once that
+        // fills, which keeps this bounded.
         let decisionAtIntakeLimit = DemuxBackpressurePolicy.decision(
             videoCount: 120,
             audioCount: 0,
@@ -798,12 +784,10 @@ struct ApplePlaybackAlignmentTests {
     }
 
     @Test func fasterPlaybackKeepsItsBatchedDrainWindow() {
-        // Both watermarks scale with the rate, but each is separately capped
-        // so the queue cannot reach its hard limit. Clamping the low water
-        // against the already-capped high water collapsed the gap between
-        // them to one frame at 2x: the batched drain became a
-        // read-one/wait-one handshake, and the decoded queue parked one frame
-        // under the hard limit instead of oscillating well below it.
+        // Both watermarks scale with rate but are capped separately below the
+        // hard limit. Clamping low water against the capped high water
+        // collapsed the gap to one frame at 2x, turning the batched drain into
+        // a read-one/wait-one handshake.
         func drainTarget(
             videoIsDecoded: Bool,
             videoIsSoftwareDecoded: Bool,
@@ -813,8 +797,8 @@ struct ApplePlaybackAlignmentTests {
                 videoIsDecoded: videoIsDecoded,
                 videoIsSoftwareDecoded: videoIsSoftwareDecoded
             )
-            // One under the hard limit is above every scaled high water, so
-            // the policy always answers with the low water it would drain to.
+            // One under the hard limit is above every scaled high water, so the
+            // answer is always the low water.
             guard case .waitForVideo(let below) = DemuxBackpressurePolicy.decision(
                 videoCount: hardLimit - 1,
                 audioCount: 0,
@@ -828,9 +812,8 @@ struct ApplePlaybackAlignmentTests {
             return below
         }
 
-        // Software-decoded video drains 30 -> 24 at 1x. Six frames, and at 2x
-        // the high water saturates at 41 of its 42-frame hard limit, so the
-        // batch has to be carved out below that rather than above it.
+        // Software video drains 30 -> 24 at 1x. At 2x high water saturates at
+        // 41 of the 42-frame hard limit, so the batch is carved out below it.
         #expect(drainTarget(
             videoIsDecoded: true,
             videoIsSoftwareDecoded: true,
@@ -842,8 +825,8 @@ struct ApplePlaybackAlignmentTests {
             playbackRate: 2
         ) == 35)
 
-        // Compressed h264 drains 90 -> 72: eighteen frames, and its high
-        // water saturates at 119 from 1.5x upward.
+        // Compressed h264 drains 90 -> 72; high water saturates at 119 from
+        // 1.5x.
         #expect(drainTarget(
             videoIsDecoded: false,
             videoIsSoftwareDecoded: false,
@@ -917,10 +900,8 @@ struct ApplePlaybackAlignmentTests {
         )
         defer { demuxer.close() }
         if codecName == "av1" {
-            // AV1 is now offered to VideoToolbox on every platform and only
-            // falls back after session creation fails. This fixture is
-            // specifically the libdav1d contract, so select that route
-            // explicitly instead of relying on a hardware capability flag.
+            // AV1 goes to VideoToolbox first everywhere. This fixture tests the
+            // libdav1d contract, so select that route explicitly.
             demuxer.disableVideoToolboxAV1()
         }
         try demuxer.open(
@@ -1040,9 +1021,9 @@ struct ApplePlaybackAlignmentTests {
         let fusedP95: Double
     }
 
-    /// Compares the retired two-barrier scheduling with the fused production
-    /// call using identical 4K planes and NEON kernels. Alternating ABBA order
-    /// prevents one variant from owning all cold or all warm iterations.
+    /// Compares two-barrier scheduling with the fused production call on
+    /// identical 4K planes and NEON kernels. ABBA order spreads cold and warm
+    /// iterations evenly.
     private func benchmarkP010Scheduling() -> P010SchedulingBenchmarkResult {
         let width = 3_840
         let height = 2_160

@@ -2,18 +2,16 @@ import CoreMedia
 import Testing
 @testable import LagoonEngine
 
-/// The audio-crackle fix, pinned down: compressed passthrough audio
-/// must reach the renderer on a sample-exact timeline no matter how
+/// Passthrough audio reaches the renderer on a sample-exact timeline however
 /// coarsely the container quantized its timestamps.
 struct PassthroughAudioTimelineTests {
-    /// AAC in Matroska, the case that crackled on hardware: 1024-sample
-    /// frames (21.33 ms) stamped at 1 ms precision. The rewritten chain
-    /// must advance by exactly 1024 samples per packet regardless.
+    /// AAC in Matroska, which crackled on hardware: 1024-sample frames (21.33
+    /// ms) stamped to 1 ms. The chain advances exactly 1024 samples per packet.
     @Test func aacMatroskaTimestampsBecomeSampleExact() throws {
         var timeline = PassthroughAudioTimeline(sampleRate: 48_000, framesPerPacket: 1024)
         for index in 0..<200 {
-            // What the mux does: the true position rounded to whole ms
-            // (measured muxes wander a further ms on top — covered below).
+            // The true position rounded to whole ms, as the mux does. Extra
+            // jitter is covered below.
             let containerSeconds = (Double(index) * 1024 / 48_000 * 1000).rounded() / 1000
             let produced = timeline.timing(containerSeconds: containerSeconds)
             let timing = try #require(produced)
@@ -23,9 +21,8 @@ struct PassthroughAudioTimelineTests {
         }
     }
 
-    /// The measured real-world trace had deltas of 21/22/23 ms — a full
-    /// millisecond beyond quantization. Still inside the tolerance, so the
-    /// chain must hold.
+    /// A real trace had 21/22/23 ms deltas, a millisecond beyond quantization,
+    /// and still inside the tolerance.
     @Test func muxJitterBeyondQuantizationStaysChained() {
         var timeline = PassthroughAudioTimeline(sampleRate: 48_000, framesPerPacket: 1024)
         let deltasMS: [Double] = [21, 21, 22, 23, 21, 20, 21, 22, 23, 21]
@@ -37,9 +34,8 @@ struct PassthroughAudioTimelineTests {
         }
     }
 
-    /// EAC3 at 48 kHz is 32 ms per packet — exactly representable in
-    /// Matroska's milliseconds, so the rewrite must be a no-op: the chain
-    /// and the container agree forever.
+    /// EAC3 at 48 kHz is 32 ms per packet, exact in Matroska, so the rewrite is
+    /// a no-op.
     @Test func exactlyRepresentableContainerIsNoOp() {
         var timeline = PassthroughAudioTimeline(sampleRate: 48_000, framesPerPacket: 1536)
         for index in 0..<100 {
@@ -49,10 +45,9 @@ struct PassthroughAudioTimelineTests {
         }
     }
 
-    /// One packet missing from the mux is a real 21 ms gap: it must
-    /// re-anchor so audio stays in sync with the container, not be
-    /// smoothed into a permanent desync — the reason the tolerance is
-    /// half a packet rather than the LPCM path's 50 ms.
+    /// One missing packet is a real 21 ms gap and must re-anchor, not become a
+    /// permanent desync. Hence a half-packet tolerance, not the LPCM path's 50
+    /// ms.
     @Test func missingPacketReanchorsInsteadOfDesyncing() {
         var timeline = PassthroughAudioTimeline(sampleRate: 48_000, framesPerPacket: 1024)
         _ = timeline.timing(containerSeconds: 0)
@@ -61,10 +56,8 @@ struct PassthroughAudioTimelineTests {
         #expect(after?.presentationTimeStamp.value == 2048)
     }
 
-    /// HLS segment boundaries can carry a short run of AAC preroll packets
-    /// whose timestamps overlap audio already queued. They must not pull the
-    /// sample-exact chain backward; playback resumes on the same chain once
-    /// the container catches up.
+    /// HLS segment boundaries can repeat a few AAC preroll packets that overlap
+    /// queued audio. They must not pull the chain backward.
     @Test func overlappingHLSBoundaryPacketsAreDroppedWithoutMovingTheChain() throws {
         var timeline = PassthroughAudioTimeline(sampleRate: 48_000, framesPerPacket: 1024)
         _ = timeline.timing(containerSeconds: 30.997333)
@@ -82,9 +75,8 @@ struct PassthroughAudioTimelineTests {
         #expect(resumed.presentationTimeStamp.timescale == 48_000)
     }
 
-    /// A jump past the gap tolerance is a real discontinuity (mid-stream
-    /// seek, source gap): the chain must re-anchor to the container, not
-    /// paper over it.
+    /// A jump past the tolerance is a real discontinuity: re-anchor to the
+    /// container.
     @Test func realGapReanchorsToContainer() {
         var timeline = PassthroughAudioTimeline(sampleRate: 48_000, framesPerPacket: 1024)
         _ = timeline.timing(containerSeconds: 0)
@@ -96,9 +88,8 @@ struct PassthroughAudioTimelineTests {
         #expect(next?.presentationTimeStamp.value == Int64((7.5 * 48_000).rounded()) + 1024)
     }
 
-    /// If the declared packet size is shorter than the stream's real cadence,
-    /// the container disagrees beyond tolerance on every packet and each one
-    /// re-anchors instead of accumulating unbounded drift.
+    /// A declared packet size shorter than the real cadence re-anchors every
+    /// packet rather than drifting without bound.
     @Test func wrongFramesPerPacketFallsBackToContainerStamps() throws {
         // Assume 1024 but the stream really advances 2048 per packet.
         var timeline = PassthroughAudioTimeline(sampleRate: 48_000, framesPerPacket: 1024)
@@ -111,8 +102,8 @@ struct PassthroughAudioTimelineTests {
         }
     }
 
-    /// Packets without a container stamp continue the chain; before any
-    /// anchor exists they return nil so the caller keeps its fallback.
+    /// Untimed packets continue the chain; before any anchor they return nil so
+    /// the caller keeps its fallback.
     @Test func untimedPacketsContinueChainButCannotAnchor() {
         var timeline = PassthroughAudioTimeline(sampleRate: 48_000, framesPerPacket: 1024)
         #expect(timeline.timing(containerSeconds: nil) == nil)
@@ -121,8 +112,8 @@ struct PassthroughAudioTimelineTests {
         #expect(continued?.presentationTimeStamp.value == Int64(48_000 + 1024))
     }
 
-    /// reset() forgets the chain: the next packet anchors fresh, exactly
-    /// like the first ever packet — the seek/flush contract.
+    /// reset() forgets the chain, so the next packet anchors fresh: the
+    /// seek/flush contract.
     @Test func resetForgetsTheChain() {
         var timeline = PassthroughAudioTimeline(sampleRate: 48_000, framesPerPacket: 1024)
         _ = timeline.timing(containerSeconds: 100)

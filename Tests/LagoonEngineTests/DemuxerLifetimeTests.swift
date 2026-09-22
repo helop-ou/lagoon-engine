@@ -28,7 +28,7 @@ struct DemuxerLifetimeTests {
         let demuxer = FFmpegDemuxer()
         defer { demuxer.close() }
         // Disc setup throws before avformat_open_input; ordinary custom I/O
-        // fails inside that C call. The two have different ownership rules.
+        // fails inside it. Their ownership rules differ.
         for disc in [DiscPlaybackRequest(runtimeSeconds: nil), nil] {
             func attempt() throws {
                 try autoreleasepool {
@@ -47,8 +47,8 @@ struct DemuxerLifetimeTests {
             let after = liveHeapBytes()
             if measureAllocations {
                 print("DemuxLifetime stage=\(disc == nil ? "custom-io" : "disc-setup") iterations=\(iterations) heapDelta=\(after - before)")
-                // The original context leak retains several MiB across this
-                // many opens. Allow modest XCTest/OS background bookkeeping.
+                // A context leak retains several MiB over this many opens;
+                // allow a little OS bookkeeping.
                 #expect(after - before < 512 * 1_024)
             }
             demuxer.close()

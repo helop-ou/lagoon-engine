@@ -2,13 +2,9 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// Pure scheduler-policy coverage: no cache, no clock, no engine —
-/// just the decision table `PlaybackController.startBufferFill` drives.
-///
-/// Eager pacing is judged from measured throughput against the title's
-/// average bitrate, not from whether the cushion grew between chunks: that
-/// growth guard is gone because production chunks are 1 MiB, too little
-/// media at realistic 4K bitrates to move a fixed per-chunk threshold.
+/// Pure scheduler policy: no cache, clock or engine. Eager pacing is judged
+/// from measured throughput against the title's average bitrate, because a 1
+/// MiB chunk is too little 4K media to move a per-chunk cushion threshold.
 @Suite("Playback fill policy")
 struct PlaybackFillPolicyTests {
     // MARK: - beforeFetch
@@ -102,8 +98,7 @@ struct PlaybackFillPolicyTests {
         _ = policy.afterFetch(.fetched(bytes: 1_000, seconds: 0.1), pausedSnapshot)
         #expect(policy.consecutiveFailures == 0)
 
-        // The next failure waits a fresh 1 second rather than continuing the
-        // old exponent.
+        // The next failure waits a fresh 1 second, not the old exponent.
         #expect(policy.afterFetch(.failed, stalledSnapshot) == .wait(1))
     }
 
@@ -122,29 +117,29 @@ struct PlaybackFillPolicyTests {
         var policy = PlaybackFillPolicy()
         var snapshot = PlaybackFillPolicy.Snapshot()
         snapshot.aheadSeconds = 30
-        // Throughput headroom clearly holds: 1,000 bytes at 100 bytes/s is
-        // 10 s of media, far past the 0.33 s this 0.2 s request requires.
+        // 1,000 bytes at 100 bytes/s is 10 s of media, far past the 0.33 s this
+        // 0.2 s request needs.
         snapshot.averageBytesPerSecond = 100
         let decision = policy.afterFetch(.fetched(bytes: 1_000, seconds: 0.2), snapshot)
         expectWait(decision, 0.1)
     }
 
     @Test func hurriedPacingKeepsItsShareOnASlowLink() {
-        // A slow link still yields the same fraction, so foreground reads
-        // keep a third of it however long a chunk takes.
+        // A slow link yields the same fraction, so foreground reads keep a
+        // third of it.
         var policy = PlaybackFillPolicy()
         var snapshot = PlaybackFillPolicy.Snapshot()
         snapshot.aheadSeconds = 30
-        // 1,000 bytes at 100 bytes/s is 10 s of media, past the 6.6 s this
-        // 4 s request requires.
+        // 1,000 bytes at 100 bytes/s is 10 s of media, past the 6.6 s this 4 s
+        // request needs.
         snapshot.averageBytesPerSecond = 100
         let decision = policy.afterFetch(.fetched(bytes: 1_000, seconds: 4), snapshot)
         expectWait(decision, 2)
     }
 
     @Test func anUnknownCushionKeepsTheGentlePace() {
-        // Without a measurable cushion the policy cannot see gain, so it
-        // never competes with playback on the strength of a guess.
+        // Without a measurable cushion the policy never competes with playback
+        // on a guess.
         var policy = PlaybackFillPolicy()
         var snapshot = PlaybackFillPolicy.Snapshot()
         snapshot.aheadSeconds = nil
@@ -188,9 +183,8 @@ struct PlaybackFillPolicyTests {
     }
 
     @Test func aOneMebibyteChunkStaysEagerAtHighBitrateWhenTheLinkHasHeadroom() {
-        // A 1 MiB chunk carries well under 0.25 s of even a 120 Mbps title —
-        // exactly the case the old fixed cushion-gain guard could never pass,
-        // since a single chunk could never grow the cushion by that much.
+        // A 1 MiB chunk is well under 0.25 s of even a 120 Mbps title, so a
+        // per-chunk cushion-gain rule could never pass.
         for titleMbps in [40.0, 80.0, 120.0] {
             var policy = PlaybackFillPolicy()
             var snapshot = PlaybackFillPolicy.Snapshot()
@@ -256,9 +250,8 @@ struct PlaybackFillPolicyTests {
         let doubleRateDecision = doubleRatePolicy.afterFetch(.fetched(bytes: mebibyte, seconds: linkSeconds), doubleRateSnapshot)
         expectWait(doubleRateDecision, relaxedWait(linkSeconds))
 
-        // Doubling the rate also halves the wall-clock cushion: 200 s of
-        // ahead at 2x is only a 100 s cushion, still under the 120 s target,
-        // so a link fast enough to clear 2 * 1.65 * 40 = 132 Mbps stays eager.
+        // 2x also halves the wall-clock cushion: 200 s ahead is 100 s, under
+        // the 120 s target, so a link above 132 Mbps stays eager.
         var wideCushionSnapshot = PlaybackFillPolicy.Snapshot()
         wideCushionSnapshot.aheadSeconds = 200
         wideCushionSnapshot.averageBytesPerSecond = mbps(titleMbps)
@@ -268,8 +261,7 @@ struct PlaybackFillPolicyTests {
         let wideCushionDecision = wideCushionPolicy.afterFetch(.fetched(bytes: mebibyte, seconds: fastLinkSeconds), wideCushionSnapshot)
         expectWait(wideCushionDecision, fastLinkSeconds * PlaybackFillPolicy.hurriedYieldFraction)
 
-        // 250 s of ahead at 2x is a 125 s cushion: over target, so it is
-        // relaxed even on the same fast link.
+        // 250 s ahead at 2x is 125 s: over target, relaxed even on a fast link.
         var narrowCushionSnapshot = wideCushionSnapshot
         narrowCushionSnapshot.aheadSeconds = 250
         var narrowCushionPolicy = PlaybackFillPolicy()
@@ -319,16 +311,15 @@ struct PlaybackFillPolicyTests {
             fastSeconds * PlaybackFillPolicy.hurriedYieldFraction
         )
 
-        // Slow link, same policy value: relaxed, with no memory of the
-        // previous eager decision.
+        // Slow link, same policy value: relaxed, with no memory of the eager
+        // decision.
         let slowSeconds = Double(mebibyte) / mbps(90)
         expectWait(
             policy.afterFetch(.fetched(bytes: mebibyte, seconds: slowSeconds), snapshot),
             relaxedWait(slowSeconds)
         )
 
-        // Fast link again: eager again immediately, unaffected by the
-        // intervening relaxed chunk.
+        // Fast again: eager immediately.
         expectWait(
             policy.afterFetch(.fetched(bytes: mebibyte, seconds: fastSeconds), snapshot),
             fastSeconds * PlaybackFillPolicy.hurriedYieldFraction

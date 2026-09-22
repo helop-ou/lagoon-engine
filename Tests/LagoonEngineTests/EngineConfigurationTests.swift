@@ -2,13 +2,9 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// The two seams a host configures the engine through. Both default to
-/// "do nothing", which is the whole point: a library that instrumented or
-/// reported by default would be making a decision about someone else's
-/// users.
-/// Serialized: two of these install a process-wide source and restore it
-/// afterwards, and a global that other suites can read must not be swapped
-/// underneath them.
+/// The two seams a host configures the engine through, both defaulting to "do
+/// nothing". Serialized: two tests swap a process-wide source that other suites
+/// read.
 @Suite("Engine configuration", .serialized)
 struct EngineConfigurationTests {
     @Test func tuningIsInertUntilAHostInstallsASource() {
@@ -27,9 +23,8 @@ struct EngineConfigurationTests {
     }
 
     @Test func aTuningSourceIsAskedAgainRatherThanSnapshotted() {
-        // Several knobs are read afresh at each playback — the Dolby Vision
-        // experiment must not change mid-A/B, but it must change when the
-        // next one starts. A source installed once has to keep answering.
+        // Some knobs are re-read at each playback, so an installed source must
+        // keep answering.
         let answers = TuningAnswers()
         EngineTuning.use { answers.value }
         defer { EngineTuning.use { EngineTuning() } }
@@ -43,9 +38,8 @@ struct EngineConfigurationTests {
     }
 
     @Test func theVersionIsSomethingAHostCanReportAndParse() {
-        // A consumer cannot ask SwiftPM what it resolved, so this constant
-        // is the only answer — and a report that cannot be parsed back into
-        // a version is no better than none.
+        // SwiftPM cannot tell a consumer what it resolved, so this constant
+        // must parse as a version.
         let parts = EngineVersion.current.split(separator: ".")
         #expect(parts.count == 3)
         #expect(parts.allSatisfy { Int($0) != nil })
@@ -66,7 +60,7 @@ struct EngineConfigurationTests {
         #expect(sink.events == [.playbackPlay])
         #expect(sink.incidents == [.playbackStall])
         #expect(accepted)
-        // And the default really does drop them, rather than buffering.
+        // The default drops them rather than buffering.
         #expect(!DiscardedDiagnostics().report(
             .playbackStall, level: .error, variant: [], fields: [:]
         ))

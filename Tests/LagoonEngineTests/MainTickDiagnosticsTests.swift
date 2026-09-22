@@ -2,9 +2,7 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// Pins `MainTickStatistics`' arithmetic and drain/reset contract:
-/// a soak's only proof this instrumentation is trustworthy is a fixed unit
-/// pinning its ms math and its empty/reset behaviour.
+/// Pins `MainTickStatistics`' millisecond arithmetic and drain/reset contract.
 struct MainTickDiagnosticsTests {
     @Test func emptyDrainDoesNotDivideByZero() {
         var stats = MainTickStatistics()

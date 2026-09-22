@@ -5,15 +5,13 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// Opt-in end-to-end check on a real profile 7 remux: the head of
-/// a UHD Blu-ray episode, fetched with a byte range, is enough for
-/// libavformat to open it and hand over a few dozen video packets. The
-/// simulator cannot decode or display any of it, but it can prove what the
-/// demuxer now emits: a profile 8.1 `dvvC` on the format description, no
-/// enhancement-layer units left in the packets, and RPUs that libdovi itself
-/// reads back as profile 8. Point `LAGOON_DOVI_P7_FIXTURE` at the file
-/// through the xctestrun's environment, as `scripts/test-ffmpeg-tls.py`
-/// injects its fixtures; `TEST_RUNNER_*` never reaches a unit bundle.
+/// Opt-in check on a real profile 7 remux. A byte-ranged head of a UHD episode
+/// gives libavformat a few dozen video packets. The simulator cannot decode
+/// them, but it can prove the demuxer emits a profile 8.1 `dvvC`, no
+/// enhancement-layer units, and RPUs libdovi reads as profile 8. Set
+/// `LAGOON_DOVI_P7_FIXTURE` in the xctestrun environment, as
+/// `scripts/test-ffmpeg-tls.py` does; `TEST_RUNNER_*` never reaches a unit
+/// bundle.
 @Suite("Dolby Vision profile 7 fixture", .serialized)
 struct DolbyVisionFixtureTests {
     @Test func profile7RemuxIsRewrittenToProfile81() throws {

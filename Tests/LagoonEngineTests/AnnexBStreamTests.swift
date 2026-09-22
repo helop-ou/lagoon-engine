@@ -2,13 +2,10 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// The 118 bytes libavformat hands over as `extradata` for WALL·E's Blu-ray
-/// video track, copied off the disc itself.
-///
-/// This is the record that produced "VideoToolbox could not create a hardware
-/// decoder" on hardware: it arrives in the field an `hvcC` would, and it is
-/// three Annex-B parameter sets. Nothing about it is malformed, and reading
-/// it as a configuration record describes a stream that does not exist.
+/// The 118 bytes of `extradata` libavformat gives for WALL·E's Blu-ray video,
+/// copied off the disc. It sits where an `hvcC` would but is three Annex-B
+/// parameter sets; read as a configuration record it made VideoToolbox fail to
+/// create a decoder.
 private let wallEExtradata = Data([
     0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x22, 0x20, 0x00, 0x00, 0x03, 0x00,
     0xb0, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x99, 0x14, 0x8c, 0x0c, 0x00, 0x00, 0x0f, 0xa4,
@@ -25,8 +22,7 @@ struct AnnexBStreamTests {
     @Test func aStartCodeStreamIsToldApartFromAConfigurationRecord() {
         #expect(AnnexBStream.usesStartCodes(wallEExtradata))
         #expect(AnnexBStream.usesStartCodes(Data([0, 0, 1, 0x40])))
-        // Both real records open with a configuration version of 1, so
-        // neither can be mistaken for a start code.
+        // Real records open with configuration version 1, never a start code.
         #expect(!AnnexBStream.usesStartCodes(Data([0x01, 0x22, 0x20, 0x00, 0x00])))
         #expect(!AnnexBStream.usesStartCodes(Data([0x01, 0x64, 0x00, 0x28])))
         #expect(!AnnexBStream.usesStartCodes(Data()))
@@ -43,20 +39,17 @@ struct AnnexBStreamTests {
     }
 
     @Test func aMissingParameterSetRefusesRatherThanDescribingHalfAStream() {
-        // VPS and SPS but no PPS. Building a description from this is the
-        // failure the whole path exists to avoid, so it declines and leaves
-        // the ladder to fall back to the server.
+        // VPS and SPS but no PPS: decline and let the host fall back.
         let truncated = wallEExtradata.prefix(0x68)
         #expect(AnnexBStream.parameterSets(inAnnexB: truncated, codec: .hevc) == nil)
-        // H.264 reads its type from different bits, so HEVC sets are not
-        // mistaken for its own.
+        // H.264 reads its type from different bits, so HEVC sets are not its
+        // own.
         #expect(AnnexBStream.parameterSets(inAnnexB: wallEExtradata, codec: .h264) == nil)
     }
 
     @Test func everyNalIsRewrittenWithItsLength() throws {
-        // Three units behind start codes of both lengths, since a stream
-        // mixes them: four bytes before a parameter set, three before a
-        // slice, in most encoders.
+        // Start codes of both lengths, as streams mix them: four bytes before
+        // parameter sets, three before slices.
         let payload = Data([
             0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0xaa,
             0x00, 0x00, 0x01, 0x42, 0x01, 0xbb, 0xcc,
@@ -72,16 +65,14 @@ struct AnnexBStreamTests {
 
     @Test func aPayloadWithNoStartCodesConvertsToNothingRatherThanToGarbage() {
         let lengthPrefixed = Data([0x00, 0x00, 0x00, 0x03, 0x40, 0x01, 0xaa])
-        // Already-framed bytes have no start code to find, so this reports
-        // nothing to convert instead of inventing a NAL.
+        // Already-framed bytes have no start code, so nothing to convert.
         #expect(lengthPrefixed.withUnsafeBytes { AnnexBStream.lengthPrefixed($0) } == nil)
         #expect(Data().withUnsafeBytes { AnnexBStream.lengthPrefixed($0) } == nil)
     }
 
     @Test func conversionSurvivesTheBytesThatLookLikeStartCodes() throws {
-        // Emulation prevention guarantees 00 00 00 or 00 00 01 cannot occur
-        // inside a NAL, but trailing zeros before the next start code can,
-        // and they belong to the unit that precedes them.
+        // Emulation prevention rules out 00 00 00 and 00 00 01 inside a NAL,
+        // but trailing zeros before a start code belong to the preceding unit.
         let payload = Data([
             0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0x00, 0x00, 0x03, 0x01,
             0x00, 0x00, 0x00, 0x01, 0x42, 0x01,

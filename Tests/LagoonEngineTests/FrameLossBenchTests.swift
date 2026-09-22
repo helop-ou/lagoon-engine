@@ -2,8 +2,7 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// The measurement discipline that two false positives paid for:
-/// warmup before counting, a fixed media-time window, and no window that
+/// Warmup before counting, a fixed media-time window, and no window that
 /// survives the transport being touched.
 struct FrameLossBenchTests {
     private func sample(
@@ -38,8 +37,8 @@ struct FrameLossBenchTests {
             Issue.record("still warming at 309.9, got \(bench.phase)")
             return
         }
-        // First sample at/after 310 becomes the measurement baseline —
-        // the warmup drops (9 so far) never enter the result.
+        // The first sample at or after 310 is the baseline; the 9 warmup drops
+        // never count.
         #expect(bench.record(sample(position: 310.2, frames: 240, dropped: 9)) == nil)
         guard case .measuring = bench.phase else {
             Issue.record("expected measuring, got \(bench.phase)")
@@ -90,12 +89,9 @@ struct FrameLossBenchTests {
         #expect(abs(result.lossPercent - 9.0 / 1450 * 100) < 0.0001)
     }
 
-    /// The bench's summary is also the value of the
-    /// `player.regression.frameLoss` probe, and `FrameLossRegressionResult` in
-    /// LagoonUITests parses it with this exact regex. Dropping a field from
-    /// the summary stops the VC-1 continuity regression reading a window it
-    /// actually finished, which is a timeout that looks like a playback
-    /// failure and is not one. That has happened.
+    /// The summary is also the `player.regression.frameLoss` probe value, which
+    /// the UI tests' `FrameLossRegressionResult` parses with this exact regex.
+    /// A missing field makes the regression time out as if playback had failed.
     @Test func regressionSummaryIsParseable() {
         let result = FrameLossBench.Result(
             startPosition: 310,
@@ -121,7 +117,7 @@ struct FrameLossBenchTests {
         )
         #expect(match != nil, "the UI regression can no longer parse: \(summary)")
         #expect(match?.numberOfRanges == 7)
-        // The memory figures added later have to survive too.
+        // The memory figures must survive too.
         #expect(summary.contains("peak"))
         #expect(summary.contains("minQ"))
     }
@@ -141,8 +137,7 @@ struct FrameLossBenchTests {
         ) == 746_496_000)
     }
 
-    /// The result is delivered exactly once and then frozen — later
-    /// samples must not overwrite a finished window.
+    /// The result is delivered once and frozen.
     @Test func doneIsSticky() {
         var bench = FrameLossBench(at: 0, warmupSeconds: 1, windowSeconds: 2)
         _ = bench.record(sample(position: 1, frames: 24))
@@ -152,8 +147,7 @@ struct FrameLossBenchTests {
         #expect(bench.phase == .done(result!))
     }
 
-    /// Touching the transport re-arms from the new position: fresh warmup,
-    /// fresh baseline, min-queue tracking cleared.
+    /// Re-arming starts fresh: new warmup, new baseline, min-queue cleared.
     @Test func rearmDiscardsTheRunningWindow() throws {
         var bench = FrameLossBench(at: 0, warmupSeconds: 1, windowSeconds: 2)
         _ = bench.record(sample(position: 1, frames: 24, queue: 3))

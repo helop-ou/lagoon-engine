@@ -3,24 +3,18 @@ import Libavcodec
 import Testing
 @testable import LagoonEngine
 
-/// 4K AV1 plays on the software path but does not hold frame rate.
-///
-/// The structural half of that ticket — decode moved off the demux queue —
-/// is a threading change that only a device can score. What is pinnable here
-/// is the arithmetic that came with it: how many decoded 4K frames the app
-/// may hold, and what libavcodec is told about threads.
+/// Decoded-frame memory and libavcodec thread arithmetic for the software path.
+/// Moving decode off the demux queue can only be scored on a device.
 struct SoftwareDecodePipelineTests {
     /// A 4:2:0 P010 surface at 3840x2160: luma plus half as many chroma
-    /// samples, each in a 16-bit word (a measured figure, restated here so the
-    /// limit below is anchored to something rather than to itself).
+    /// samples, 16 bits each.
     private let fourKP010Bytes: Int64 = 3840 * 2160 * 3
 
     @Test func decodedQueueLimitFallsBackToBytesWhenFramesAreHuge() {
         #expect(fourKP010Bytes == 24_883_200)
 
-        // What the software path was allowed before the byte cap: 42 frames,
-        // which at this size is 1.05 GB of surfaces in a process jetsam has
-        // killed at 2.1 GB.
+        // Count alone allowed 42 frames: 1.05 GB of surfaces, in a process
+        // jetsam has killed at 2.1 GB.
         let byCountOnly = DemuxBackpressurePolicy.videoHardLimit(
             videoIsDecoded: true,
             videoIsSoftwareDecoded: true
@@ -38,9 +32,8 @@ struct SoftwareDecodePipelineTests {
     }
 
     @Test func smallerFramesKeepTheLimitTheyWereMeasuredWith() {
-        // 1080p 10-bit is 6.2 MB a frame: 42 of them is 250 MB, comfortably
-        // inside the budget, so the count stays the binding limit and every
-        // configuration measured earlier keeps its behavior.
+        // 1080p 10-bit is 6.2 MB a frame, so 42 is 250 MB: inside the budget,
+        // and the count stays the binding limit.
         let hd10Bit: Int64 = 1920 * 1080 * 3
         #expect(DemuxBackpressurePolicy.videoHardLimit(
             videoIsDecoded: true,
@@ -48,8 +41,8 @@ struct SoftwareDecodePipelineTests {
             decodedFrameBytes: hd10Bit
         ) == 42)
 
-        // The hardware-decoded path was already inside the budget at 4K,
-        // which is where the budget came from — it must not move.
+        // The hardware path at 4K is where the budget came from; it must not
+        // move.
         #expect(DemuxBackpressurePolicy.videoHardLimit(
             videoIsDecoded: true,
             decodedFrameBytes: fourKP010Bytes
@@ -60,8 +53,8 @@ struct SoftwareDecodePipelineTests {
     }
 
     @Test func decodedQueueKeepsAFloorHoweverLargeAFrameGets() {
-        // 8K is outside the advertised profile, but the limit still has to
-        // leave room for a reorder ladder rather than collapsing toward one.
+        // 8K is outside the advertised profile, but the limit must still leave
+        // room for a reorder ladder.
         let eightKP010: Int64 = 7680 * 4320 * 3
         #expect(DemuxBackpressurePolicy.videoHardLimit(
             videoIsDecoded: true,
@@ -71,10 +64,9 @@ struct SoftwareDecodePipelineTests {
     }
 
     @Test func packetsInsideTheDecoderCountAsVideoAlreadyRead() {
-        // The demux loop passes queue depth *plus* what the decode stage
-        // still owes. Six decoded frames with 25 packets in the decoder is a
-        // queue that looks nearly empty and a pipeline that is full: reading
-        // further would be reading a decoder backlog ahead of itself.
+        // The demux loop passes queue depth plus what the decoder still owes.
+        // Six frames with 25 packets in the decoder is a full pipeline, not an
+        // empty queue.
         let frameBytes = fourKP010Bytes
         let queuedOnly = DemuxBackpressurePolicy.decision(
             videoCount: 6,
@@ -102,18 +94,16 @@ struct SoftwareDecodePipelineTests {
     }
 
     @Test func av1IsAlwaysOfferedToVideoToolboxAndSettledAtRuntime() {
-        // The routing used to ask VTIsHardwareDecodeSupported, which reports
-        // silicon and nothing else, and went straight to libdav1d on a false.
-        // AV1 is now always offered and VideoToolboxDecoder.canDecode settles
-        // it per stream, so a platform with a software AV1 decoder is used
-        // without anyone having had to predict it.
+        // VTIsHardwareDecodeSupported reports only silicon. AV1 is always
+        // offered and `VideoToolboxDecoder.canDecode` settles it per stream, so
+        // a software AV1 decoder in VideoToolbox gets used.
         let noAV1Silicon = PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: false)
         #expect(noAV1Silicon.decodesAV1WithVideoToolbox)
         #expect(FFmpegDemuxer.usesCompressedVideoPath(
             codecID: AV_CODEC_ID_AV1, capabilities: noAV1Silicon
         ))
 
-        // Nothing about this moves any other codec.
+        // No other codec moves.
         #expect(!FFmpegDemuxer.usesCompressedVideoPath(
             codecID: AV_CODEC_ID_VP9, capabilities: noAV1Silicon
         ))
@@ -202,14 +192,13 @@ struct SoftwareDecodePipelineTests {
         #expect(!SoftwareVideoDecoder.OutputMode.linearSDR.usesLosslessStorage)
         #expect(SoftwareVideoDecoder.OutputMode.linearSDR.convertsToSDR)
 
-        // Preserve the old A/B argument and the measured production default.
+        // The legacy A/B argument and the measured default.
         #expect(SoftwareVideoDecoder.outputMode(
             requestedValue: nil,
             legacyCompressedOutput: false,
             toneMapHDRByDefault: true
         ) == .directSource)
-        // The production default is the GPU stage; its fallback is the
-        // transfer route that was measured before it existed.
+        // The default is the GPU stage; its fallback is the transfer route.
         #expect(SoftwareVideoDecoder.outputMode(
             requestedValue: nil,
             legacyCompressedOutput: nil,
@@ -223,10 +212,8 @@ struct SoftwareDecodePipelineTests {
     }
 
     @Test func decodeProfileSeparatesTheThreeCostsAsSharesOfOneCore() {
-        // 24 frames in one second of wall time, 0.44 s of it inside
-        // libavcodec and 0.12 s converting: the shape the measurement asks
-        // the device to report, and the fractions are per-stage shares of
-        // a core rather than a split of the whole.
+        // 24 frames in one wall-clock second, 0.44 s in libavcodec and 0.12 s
+        // converting. Fractions are per-stage shares of a core.
         let profile = SoftwareVideoDecoder.Profile(
             frames: 24,
             packets: 24,
@@ -248,8 +235,8 @@ struct SoftwareDecodePipelineTests {
     @Test func rendererReadinessUsesElapsedTimeRatherThanCallbackCount() {
         let timings = RendererPipelineTimings(enabled: true)
         timings.reset(at: 100)
-        // Backpressured for one second, then producer-starved for nine. A
-        // callback-count summary would incorrectly call this 33% not-ready.
+        // Backpressured for one second, starved for nine. Counting callbacks
+        // would say 33% not-ready.
         timings.sample(
             at: 100,
             rendererReady: false,

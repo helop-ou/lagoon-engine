@@ -2,17 +2,16 @@ import Foundation
 import Testing
 @testable import LagoonEngine
 
-/// The verdicts the engine reaches on its own: whether a decode failure is
-/// about the stream or only about the point playback restarted from, and
-/// what a lost VideoToolbox session means. Both are bounded to one recovery
-/// per playback generation, so a stream that really cannot be decoded still
-/// descends a host's delivery ladder — one seek later.
+/// Verdicts the engine reaches alone: whether a decode failure is about the
+/// stream or only the restart point, and what a lost VideoToolbox session
+/// means. Each allows one recovery per playback generation, so a truly
+/// undecodable stream still descends the host's ladder, one seek later.
 @Suite("Playback engine policies")
 struct PlaybackEnginePolicyTests {
     @Test func aDecodeFailureRightAfterAFlushEarnsOneRetryBeforeTheLadder() {
-        // Exit 8's shape: the picture the seek landed on, then the open
-        // GOP's two leading pictures, and the failure names the second of
-        // those. Every one of those is inside the window.
+        // Exit 8's shape: the seek's landing picture, then the open GOP's two
+        // leading pictures, and the failure names the second. All inside the
+        // window.
         for samples in 0...PlaybackRestartPointPolicy.samplesAfterFlush {
             #expect(
                 PlaybackRestartPointPolicy.shouldRetryInPlace(
@@ -25,8 +24,8 @@ struct PlaybackEnginePolicyTests {
     }
 
     @Test func aFailureInSteadyPlaybackIsAVerdictOnTheStream() {
-        // Minutes into a film the decoder has proved nothing about the
-        // restart point; this is the ladder's own case and must stay it.
+        // Minutes into a film nothing is known about the restart point; this is
+        // the ladder's case.
         #expect(
             !PlaybackRestartPointPolicy.shouldRetryInPlace(
                 videoSamplesSinceFlush: PlaybackRestartPointPolicy.samplesAfterFlush + 1,
@@ -42,8 +41,7 @@ struct PlaybackEnginePolicyTests {
     }
 
     @Test func theRetryCannotLoop() {
-        // The second failure at the same position descends the ladder,
-        // exactly as every failure did before — one seek later.
+        // A second failure at the same position descends, one seek later.
         #expect(
             !PlaybackRestartPointPolicy.shouldRetryInPlace(
                 videoSamplesSinceFlush: 0,
@@ -52,9 +50,8 @@ struct PlaybackEnginePolicyTests {
         )
     }
 
-    /// A decoder the system took away is rebuilt rather than transcoded.
-    /// `LAGOON-A` and `LAGOON-G` both spent the one-way rung on a
-    /// `-12903` that only ever meant "make another session".
+    /// A decoder the system took away is rebuilt, not transcoded: `-12903` only
+    /// means "make another session".
     @Test func aLostDecodeSessionIsRebuiltRatherThanDescended() {
         #expect(
             PlaybackDecodeSessionPolicy.resolve(
@@ -65,8 +62,8 @@ struct PlaybackEnginePolicyTests {
                 rebuiltGeneration: nil
             ) == .rebuild
         )
-        // A generation that already spent its rebuild descends, so a session
-        // that genuinely cannot be made still reaches the ladder.
+        // A generation that spent its rebuild descends, so a session that
+        // cannot be made still reaches the ladder.
         #expect(
             PlaybackDecodeSessionPolicy.resolve(
                 cancelled: false,
@@ -76,7 +73,7 @@ struct PlaybackEnginePolicyTests {
                 rebuiltGeneration: 7
             ) == .descend
         )
-        // A later seek earns a rebuild of its own: the generation moved on.
+        // A later seek is a new generation with its own rebuild.
         #expect(
             PlaybackDecodeSessionPolicy.resolve(
                 cancelled: false,
@@ -89,8 +86,8 @@ struct PlaybackEnginePolicyTests {
     }
 
     @Test func everySampleInADeadDecoderIsTheSameOneFault() {
-        // Each buffer inside the decoder reports the lost session on its way
-        // out. Without this they would queue a rebuild seek apiece.
+        // Each buffer in the decoder reports the lost session on its way out;
+        // without this each would queue a rebuild seek.
         #expect(
             PlaybackDecodeSessionPolicy.resolve(
                 cancelled: false,
@@ -103,11 +100,9 @@ struct PlaybackEnginePolicyTests {
     }
 
     @Test func suspendedVideoHasNoSessionWorthSaving() {
-        // Backgrounding leaves the old session alive on purpose and the
-        // resume seek builds a fresh one, so a sample that reached
-        // a torn-down session says nothing — and must not end the film. This
-        // is `LAGOON-G`: a fallback to transcode with the app in the
-        // background, which could not have completed anyway.
+        // Backgrounding keeps the old session and the resume seek builds a new
+        // one, so a sample reaching a torn-down session says nothing and must
+        // not end playback.
         #expect(
             PlaybackDecodeSessionPolicy.resolve(
                 cancelled: false,
@@ -119,9 +114,9 @@ struct PlaybackEnginePolicyTests {
         )
     }
 
-    /// A rebuild is a seek, and a seek needs a demux loop still running to
-    /// apply it. Once playback has been cancelled there is none, so asking
-    /// for one would replace a reported failure with a spinner.
+    /// A rebuild is a seek, which needs a running demux loop. After
+    /// cancellation there is none, so asking would swap a reported failure for
+    /// a spinner.
     @Test func aFaultAfterPlaybackEndedAsksForNothing() {
         #expect(
             PlaybackDecodeSessionPolicy.resolve(
@@ -132,8 +127,8 @@ struct PlaybackEnginePolicyTests {
                 rebuiltGeneration: nil
             ) == .tooLate
         )
-        // Cancellation outranks the rest: the samples draining out of a
-        // decoder being torn down report the session going with it.
+        // Cancellation wins: samples draining from a torn-down decoder report
+        // the session going with it.
         #expect(
             PlaybackDecodeSessionPolicy.resolve(
                 cancelled: true,
@@ -146,8 +141,8 @@ struct PlaybackEnginePolicyTests {
     }
 
     @Test func demuxErrorsSayWhetherRedeliveryCouldHelp() {
-        // Container and transport problems are exactly what a server-side
-        // remux fixes; a codec outside the envelope is not.
+        // Container and transport problems are what a server remux fixes; a
+        // codec outside the envelope is not.
         #expect(DemuxError.openFailed("moov atom not found").cause == .delivery)
         #expect(DemuxError.seekFailed("invalid argument").cause == .delivery)
         #expect(DemuxError.unsupportedVideo("av1").cause == .undecodable)
@@ -157,8 +152,8 @@ struct PlaybackEnginePolicyTests {
         let opened = DemuxError.openFailed("moov atom not found", code: -1094995529).diagnosticDetail
         #expect(opened.stage == .open)
         #expect(opened.code == -1094995529)
-        // No code from libavformat means no code in the report, rather than
-        // a zero a dashboard would group on.
+        // No libavformat code means none in the report, not a zero a dashboard
+        // groups on.
         #expect(DemuxError.seekFailed("demuxer not open").diagnosticDetail.code == nil)
     }
 }
