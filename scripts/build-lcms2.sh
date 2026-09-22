@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 #
-# Builds Little CMS 2 (lcms2) as an xcframework for the engine.
-#
-# libavcodec is configured with --enable-lcms2, so this is linked whether or
-# not a host ever asks FFmpeg to apply an ICC profile. It used to come from
-# mpvkit/lcms2-build 2.17.0, fetched at resolve time from a repository nobody
-# here controls. Building it here removes that download; the source is the
-# release tarball from Little CMS's own repository, SHA-256 checked.
+# Builds Little CMS 2 (lcms2) as an xcframework for the engine. libavcodec is
+# configured with --enable-lcms2, so it is always linked. Source: the release
+# tarball from Little CMS's own repository, SHA-256 checked (replaces
+# mpvkit/lcms2-build 2.17.0).
 #
 #   scripts/build-lcms2.sh                     # build and install into the package
 #   scripts/build-lcms2.sh --output /tmp/out   # build somewhere else
@@ -14,10 +11,9 @@
 #
 # Requires meson and ninja (brew install meson ninja).
 #
-# lcms2 itself is MIT. Its source tree also carries two optional plugins,
-# fast_float and threaded, which are GPL-3.0; meson builds neither unless
-# asked, and the verification below fails the build if either one's entry
-# point ever turns up in the library.
+# lcms2 is MIT. Its tree also has two optional GPL-3.0 plugins, fast_float and
+# threaded. meson builds neither unless asked, and the verification below
+# fails the build if either one's entry point appears in the library.
 #
 set -euo pipefail
 
@@ -25,7 +21,7 @@ LCMS2_VERSION="2.17"
 LCMS2_URL="https://github.com/mm2/Little-CMS/releases/download/lcms${LCMS2_VERSION}/lcms2-${LCMS2_VERSION}.tar.gz"
 LCMS2_SHA256="d11af569e42a1baa1650d20ad61d12e41af4fead4aa7964a01f93b08b53ab074"
 # Matches the engine's deployment targets; the artifact cannot be used below
-# these.
+# them.
 TVOS_MIN="26.0"
 IOS_MIN="26.0"
 MACOS_MIN="14.0"
@@ -100,11 +96,10 @@ tar -xzf "$archive" -C "$work"
 
 # group | sdk | arch | clang target triple | platform name for Info.plist
 #
-# One build per architecture; architectures sharing a group are lipo'd into one
-# fat framework, which is what an xcframework slice is. Same slices as dav1d:
-# the simulators and macOS are fat because a generic simulator build compiles
-# both, and macOS exists only because SwiftPM resolves the package for the host
-# when Xcode indexes it.
+# One build per architecture; a group's architectures are lipo'd into one fat
+# framework. Same slices as dav1d: fat simulators because a generic simulator
+# build compiles both, and macOS only because SwiftPM resolves the package for
+# the host when Xcode indexes it.
 builds=(
     "tvos|appletvos|arm64|arm64-apple-tvos${TVOS_MIN}|AppleTVOS"
     "tvos-simulator|appletvsimulator|arm64|arm64-apple-tvos${TVOS_MIN}-simulator|AppleTVSimulator"
@@ -186,8 +181,8 @@ for group in "${group_order[@]}"; do
         [ "${pair%%|*}" = "$group" ] && libs+=("${pair#*|}")
     done
 
-    # Same framework and module name the MPVKit artifact used, so the
-    # Package.swift target name and anything built against it do not move.
+    # The MPVKit artifact's framework and module name, so Package.swift and
+    # anything built against it stay put.
     fw="$work/frameworks/$group/lcms2.framework"
     mkdir -p "$fw/Headers" "$fw/Modules"
     if [ "${#libs[@]}" -gt 1 ]; then
@@ -203,7 +198,7 @@ framework module lcms2 [system] {
 }
 MODULE
     # MinimumOSVersion is deliberately out of reach of any real OS; see the
-    # same block in build-dav1d.sh for why (ITMS-90208, build 74).
+    # same block in build-dav1d.sh (ITMS-90208).
     cat > "$fw/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

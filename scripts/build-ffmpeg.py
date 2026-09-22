@@ -44,9 +44,8 @@ LIBRARIES = {
     "Libavformat": "libavformat",
     "Libswresample": "libswresample",
 }
-# Headers upstream installs but that describe hardware APIs no Apple SDK has,
-# so they cannot be part of a module a Swift target imports. The same set the
-# previous artifacts excluded.
+# Headers upstream installs for hardware APIs no Apple SDK has; a module a
+# Swift target imports cannot include them.
 MODULE_EXCLUDES = {
     "Libavutil": ("hwcontext_vulkan.h", "hwcontext_vdpau.h", "hwcontext_vaapi.h", "hwcontext_qsv.h",
                   "hwcontext_opencl.h", "hwcontext_dxva2.h", "hwcontext_d3d11va.h", "hwcontext_d3d12va.h",
@@ -74,9 +73,8 @@ FORBIDDEN_DEFINED_SYMBOLS = (
     "_ff_http_protocol", "_ff_https_protocol", "_ff_tls_protocol",
     "_ff_tcp_protocol", "_ff_udp_protocol",
 )
-# Libraries the previous artifacts linked and these must not: the TLS/bignum
-# stack that left with the network stack, and the Vulkan/libplacebo/shaderc/
-# libass stack the upstream build carried for a player UI this engine is not.
+# Libraries these artifacts must not link: the TLS/bignum stack that left with
+# the network stack, and the Vulkan/libplacebo/shaderc/libass player stack.
 FORBIDDEN_UNDEFINED_PREFIXES = (
     "_gnutls_", "_nettle_", "___gmpz_", "___gmpn_",
     "_vkGet", "_vkCreate", "_pl_", "_shaderc_", "_ass_",
@@ -261,9 +259,9 @@ def main():
     with tarfile.open(archive) as tar:
         tar.extractall(work, filter="data")
     for patch in PATCHES:
-        # hls.c refuses any URL whose scheme has no registered protocol, which
-        # with the network stack gone is every http(s) URL; the patch lets it
-        # classify the scheme from the URL and hand the open to io_open.
+        # hls.c refuses a URL whose scheme has no registered protocol, which
+        # without the network stack is every http(s) URL. The patch classifies
+        # the scheme from the URL and hands the open to io_open.
         print(f"Applying {patch.name}", flush=True)
         with patch.open() as stream:
             subprocess.run(["patch", "-p1", "--batch"], cwd=source, stdin=stream, check=True)
@@ -326,9 +324,8 @@ def main():
             framework.mkdir(parents=True)
             run(["lipo", "-create", *[build / directory / f"{directory}.a" for build in builds],
                  "-output", framework / name])
-            # Upstream's own public header set for this library, as `make
-            # install-headers` lays it out; their includes of each other resolve
-            # across the four frameworks.
+            # Upstream's public headers as `make install-headers` lays them
+            # out; their cross-includes resolve across the four frameworks.
             shutil.copytree(primary / "install/include" / directory, framework / "Headers")
             shutil.copyfile(primary / "config.h", framework / "Headers/config.h")
             shutil.copyfile(primary / "config_components.h", framework / "Headers/config_components.h")

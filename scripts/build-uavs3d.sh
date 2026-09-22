@@ -1,30 +1,25 @@
 #!/usr/bin/env bash
 #
 # Builds uavs3d, the AVS3 decoder libavcodec wraps as `libuavs3d`, as an
-# xcframework for the engine, with its arm64 assembly and 10-bit decoding.
-#
-# It used to come from mpvkit/libuavs3d-build 1.2.1-fix, a hand-made
-# packaging tag in a repository nobody here controls. Building it here removes
-# that download. The source is upstream's own repository at a pinned commit,
-# fetched as a tarball and SHA-256 checked: uavs3d has not tagged a release
-# since 1.2, and this is the commit MPVKit built from (its recipe tracks the
-# default branch, and nothing has landed there since).
+# xcframework with its arm64 assembly and 10-bit decoding.
 #
 #   scripts/build-uavs3d.sh                     # build and install into the package
 #   scripts/build-uavs3d.sh --output /tmp/out   # build somewhere else
 #   scripts/build-uavs3d.sh --verify-only <xcframework>
 #
-# Requires only Xcode. Upstream builds with CMake, but its CMakeLists is a
-# flat list of sources, one define per architecture and COMPILE_10BIT, so this
-# compiles that same list with clang directly rather than adding CMake to the
-# toolchain. If upstream's list changes, this one has to follow it.
+# Requires only Xcode. Source: upstream's repository at a pinned commit,
+# fetched as a tarball and SHA-256 checked. uavs3d has tagged nothing since
+# 1.2, and this is the commit MPVKit's libuavs3d-build 1.2.1-fix used.
 #
-# As with dav1d, the simulator and macOS slices are fat arm64 + x86_64, and
-# only arm64 is checked for assembly. On x86_64 upstream compiles its SSE and
-# AVX2 files, but its own platform test never selects them on an Apple
-# toolchain (it looks for __MACOSX__, __linux__ or __unix__, none of which
-# Apple's clang defines), so x86_64 runs the C path. That matches the artifact
-# this replaces, and x86_64 is only ever a simulator on an Intel Mac.
+# Upstream's CMakeLists is a flat source list with one define per architecture
+# and COMPILE_10BIT, so this compiles the same list with clang directly. If
+# upstream's list changes, this one must follow.
+#
+# As with dav1d, simulator and macOS slices are fat arm64 + x86_64 and only
+# arm64 is checked for assembly. On x86_64 upstream's platform test never
+# selects SSE/AVX2 with Apple's clang (it looks for __MACOSX__, __linux__ or
+# __unix__), so x86_64 runs the C path, as the previous artifact did.
+#
 #
 set -euo pipefail
 
@@ -35,7 +30,7 @@ UAVS3D_SHA256="1c1eb778b6080bc01493180ea7ae671c6444ce3aa760b5d021ba882eb0f9e3a0"
 # is hard-coded in that script, and 89 is the commit count at the pin.
 UAVS3D_VERSION="1.2.89"
 # Matches the engine's deployment targets; the artifact cannot be used below
-# these.
+# them.
 TVOS_MIN="26.0"
 IOS_MIN="26.0"
 MACOS_MIN="14.0"
@@ -159,9 +154,8 @@ for entry in "${builds[@]}"; do
     rm -rf "$build"
     mkdir -p "$build"
 
-    # CMake's Release flags plus upstream's own: C99, position-independent,
-    # 10-bit. -target is what stamps the platform load command into the
-    # assembled objects, as in build-dav1d.sh.
+    # CMake's Release flags plus upstream's: C99, PIC, 10-bit. -target stamps
+    # the platform load command, as in build-dav1d.sh.
     cflags=(-target "$triple" -isysroot "$sysroot" -std=c99 -fPIC -fno-common
             -O3 -DNDEBUG -DCOMPILE_10BIT=1 -I"$src/source/decore" -w)
     # sources as "path|extra flags"
@@ -211,8 +205,8 @@ for group in "${group_order[@]}"; do
         [ "${pair%%|*}" = "$group" ] && libs+=("${pair#*|}")
     done
 
-    # Same framework and module name the MPVKit artifact used, so the
-    # Package.swift target name does not move.
+    # The MPVKit artifact's framework and module name, so Package.swift's
+    # target name stays put.
     fw="$work/frameworks/$group/Libuavs3d.framework"
     mkdir -p "$fw/Headers" "$fw/Modules"
     if [ "${#libs[@]}" -gt 1 ]; then
@@ -228,7 +222,7 @@ framework module Libuavs3d [system] {
 }
 MODULE
     # MinimumOSVersion is deliberately out of reach of any real OS; see the
-    # same block in build-dav1d.sh for why (ITMS-90208, build 74).
+    # same block in build-dav1d.sh (ITMS-90208).
     cat > "$fw/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

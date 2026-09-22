@@ -4,12 +4,10 @@
 # --disable-* lines have switched the whole category off. Order is
 # significant: a --disable-*s line must precede the --enable-* lines it scopes.
 #
-# Provenance: this is FFmpeg n8.1.2's set as selected by MPVKit 1.0.0, which is
-# where Libavcodec, Libavutil and Libswresample used to come from, so building
-# all four libraries here changed nothing about what they decode. It was
-# captured by parsing FFMPEG_CONFIGURATION out of MPVKit's own build. The last
-# two decoders are the external ones, dav1d for AV1 and uavs3d for AVS3; the
-# script enables the libraries they wrap.
+# Provenance: FFmpeg n8.1.2's set as selected by MPVKit 1.0.0, parsed from its
+# FFMPEG_CONFIGURATION, so building here decodes exactly what MPVKit did. The
+# last two decoders are external, dav1d (AV1) and uavs3d (AVS3); the script
+# enables the libraries they wrap.
 #
 # To regenerate after an FFmpeg bump, build once and read the list back out of
 # the artifact, which records every flag it was configured with:

@@ -1,18 +1,6 @@
 #!/usr/bin/env bash
 #
-# Builds dav1d as an xcframework for Lagoon, with its arm64 assembly enabled.
-#
-# Why this exists: Lagoon used to take dav1d from
-# mpvkit/libdav1d-build, whose recipe passes
-#
-#     -Denable_asm=false   // disable "No platform load command found" warning after xcode 15
-#
-# so every AV1 frame ran dav1d's portable C path. On an Apple TV that measured
-# 11.4 fps against the 23.976 a 4K HDR10+ episode needs. The warning it was
-# silencing is real but cosmetic: meson assembles dav1d's .S files with the C
-# compiler, and without an explicit -target those objects carry no platform
-# load command. Passing -target to the assembler fixes the warning properly and
-# keeps the SIMD, which is what this script does.
+# Builds dav1d as an xcframework with its arm64 assembly enabled.
 #
 #   scripts/build-dav1d.sh                     # build and install into the package
 #   scripts/build-dav1d.sh --output /tmp/out   # build somewhere else
@@ -20,30 +8,25 @@
 #
 # Requires meson and ninja (brew install meson ninja).
 #
-# The simulator and macOS slices are fat arm64 + x86_64, because a
-# `generic/platform=tvOS Simulator` build compiles both and refuses to link
-# against a slice carrying only one. arm64 is built with assembly and x86_64
-# is not, which is deliberate:
+# mpvkit/libdav1d-build passes -Denable_asm=false to silence a "No platform
+# load command found" warning, so AV1 ran dav1d's C path: 11.4 fps on Apple TV
+# against the 23.976 a 4K HDR10+ episode needs. Passing -target to the
+# assembler fixes the warning and keeps the SIMD.
 #
-#   * arm64 is every Apple TV, every iPhone, and the simulator on an Apple
-#     silicon Mac. It is the entire point of this script, and the check below
-#     fails the build if its assembly ever goes missing again.
-#   * x86_64 is reachable only from a simulator on an Intel Mac. Its assembly
-#     comes from nasm, which cannot emit a platform load command, so every
-#     clean simulator link would print 46 "no platform load command" warnings
-#     for code that cannot run on any device and never runs on this project's
-#     hardware at all.
+# Simulator and macOS slices are fat arm64 + x86_64, because a
+# `generic/platform=tvOS Simulator` build links both. Only arm64 gets assembly:
 #
-# That is the same trade upstream made, and it is only defensible because it
-# is scoped to an architecture that never ships. Upstream made it for arm64
-# as well, which is what cost a factor of ten on the device.
+#   * arm64 is every device and Apple silicon simulators. The check below fails
+#     the build if its assembly goes missing.
+#   * x86_64 runs only in an Intel Mac simulator. Its nasm objects cannot carry
+#     a platform load command and would print 46 warnings per clean link, so
+#     it stays on the C path. Acceptable only because it never ships.
 #
 set -euo pipefail
 
 DAV1D_VERSION="1.5.4"
 DAV1D_REPO="https://code.videolan.org/videolan/dav1d.git"
-# Matches the app's own deployment targets; the artifact cannot be used below
-# these.
+# Matches the app's deployment targets; the artifact cannot be used below them.
 TVOS_MIN="26.0"
 IOS_MIN="26.0"
 MACOS_MIN="14.0"
@@ -66,10 +49,9 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# The check that must never stop being run. A dav1d without these symbols
-# still decodes every file correctly, just about ten times slower, so nothing
-# fails and nothing looks wrong until someone measures a 4K stream on a device
-# with two performance cores. That is how this shipped in the first place.
+# Never stop running this. A dav1d without these symbols decodes correctly,
+# just about ten times slower, so nothing fails until someone measures 4K on a
+# device.
 verify_asm() {
     local framework="$1" failures=0
     echo "== verifying assembly is present =="
@@ -118,8 +100,8 @@ fi
 
 # group | sdk | arch | clang target triple | platform name for Info.plist
 #
-# One build per architecture; architectures sharing a group are lipo'd into one
-# fat framework, which is what an xcframework slice is.
+# One build per architecture; a group's architectures are lipo'd into one fat
+# framework (an xcframework slice).
 builds=(
     "tvos|appletvos|arm64|arm64-apple-tvos${TVOS_MIN}|AppleTVOS"
     "tvos-simulator|appletvsimulator|arm64|arm64-apple-tvos${TVOS_MIN}-simulator|AppleTVSimulator"
@@ -127,9 +109,8 @@ builds=(
     "ios|iphoneos|arm64|arm64-apple-ios${IOS_MIN}|iPhoneOS"
     "ios-simulator|iphonesimulator|arm64|arm64-apple-ios${IOS_MIN}-simulator|iPhoneSimulator"
     "ios-simulator|iphonesimulator|x86_64|x86_64-apple-ios${IOS_MIN}-simulator|iPhoneSimulator"
-    # Lagoon never runs on macOS, but SwiftPM resolves this package for the
-    # host when Xcode indexes it, and a missing slice surfaces there as a
-    # package error.
+    # Never run on macOS, but SwiftPM resolves the package for the host when
+    # Xcode indexes it, and a missing slice is a package error there.
     "macos|macosx|arm64|arm64-apple-macos${MACOS_MIN}|MacOSX"
     "macos|macosx|x86_64|x86_64-apple-macos${MACOS_MIN}|MacOSX"
 )
@@ -151,9 +132,8 @@ for entry in "${builds[@]}"; do
         *) echo "unknown arch $arch" >&2; exit 1 ;;
     esac
 
-    # -target is the whole point: it is what stamps the platform load command
-    # into the objects meson assembles from dav1d's .S files, which is the
-    # warning upstream silenced by throwing away the assembly instead.
+    # -target stamps the platform load command into the objects meson
+    # assembles from dav1d's .S files.
     cat > "$work/cross-$group-$arch.ini" <<CROSS
 [binaries]
 c = ['clang', '-target', '$triple', '-isysroot', '$sysroot']
@@ -207,8 +187,8 @@ for group in "${group_order[@]}"; do
         [ "${pair%%|*}" = "$group" ] && libs+=("${pair#*|}")
     done
 
-    # Same static-framework shape the previous artifact used, so the module
-    # name and header paths _LagoonFFmpeg builds against do not move.
+    # Static-framework shape, so the module name and header paths
+    # _LagoonFFmpeg builds against stay put.
     fw="$work/frameworks/$group/Libdav1d.framework"
     mkdir -p "$fw/Headers" "$fw/Modules"
     if [ "${#libs[@]}" -gt 1 ]; then
@@ -223,18 +203,12 @@ framework module Libdav1d [system] {
     export *
 }
 MODULE
-    # MinimumOSVersion is deliberately above any OS that exists, which is
-    # what every sibling artifact in this package declares and what App Store
-    # validation requires (ITMS-90208). The check is "the app's minimum must
-    # not exceed the framework's", and Xcode builds a stub dylib per binary
-    # target using exactly this value, so a framework declaring the app's own
-    # minimum sits on the boundary and is rejected: build 74 was.
-    #
-    # It has no runtime meaning. The stub never loads - dav1d is a static
-    # archive linked into the app binary - and putting the value out of reach
-    # of any real OS also makes this immune to future deployment-target bumps.
-    # The deployment targets above still apply to the code itself, through
-    # -target, which is what actually has to be right.
+    # MinimumOSVersion is deliberately above any real OS, like every sibling
+    # artifact. App Store validation (ITMS-90208) rejects a framework whose
+    # minimum equals the app's, because Xcode builds a stub dylib per binary
+    # target with this value. It has no runtime meaning: dav1d links
+    # statically and the stub never loads. -target sets the real deployment
+    # target.
     min="100.0"
     cat > "$fw/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

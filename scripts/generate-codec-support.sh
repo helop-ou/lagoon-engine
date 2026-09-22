@@ -2,29 +2,16 @@
 #
 # Regenerates docs/codec-support.md from EngineCodecSupport.
 #
-# The table is generated rather than written because a hand-maintained list
-# drifts from the routing switches the moment somebody adds a codec, and a
-# published table that overstates what plays is worse than none. Generating it
-# means the document is by construction the same set the demuxer and the
-# software decoder agree on — the tests beside the renderer pin it to both.
-#
-# The renderer lives in the test target because that is the only place with
-# access to the table. It prints the document rather than writing a file: a
-# package test target runs in a generic runner whose container is cleared when
-# the run ends, so a path reported from inside it points at nothing by the time
-# this script looks.
-#
-# Each printed line is wrapped in its own markers, because the test runner
-# writes progress to the same stream and its writes land inside these lines
-# rather than on lines of their own. Cutting between one begin/end pair failed
-# about half the time: the end marker came back as `CODEC_DOC_END✔ Test ...`,
-# an anchored pattern stopped matching it, and everything after it went into
-# the document.
-#
 #   scripts/generate-codec-support.sh           # regenerate the document
 #   scripts/generate-codec-support.sh --check   # fail if it is out of date
 #
 # Override the simulator with LAGOON_CODEC_DOC_DESTINATION.
+#
+# Generated so the table cannot drift from what the demuxer and software
+# decoder accept; tests pin it to both. The renderer lives in the test target,
+# the only place with access to the table, and prints the document because the
+# test runner's container is cleared when the run ends. Each line has its own
+# markers because runner output lands inside printed lines.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,8 +36,7 @@ fi
 
 generated="$(mktemp)"
 trap 'rm -f "$log" "$generated"' EXIT
-# Keep only what lies between a line's own markers, so runner output that
-# landed against either end is trimmed rather than taken for document text.
+# Keep only what lies between a line's own markers, trimming runner output.
 awk '
     { start = index($0, "CODEC_DOC|") }
     start == 0 { next }
@@ -67,8 +53,8 @@ if [ ! -s "$generated" ]; then
     exit 1
 fi
 
-# A line lost to interleaving would otherwise be copied over the document as a
-# quiet truncation, so check the shape before trusting it.
+# A line lost to interleaving would silently truncate the document, so check
+# the shape first.
 if [ "$(head -1 "$generated")" != "# Codec support" ] \
     || ! grep -q '^## Audio$' "$generated" \
     || ! grep -q '^## Interlacing$' "$generated"; then
