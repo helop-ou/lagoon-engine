@@ -513,8 +513,8 @@ nonisolated enum ASSSubtitleTextParser {
 
 /// Parses the external subtitle files Jellyfin delivers (vtt per the
 /// device profile; srt tolerated since the timestamp shapes overlap).
-nonisolated enum SubtitleParser {
-    static func cues(from data: Data, languageHint: String? = nil) -> [SubtitleCue] {
+public nonisolated enum SubtitleParser {
+    static public func cues(from data: Data, languageHint: String? = nil) -> [SubtitleCue] {
         guard data.count <= DownloadLimit.subtitle, !Task.isCancelled,
               let content = SubtitleTextDecoder.text(from: data, languageHint: languageHint) else {
             return []

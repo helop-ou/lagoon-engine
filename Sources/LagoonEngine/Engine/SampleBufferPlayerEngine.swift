@@ -3261,7 +3261,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine {
     /// tags none of its tracks leaves position as the only thing telling
     /// them apart, so where a name is not unique the position joins it —
     /// both to pick with and to recognise afterwards.
-    nonisolated static func disambiguated(_ tracks: [PlayerTrack]) -> [PlayerTrack] {
+    nonisolated public static func disambiguated(_ tracks: [PlayerTrack]) -> [PlayerTrack] {
         var counts: [String: Int] = [:]
         for track in tracks {
             counts[track.displayName, default: 0] += 1

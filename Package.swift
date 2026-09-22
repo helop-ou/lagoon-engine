@@ -46,6 +46,15 @@ let package = Package(
                 .swiftLanguageMode(.v5),
             ]
         ),
+        .testTarget(
+            name: "LagoonEngineTests",
+            dependencies: ["LagoonEngine"],
+            path: "Tests/LagoonEngineTests",
+            swiftSettings: [
+                .defaultIsolation(MainActor.self),
+                .swiftLanguageMode(.v5),
+            ]
+        ),
         .target(
             name: "_LagoonFFmpeg",
             dependencies: [
