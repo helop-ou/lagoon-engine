@@ -13,7 +13,9 @@ import Foundation
 public nonisolated final class ProcessCPUTrace: @unchecked Sendable {
     public init() {}
 
-    static public let enabled = UserDefaults.standard.bool(forKey: "debug.decodeTrace")
+    /// Read once per process: the trace tags threads as they run, so it must
+    /// not start and stop underneath a decode that is already sampling.
+    static public let enabled = EngineTuning.current.tracesDecodeThreads
 
     /// Unnamed GCD threads are indistinguishable from each other, so the
     /// decode queue tags the thread it last ran on; it is the one thread whose

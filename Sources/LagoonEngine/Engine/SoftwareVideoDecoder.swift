@@ -518,15 +518,10 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         let toneMapHDRByDefault = false
         #endif
 
-        let defaults = UserDefaults.standard
-        let outputModeKey = "debug.softwareDecodeOutputMode"
-        let compressedOutputKey = "debug.softwareDecodeCompressedOutput"
-        let legacyCompressedOutput = defaults.object(forKey: compressedOutputKey) == nil
-            ? nil
-            : defaults.bool(forKey: compressedOutputKey)
+        let tuning = EngineTuning.current
         var requestedOutputMode = Self.outputMode(
-            requestedValue: defaults.string(forKey: outputModeKey),
-            legacyCompressedOutput: legacyCompressedOutput,
+            requestedValue: tuning.softwareDecodeOutputMode,
+            legacyCompressedOutput: tuning.softwareDecodeCompressedOutput,
             toneMapHDRByDefault: toneMapHDRByDefault
         )
 
@@ -550,7 +545,10 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                 properties: properties
             )
             if gpuSetup == nil {
-                if defaults.object(forKey: outputModeKey) != nil {
+                // An explicitly requested mode fails hard rather than
+                // falling back, so an experiment cannot quietly measure the
+                // path it was not asked for.
+                if tuning.softwareDecodeOutputMode != nil {
                     var framePointer: UnsafeMutablePointer<AVFrame>? = decodedFrame
                     av_frame_free(&framePointer)
                     var contextPointer: UnsafeMutablePointer<AVCodecContext>? = context
@@ -631,7 +629,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                 }
             }
         }
-        if defaults.object(forKey: outputModeKey) != nil,
+        if tuning.softwareDecodeOutputMode != nil,
            requestedOutputMode.usesPixelTransfer,
            transferSetup == nil {
             var framePointer: UnsafeMutablePointer<AVFrame>? = decodedFrame
@@ -709,7 +707,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         formatDescription = description
         detailedTimings = PipelineStageTimings(
             enabled: codecpar.pointee.codec_id == AV_CODEC_ID_AV1
-                && UserDefaults.standard.bool(forKey: "debug.av1PipelineProfile")
+                && EngineTuning.current.profilesAV1Pipeline
         )
         if detailedTimings.enabled {
             print("SoftwareVideoDecoder codec=\"\(codecName)\" longName=\"\(codecLongName)\""
@@ -1251,7 +1249,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             sourcePeakNits: sourcePeakNits(codecpar),
             targetPeakNits: Float(min(max(targetNits, 100), 1000)),
             outputBitDepth: 10,
-            verbose: UserDefaults.standard.bool(forKey: "debug.av1PipelineProfile")
+            verbose: EngineTuning.current.profilesAV1Pipeline
         )) else { return nil }
         let destinationFullRange = fullRange && !mode.convertsToSDR
         let preferLossless = SoftwareDecodeThreadPolicy.commandLineString(

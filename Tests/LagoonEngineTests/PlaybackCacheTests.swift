@@ -26,41 +26,35 @@ struct PlaybackCacheTests {
         #expect(loader.requestedRanges.last == PlaybackByteRange(4_096, 4_096 + 1_024 * 1_024))
     }
 
-    @Test func directFilesUseCachedTransportWhileReleaseHLSStaysNative() {
-        let suiteName = "PlaybackCacheTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+    @Test func directFilesUseCachedTransportWhileManifestsStayNative() {
+        // Nothing installed: a host that says nothing gets the safe answer.
+        #expect(PlaybackBufferPolicy.customIOEnabled(for: .stableFile, tuning: EngineTuning()))
+        #expect(!PlaybackBufferPolicy.customIOEnabled(for: .segmentedManifest, tuning: EngineTuning()))
 
-        #expect(PlaybackBufferPolicy.customIOEnabled(for: .stableFile, defaults: defaults))
-        #expect(PlaybackBufferPolicy.customIOEnabled(for: .stableFile, defaults: defaults))
-        #expect(!PlaybackBufferPolicy.customIOEnabled(for: .segmentedManifest, defaults: defaults))
-        defaults.set(true, forKey: "debug.experimentalPlaybackCache")
-        #if DEBUG
-        #expect(PlaybackBufferPolicy.customIOEnabled(for: .segmentedManifest, defaults: defaults))
-        #else
-        #expect(!PlaybackBufferPolicy.customIOEnabled(for: .segmentedManifest, defaults: defaults))
-        #endif
+        // A manifest is cached only when a host asks for it, because the
+        // manifest is mutable and the cache assumes one stable resource.
+        var tuning = EngineTuning()
+        tuning.cachesSegmentedManifests = true
+        #expect(PlaybackBufferPolicy.customIOEnabled(for: .segmentedManifest, tuning: tuning))
+        #expect(PlaybackBufferPolicy.customIOEnabled(for: .stableFile, tuning: tuning))
     }
 
     @Test func aCompleteFilePlaysWithoutTheSessionUnlessItIsADisc() {
-        let suiteName = "PlaybackCacheTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
+        let tuning = EngineTuning()
         // Streaming: the session is the transport.
         #expect(PlaybackBufferPolicy.engineUsesCacheSession(
-            playsFromCompleteFile: false, disc: false, delivery: .stableFile, defaults: defaults))
+            playsFromCompleteFile: false, disc: false, delivery: .stableFile, tuning: tuning))
         // A complete ordinary file plays straight from disk.
         #expect(!PlaybackBufferPolicy.engineUsesCacheSession(
-            playsFromCompleteFile: true, disc: false, delivery: .stableFile, defaults: defaults))
+            playsFromCompleteFile: true, disc: false, delivery: .stableFile, tuning: tuning))
         // A complete disc image still needs the session: the UDF reader
         // mounts it through the session's byte source, and without one the
         // raw image reached libavformat and fell to a server remux.
         #expect(PlaybackBufferPolicy.engineUsesCacheSession(
-            playsFromCompleteFile: true, disc: true, delivery: .stableFile, defaults: defaults))
-        // A transcode never gets the session in Release, disc or not.
+            playsFromCompleteFile: true, disc: true, delivery: .stableFile, tuning: tuning))
+        // A manifest never gets the session by default, disc or not.
         #expect(!PlaybackBufferPolicy.engineUsesCacheSession(
-            playsFromCompleteFile: false, disc: true, delivery: .segmentedManifest, defaults: defaults))
+            playsFromCompleteFile: false, disc: true, delivery: .segmentedManifest, tuning: tuning))
     }
 
     @Test func aHostIsToldWhetherBytesWillBeCachedBeforeAnEngineCanAnswer() {

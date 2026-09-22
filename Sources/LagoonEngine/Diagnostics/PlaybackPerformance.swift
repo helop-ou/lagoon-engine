@@ -135,7 +135,7 @@ public nonisolated enum PlaybackLifecycleDiagnostics {
         // `debug.playbackLifecycleLog`: the same events the signpost carries,
         // on stdout, because signposts do not reach `simctl launch --console`
         // and renderer retirement is exactly what needs watching there.
-        if UserDefaults.standard.bool(forKey: "debug.playbackLifecycleLog") {
+        if EngineTuning.current.logsPlaybackLifecycle {
             let who = id.map { String($0.uuidString.prefix(4)) } ?? "----"
             print("Lifecycle \(event) id=\(who) \(value.regressionValue)")
         }

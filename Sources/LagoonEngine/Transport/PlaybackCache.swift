@@ -15,20 +15,19 @@ nonisolated enum PlaybackBufferPolicy {
 
     static func customIOEnabled(
         for delivery: MediaDelivery,
-        defaults: UserDefaults = .standard
+        tuning: EngineTuning = .current
     ) -> Bool {
         switch delivery {
         case .stableFile:
             true
         case .segmentedManifest:
-            // Off by default, so a build nobody has touched behaves exactly
-            // as before. It is readable in Release rather than DEBUG-only
-            // because the only hardware that can answer whether this helps is
-            // an Apple TV, and pairing one to Xcode costs it HDCP 2.2 until
-            // it is unpaired again — so a debug build is not a thing that can
-            // be run there in practice. Settings, Playback Diagnostics
-            // exposes the switch alongside the HUD.
-            defaults.bool(forKey: "debug.experimentalPlaybackCache")
+            // Off by default, so a host that installs nothing behaves exactly
+            // as before. Honoured in Release rather than DEBUG-only because
+            // the only hardware that can answer whether this helps is an
+            // Apple TV, and pairing one to Xcode costs it HDCP 2.2 until it
+            // is unpaired again — so a debug build is not a thing that can be
+            // run there in practice.
+            tuning.cachesSegmentedManifests
         }
     }
 
@@ -42,9 +41,9 @@ nonisolated enum PlaybackBufferPolicy {
         playsFromCompleteFile: Bool,
         disc: Bool,
         delivery: MediaDelivery,
-        defaults: UserDefaults = .standard
+        tuning: EngineTuning = .current
     ) -> Bool {
-        guard customIOEnabled(for: delivery, defaults: defaults) else { return false }
+        guard customIOEnabled(for: delivery, tuning: tuning) else { return false }
         return disc || !playsFromCompleteFile
     }
 }
@@ -1859,7 +1858,7 @@ final class PlaybackCacheCoordinator {
         )
         let available = (volumeAttributes?[.systemFreeSize] as? NSNumber)?.int64Value
         self.byteLimit = byteLimit
-            ?? Self.debugByteLimitOverride()
+            ?? Self.capOverride()
             ?? Self.recommendedByteLimit(availableBytes: available)
         self.isEnabled = isEnabled
         self.allowsTranscodeCaching = allowsTranscodeCaching
@@ -1974,15 +1973,11 @@ final class PlaybackCacheCoordinator {
     }
 
     /// A device only reaches the windowed path after buffering gigabytes, so
-    /// `debug.playbackCacheCapMB` forces a small cap and makes the sliding
-    /// window observable within a minute of ordinary playback.
-    private static func debugByteLimitOverride() -> Int64? {
-        #if DEBUG
-        let megabytes = UserDefaults.standard.integer(forKey: "debug.playbackCacheCapMB")
+    /// a host can force a small cap and make the sliding window observable
+    /// within a minute of ordinary playback.
+    private static func capOverride() -> Int64? {
+        let megabytes = EngineTuning.current.cacheCapacityMegabytes
         return megabytes > 0 ? Int64(megabytes) * 1_024 * 1_024 : nil
-        #else
-        return nil
-        #endif
     }
 
     private func removeStaleScopes() {

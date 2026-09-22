@@ -59,7 +59,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// audioFloorSeconds` was chosen in the simulator, and build 66 is why
     /// this mode stays off until a hardware pass shows a healthy title's
     /// lead sitting well above it.
-    public let buffersOnAudioStarvation = UserDefaults.standard.bool(forKey: "debug.bufferOnAudioStarvation")
+    public let buffersOnAudioStarvation = EngineTuning.current.buffersOnAudioStarvation
     /// Bounded stall recovery should normally refill in place. Count the
     /// five-second seek fallback separately so the regression can prove
     /// whether it
@@ -366,7 +366,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     @ObservationIgnored nonisolated private let lifecycleID = UUID()
     @ObservationIgnored nonisolated private let audioContinuity = AudioContinuityMonitor()
     @ObservationIgnored nonisolated private let av1PipelineTimings = RendererPipelineTimings(
-        enabled: UserDefaults.standard.bool(forKey: "debug.av1PipelineProfile")
+        enabled: EngineTuning.current.profilesAV1Pipeline
     )
     @ObservationIgnored nonisolated(unsafe) private var av1PipelineTimer: DispatchSourceTimer?
     @ObservationIgnored nonisolated(unsafe) private var videoDecoder: VideoToolboxDecoder?
@@ -638,10 +638,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // Debug switches, read once per playback like the HUD's: the strip
         // experiment must not change mid-A/B, and the bench arms in
         // beginPlayback.
-        demuxer.dolbyVisionProfile7Mode = UserDefaults.standard.bool(forKey: "debug.stripDoviEL")
+        let tuning = EngineTuning.current
+        demuxer.dolbyVisionProfile7Mode = tuning.stripsDolbyVisionEnhancementLayer
             ? .stripToHDR10 : .convert
-        demuxer.markDroppableFrames = UserDefaults.standard.bool(forKey: "debug.markDroppableFrames")
-        benchEnabled = UserDefaults.standard.bool(forKey: "debug.frameLossBench")
+        demuxer.markDroppableFrames = tuning.marksDroppableFrames
+        benchEnabled = tuning.runsFrameLossBench
 
         os_signpost(
             .event,
@@ -1214,9 +1215,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // queued surfaces. This launch-only hook reproduces that timing on
         // CoreSimulator so autoplay must prove it never overlaps the old
         // renderer with the successor.
-        let regressionDelay = UserDefaults.standard.double(
-            forKey: "debug.regressionRendererRetirementDelaySeconds"
-        )
+        let regressionDelay = EngineTuning.current.rendererRetirementDelaySeconds
         if regressionDelay > 0 {
             Thread.sleep(forTimeInterval: regressionDelay)
         }
@@ -2062,7 +2061,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             if let stage = softwareDecodeStage {
                 gates += " output=\"\(stage.outputModeName)\""
             }
-            gates += " hud=\"\(UserDefaults.standard.bool(forKey: "debug.playbackHUD") ? "on" : "off")\""
+            gates += " hud=\"\(EngineTuning.current.hostShowsPlaybackHUD ? "on" : "off")\""
             if let supplement = benchGatesSupplement?(), !supplement.isEmpty {
                 gates += " " + supplement
             }
@@ -3073,7 +3072,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         audioQueue.interruptWaits()
         demuxer.interrupt()
         let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        if UserDefaults.standard.bool(forKey: "debug.av1PipelineProfile") {
+        if EngineTuning.current.profilesAV1Pipeline {
             let output = softwareDecodeStage?.outputModeName ?? "unknown"
             print("SoftwareVideoDecodeFailure output=\"\(output)\" detail=\"\(detail)\"")
         }
