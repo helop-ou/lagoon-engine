@@ -11,6 +11,49 @@ This file is the source of truth for release notes, and
 An entry is for somebody adopting or upgrading the package, not for a reader
 of the diff.
 
+## 1.0.1
+
+September 2026. No API change. Upgrading is a version bump and nothing else.
+
+### The package builds its own libavformat
+
+`scripts/build-ffmpeg-format.py` no longer downloads MPVKit's
+`Libavformat.xcframework` on every run. It used to fetch it for two things:
+the list of muxers, demuxers, encoders and decoders to configure, read out of
+that build's `config.h`, and the public headers to vend. Both now come from
+the repository — the selection list is committed at
+`scripts/ffmpeg-format-selections.txt` with its provenance, and the headers
+are copied out of the FFmpeg source being compiled, so they cannot drift from
+it.
+
+The only thing the build downloads is FFmpeg's own checksum-pinned source
+tarball. This matters if you build the artifact yourself, and it matters for
+the project's ability to keep building at all: the script that exists to
+rebuild libavformat independently could not itself run without a third
+party's release staying up.
+
+`Libavcodec`, `Libavutil`, `Libswresample`, `lcms2` and `Libuavs3d` are still
+fetched from MPVKit as binary targets, and still carry upstream's
+`--enable-version3` election. That is a separate piece of work.
+
+### Building the package
+
+`CONTRIBUTING.md` told you to run `swift build` and `swift test`. Neither
+works, and neither ever did: the package declares iOS and tvOS only, so
+SwiftPM's host build gets a macOS deployment target older than the APIs the
+engine uses, and `os_proc_available_memory()` is unavailable on macOS at any
+version. Build and test against a simulator destination instead; the
+contributing guide now says so and explains why the failure is not a broken
+checkout.
+
+### The artifact
+
+`Libavformat.xcframework` was rebuilt from FFmpeg n8.1.2 by the standalone
+script. Same 131 codec selections, verified identical to the previous build,
+and the same five public headers, verified byte-identical. `config.h` differs
+only in the recorded build path and compiler version, which is the documented
+non-reproducibility across Xcode versions.
+
 ## 1.0.0
 
 September 2026. The first tagged release.
