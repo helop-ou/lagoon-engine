@@ -82,6 +82,14 @@ queues. Everything else is what you would expect: `pause()`, `seek(to:)`,
 `shutdown()` when you are done. Read `audioTracks` and `subtitleTracks`
 once playback has started to see what the file offers.
 
+### What it plays
+
+[docs/codec-support.md](docs/codec-support.md) is the generated list: which
+video and audio codecs decode, whether each reaches VideoToolbox or
+libavcodec, how Dolby Vision and HDR10 are carried, and what is
+deinterlaced. It is rendered from the same table the routing code is
+tested against, so it cannot promise something the engine refuses.
+
 ### Buffering ahead
 
 Give the media a name and say how it is delivered, and the engine puts a

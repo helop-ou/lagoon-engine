@@ -103,7 +103,16 @@ done
 [ -z "$missing" ] || die "the revision is missing dependency materials:${missing}"
 ok "licence and provenance materials are in the archive"
 
-# 6. A tag a consumer cannot build is the failure this whole script exists to
+# 6. The published codec table is what somebody reads to decide whether this
+#    package plays their media. A stale one overstates or understates it, and
+#    both are worse than no table.
+if [ "$verify" = true ]; then
+    "$root/scripts/generate-codec-support.sh" --check >/dev/null 2>&1 \
+        || die "docs/codec-support.md is out of date. Run scripts/generate-codec-support.sh"
+    ok "docs/codec-support.md is current"
+fi
+
+# 7. A tag a consumer cannot build is the failure this whole script exists to
 #    prevent, and it is the one guard that costs real time.
 if [ "$verify" = true ]; then
     note "building and testing both platforms, which takes a few minutes"
