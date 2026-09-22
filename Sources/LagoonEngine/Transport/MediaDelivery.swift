@@ -11,7 +11,7 @@ import Foundation
 /// `PlayMethod` used to be read here directly, which put a wire enum from one
 /// media server inside the decode path; a host maps its own negotiation onto
 /// these two cases instead.
-nonisolated enum MediaDelivery: Sendable, Equatable {
+public nonisolated enum MediaDelivery: Sendable, Equatable {
     /// One resource at one URL, whole and stable for the life of the read.
     /// Range requests address the same bytes every time, so the cache can
     /// keep what it has already fetched.

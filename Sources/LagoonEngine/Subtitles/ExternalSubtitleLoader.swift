@@ -1,17 +1,17 @@
 import Foundation
 
-nonisolated enum SubtitleLoadState: Equatable {
+public nonisolated enum SubtitleLoadState: Equatable {
     case idle
     case loading(id: Int, title: String)
     case failed(id: Int, title: String, message: String)
 }
 
-nonisolated enum ExternalSubtitleLoader {
+public nonisolated enum ExternalSubtitleLoader {
     /// `authorization` attaches the session credential as a header rather
     /// than letting it ride in `track.url`'s query — Jellyfin delivery URLs
     /// can arrive with a legacy `api_key`, and any URL is otherwise a
     /// potential unified-log leak if the request fails.
-    static func load(
+    static public func load(
         _ track: ExternalSubtitleTrack,
         using downloader: BoundedDownload,
         authorization: MediaRequestAuthorization? = nil
@@ -30,7 +30,7 @@ nonisolated enum ExternalSubtitleLoader {
         return try await parse(data, language: track.language)
     }
 
-    static func parse(_ data: Data, language: String?) async throws -> [SubtitleCue] {
+    static public func parse(_ data: Data, language: String?) async throws -> [SubtitleCue] {
         try Task.checkCancellation()
         guard data.count <= DownloadLimit.subtitle else { throw SubtitleFileError.tooLarge }
         let parsing = Task.detached(priority: .userInitiated) {
@@ -54,7 +54,7 @@ nonisolated enum ExternalSubtitleLoader {
 
     /// External sidecars may come from a CDN or another service. Do not
     /// mislabel their access failures as a Jellyfin account being expired.
-    static func message(for error: Error) -> String {
+    static public func message(for error: Error) -> String {
         if let failure = error as? DownloadFailure {
             switch failure {
             case .httpStatus(let status, _):

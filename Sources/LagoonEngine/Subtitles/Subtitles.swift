@@ -7,11 +7,19 @@ import Foundation
 
 /// One decoded bitmap (PGS/VobSub) with its position, normalized to the
 /// subtitle plane so the overlay can scale it onto the displayed video.
-nonisolated struct SubtitleImage: Equatable {
-    let image: CGImage
-    let rect: CGRect
+public nonisolated struct SubtitleImage: Equatable {
+    public init(
+        image: CGImage,
+        rect: CGRect
+    ) {
+        self.image = image
+        self.rect = rect
+    }
 
-    static func == (lhs: SubtitleImage, rhs: SubtitleImage) -> Bool {
+    public let image: CGImage
+    public let rect: CGRect
+
+    static public func == (lhs: SubtitleImage, rhs: SubtitleImage) -> Bool {
         lhs.image === rhs.image && lhs.rect == rhs.rect
     }
 }
@@ -19,7 +27,7 @@ nonisolated struct SubtitleImage: Equatable {
 /// An authored ASS/SSA alignment, using the format's numeric-keypad layout.
 /// The value is kept independent of SwiftUI so parsing remains testable and
 /// safe on the demux queue.
-nonisolated enum SubtitleTextAlignment: Int, Equatable, Sendable {
+public nonisolated enum SubtitleTextAlignment: Int, Equatable, Sendable {
     case bottomLeft = 1
     case bottomCenter = 2
     case bottomRight = 3
@@ -34,30 +42,38 @@ nonisolated enum SubtitleTextAlignment: Int, Equatable, Sendable {
 /// A point on the ASS script plane, normalized before it crosses from the
 /// decoder to the UI. The overlay can therefore map it onto the displayed
 /// presentation rect, including anamorphic sources.
-nonisolated struct SubtitleTextPosition: Equatable, Sendable {
-    let x: Double
-    let y: Double
+public nonisolated struct SubtitleTextPosition: Equatable, Sendable {
+    public init(
+        x: Double,
+        y: Double
+    ) {
+        self.x = x
+        self.y = y
+    }
+
+    public let x: Double
+    public let y: Double
 }
 
 /// ASS primary colour after its BGR/inverted-alpha representation has been
 /// converted to ordinary RGBA bytes.
-nonisolated struct SubtitleTextColor: Equatable, Sendable {
-    let red: UInt8
-    let green: UInt8
-    let blue: UInt8
-    let alpha: UInt8
+public nonisolated struct SubtitleTextColor: Equatable, Sendable {
+    public let red: UInt8
+    public let green: UInt8
+    public let blue: UInt8
+    public let alpha: UInt8
 }
 
 /// One inline-styled span. Keeping formatting on runs rather than on the
 /// whole event preserves mid-line emphasis without taking on a full libass
 /// renderer, karaoke timing, drawing commands, or transforms.
-nonisolated struct SubtitleTextRun: Equatable, Sendable {
-    let text: String
-    let primaryColor: SubtitleTextColor?
-    let isBold: Bool
-    let isItalic: Bool
+public nonisolated struct SubtitleTextRun: Equatable, Sendable {
+    public let text: String
+    public let primaryColor: SubtitleTextColor?
+    public let isBold: Bool
+    public let isItalic: Bool
 
-    init(
+    public init(
         text: String,
         primaryColor: SubtitleTextColor? = nil,
         isBold: Bool = false,
@@ -73,12 +89,23 @@ nonisolated struct SubtitleTextRun: Equatable, Sendable {
 /// A text composition that must stay independent from simultaneous cues.
 /// Joining these into one string is what used to stack left/right speakers
 /// and move authored signs to the dialogue shelf.
-nonisolated struct SubtitleTextCue: Equatable, Sendable {
-    let runs: [SubtitleTextRun]
-    let alignment: SubtitleTextAlignment?
-    let position: SubtitleTextPosition?
+public nonisolated struct SubtitleTextCue: Equatable, Sendable {
+    public init(
+        runs: [SubtitleTextRun],
+        alignment: SubtitleTextAlignment? = nil,
+        position: SubtitleTextPosition? = nil
+    ) {
+        self.runs = runs
+        self.alignment = alignment
+        self.position = position
+    }
 
-    static func plain(_ text: String) -> SubtitleTextCue {
+
+    public let runs: [SubtitleTextRun]
+    public let alignment: SubtitleTextAlignment?
+    public let position: SubtitleTextPosition?
+
+    static public func plain(_ text: String) -> SubtitleTextCue {
         SubtitleTextCue(
             runs: [SubtitleTextRun(text: text)],
             alignment: nil,
@@ -86,31 +113,31 @@ nonisolated struct SubtitleTextCue: Equatable, Sendable {
         )
     }
 
-    var text: String { runs.map(\.text).joined() }
+    public var text: String { runs.map(\.text).joined() }
 
-    var usesDefaultStyle: Bool {
+    public var usesDefaultStyle: Bool {
         runs.allSatisfy { $0.primaryColor == nil && !$0.isBold && !$0.isItalic }
     }
 
-    var usesDefaultPlacement: Bool { alignment == nil && position == nil }
+    public var usesDefaultPlacement: Bool { alignment == nil && position == nil }
 }
 
-nonisolated struct SubtitleCue {
-    let start: Double
+public nonisolated struct SubtitleCue {
+    public let start: Double
     /// `.infinity` marks an open-ended cue (the PGS norm: display until
     /// the next composition event) — the store closes it on the next event.
-    var end: Double
-    let textCues: [SubtitleTextCue]
-    let images: [SubtitleImage]
+    public var end: Double
+    public let textCues: [SubtitleTextCue]
+    public let images: [SubtitleImage]
 
     /// Compatibility projection for parsers/tests and accessibility. The
     /// renderer consumes `textCues` so authored compositions stay separate.
-    var text: String? {
+    public var text: String? {
         let joined = textCues.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
         return joined.isEmpty ? nil : joined
     }
 
-    init(start: Double, end: Double, text: String?, images: [SubtitleImage]) {
+    public init(start: Double, end: Double, text: String?, images: [SubtitleImage]) {
         self.init(
             start: start,
             end: end,
@@ -119,7 +146,7 @@ nonisolated struct SubtitleCue {
         )
     }
 
-    init(start: Double, end: Double, textCues: [SubtitleTextCue], images: [SubtitleImage]) {
+    public init(start: Double, end: Double, textCues: [SubtitleTextCue], images: [SubtitleImage]) {
         self.start = start
         self.end = end
         self.textCues = textCues

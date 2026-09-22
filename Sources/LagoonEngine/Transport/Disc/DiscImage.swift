@@ -49,7 +49,7 @@ nonisolated final class DiscReadBudget {
     private let deadline: TimeInterval
     private let isCancelled: () -> Bool
 
-    init(bytes: Int = 32 * 1_024 * 1_024, reads: Int = 2_048,
+    public init(bytes: Int = 32 * 1_024 * 1_024, reads: Int = 2_048,
          operations: Int = 100_000, seconds: TimeInterval = 30,
          isCancelled: @escaping () -> Bool = { false }) {
         bytesRemaining = bytes
@@ -79,13 +79,13 @@ nonisolated final class DiscReadBudget {
 }
 
 /// Ask the demuxer to read the media as a disc image rather than as a stream.
-nonisolated struct DiscPlaybackRequest: Equatable {
+public nonisolated struct DiscPlaybackRequest: Equatable {
     /// What the server says the film runs for. The strongest signal there is
     /// for picking the main title out of sixty-odd playlists, and one only a
     /// client talking to a media server ever has.
-    let runtimeSeconds: Double?
+    public let runtimeSeconds: Double?
 
-    init(runtimeSeconds: Double?) {
+    public init(runtimeSeconds: Double?) {
         self.runtimeSeconds = runtimeSeconds
     }
 }
@@ -108,7 +108,7 @@ nonisolated struct DiscStreamMap: Equatable {
     private let starts: [Int64]
     let length: Int64
 
-    init(extents: [DiscExtent]) throws {
+    public init(extents: [DiscExtent]) throws {
         guard extents.count <= Self.maxExtents else { throw DiscImageError.resourceLimit }
         var starts: [Int64] = []
         var total: Int64 = 0
@@ -157,7 +157,7 @@ nonisolated struct DiscStreamMap: Equatable {
 nonisolated struct DiscBytes {
     let data: Data
 
-    init(_ data: Data) {
+    public init(_ data: Data) {
         self.data = data
     }
 

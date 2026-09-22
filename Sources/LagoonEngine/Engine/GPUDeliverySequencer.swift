@@ -22,7 +22,7 @@ nonisolated final class GPUDeliverySequencer: @unchecked Sendable {
     /// them runs under the lock.
     private var delivering = false
 
-    init(capacity: Int) {
+    public init(capacity: Int) {
         self.capacity = max(capacity, 1)
     }
 

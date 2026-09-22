@@ -1,11 +1,11 @@
 import Foundation
 
-nonisolated enum DownloadLimit {
-    static let subtitle = 8 * 1_024 * 1_024
-    static let artwork = 16 * 1_024 * 1_024
+public nonisolated enum DownloadLimit {
+    static public let subtitle = 8 * 1_024 * 1_024
+    static public let artwork = 16 * 1_024 * 1_024
 }
 
-nonisolated enum DownloadFailure: Error, Equatable {
+public nonisolated enum DownloadFailure: Error, Equatable {
     case invalidResponse
     case httpStatus(Int, Data)
     case tooLarge(Int)
@@ -17,15 +17,15 @@ nonisolated enum DownloadFailure: Error, Equatable {
 /// A reusable URLSession whose delegate bounds bytes before accumulating
 /// them. Content-Length is an early check, never the authority for the cap:
 /// chunked and decompressed response bytes are checked on every callback.
-nonisolated final class BoundedDownload: Sendable {
-    static let shared = BoundedDownload()
+public nonisolated final class BoundedDownload: Sendable {
+    static public let shared = BoundedDownload()
 
-    enum Content: Sendable { case subtitle, image, bytes }
+    public enum Content: Sendable { case subtitle, image, bytes }
 
     private let delegate: DownloadDelegate
     private let session: URLSession
 
-    init(configuration: URLSessionConfiguration = .ephemeral) {
+    public init(configuration: URLSessionConfiguration = .ephemeral) {
         delegate = DownloadDelegate()
         let configuration = (configuration.copy() as? URLSessionConfiguration) ?? .ephemeral
         configuration.urlCache = nil
@@ -38,7 +38,7 @@ nonisolated final class BoundedDownload: Sendable {
 
     deinit { session.invalidateAndCancel() }
 
-    func data(for request: URLRequest, limit: Int, content: Content,
+    public func data(for request: URLRequest, limit: Int, content: Content,
               statusCodes: Set<Int> = [200]) async throws -> Data {
         guard limit > 0, let url = request.url,
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
@@ -59,7 +59,7 @@ nonisolated final class BoundedDownload: Sendable {
         }
     }
 
-    func data(from url: URL, limit: Int, content: Content) async throws -> Data {
+    public func data(from url: URL, limit: Int, content: Content) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
         return try await data(for: request, limit: limit, content: content)
@@ -119,7 +119,7 @@ private nonisolated final class DownloadTransfer: @unchecked Sendable {
     private var task: URLSessionTask?
     private var onFinish: (@Sendable () -> Void)?
 
-    init(limit: Int, content: BoundedDownload.Content, statusCodes: Set<Int>) {
+    public init(limit: Int, content: BoundedDownload.Content, statusCodes: Set<Int>) {
         self.limit = limit
         self.content = content
         self.statusCodes = statusCodes

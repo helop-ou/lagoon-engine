@@ -5,7 +5,7 @@ import Foundation
 /// Four scalar kinds and nothing else. Anything a host eventually sends
 /// onward has to be built out of these, which is what keeps a URL, a title or
 /// an account out of a report by construction rather than by review.
-nonisolated enum DiagnosticValue: Equatable, Sendable {
+public nonisolated enum DiagnosticValue: Equatable, Sendable {
     case int(Int)
     case double(Double)
     case bool(Bool)
@@ -52,7 +52,7 @@ nonisolated enum DiagnosticToken {
 /// sharper identifier than it needs to be; one decimal place is enough to
 /// see what happened.
 nonisolated extension Double {
-    func rounded(toPlaces places: Int) -> Double {
+    public func rounded(toPlaces places: Int) -> Double {
         let scale = pow(10, Double(places))
         return (self * scale).rounded() / scale
     }

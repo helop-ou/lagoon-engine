@@ -93,7 +93,7 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
     private var mapSeconds = 0.0
     private var timedFrames = 0
 
-    init(configuration: Configuration) throws {
+    public init(configuration: Configuration) throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw ConverterError.noDevice

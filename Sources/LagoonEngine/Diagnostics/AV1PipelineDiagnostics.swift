@@ -33,7 +33,7 @@ nonisolated final class PipelineStageTimings: @unchecked Sendable {
     private var lastOutputAt: Double?
     private var storage: [Stage: [Sample]] = [:]
 
-    init(enabled: Bool) {
+    public init(enabled: Bool) {
         self.enabled = enabled
     }
 
@@ -179,7 +179,7 @@ nonisolated final class RendererPipelineTimings: @unchecked Sendable {
     private var thermalSamples: [(elapsed: Double, state: String)] = []
     private var lastThermalSecond = -1
 
-    init(enabled: Bool) {
+    public init(enabled: Bool) {
         self.enabled = enabled
     }
 

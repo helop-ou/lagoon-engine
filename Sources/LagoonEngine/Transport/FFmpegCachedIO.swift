@@ -19,7 +19,7 @@ nonisolated final class FFmpegCachedIO {
     /// smaller costs a whole network request per buffer whenever the bytes
     /// cannot be stored — a full window, or storage disabled — because the
     /// remainder of each fetch is then discarded instead of cached.
-    init(source: any FFmpegByteSource, bufferSize: Int32? = nil) throws {
+    public init(source: any FFmpegByteSource, bufferSize: Int32? = nil) throws {
         let bufferSize = bufferSize
             ?? Int32(min(max(source.requestSize, 64 * 1_024), 1_024 * 1_024))
         self.source = source

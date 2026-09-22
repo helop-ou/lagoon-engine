@@ -25,7 +25,7 @@ nonisolated extension PlaybackCacheScope: FFmpegByteSource {}
 nonisolated final class PlaybackCacheDiscSource: DiscImageSource {
     private let source: any FFmpegByteSource
 
-    init(source: any FFmpegByteSource) {
+    public init(source: any FFmpegByteSource) {
         self.source = source
     }
 
@@ -48,7 +48,7 @@ nonisolated final class DiscImageStream: FFmpegByteSource {
     private let source: any FFmpegByteSource
     private let map: DiscStreamMap
 
-    init(source: any FFmpegByteSource, map: DiscStreamMap) {
+    public init(source: any FFmpegByteSource, map: DiscStreamMap) {
         self.source = source
         self.map = map
     }

@@ -71,7 +71,7 @@ nonisolated final class UDFVolume {
     private var metadataExtents: [DiscExtent] = []
     private(set) var root = ICB(block: 0, partition: 0, length: 0)
 
-    init(source: DiscImageSource, budget: DiscReadBudget = DiscReadBudget()) throws {
+    public init(source: DiscImageSource, budget: DiscReadBudget = DiscReadBudget()) throws {
         self.source = source
         self.budget = budget
         try mount()

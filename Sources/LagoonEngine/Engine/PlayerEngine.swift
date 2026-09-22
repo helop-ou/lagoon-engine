@@ -2,14 +2,13 @@ import CoreMedia
 import Foundation
 import Observation
 
-/// What the custom player UI is allowed to know about a playback engine.
+/// What a host is allowed to know about a playback engine.
 ///
-/// The end state is one custom player over a sample-buffer
-/// engine; until that exists the mpv engine implements this. The
-/// transport/track UI must only ever talk to this protocol so the engine
-/// swap doesn't touch it.
+/// A host's transport and track UI talks to this and never to a concrete
+/// engine, which is what keeps FFmpeg's types out of its build and leaves
+/// room for a second implementation.
 @MainActor
-protocol PlayerEngine: AnyObject, Observable {
+public protocol PlayerEngine: AnyObject, Observable {
     var timePosition: Double { get }
     /// The media clock as the synchronizer actually reports it. Unlike
     /// `timePosition`, which `seek(to:)` moves optimistically the instant a
@@ -124,7 +123,7 @@ protocol PlayerEngine: AnyObject, Observable {
     func setCorrectionRate(_ multiplier: Double)
 }
 
-extension PlayerEngine {
+public extension PlayerEngine {
     var clockPosition: Double { timePosition }
     func play(atHostTime hostTime: CMTime) { play() }
     func setCorrectionRate(_ multiplier: Double) {}
@@ -160,12 +159,12 @@ extension PlayerEngine {
 /// The rates Lagoon exposes to its own controls and to Remote Command
 /// Center. The engine accepts any finite value inside the same envelope so
 /// system integrations do not have to round a supported event twice.
-nonisolated enum PlaybackRatePolicy {
-    static let supported: [Double] = [0.5, 0.75, 1, 1.25, 1.5, 2]
-    static let minimum = 0.5
-    static let maximum = 2.0
+public nonisolated enum PlaybackRatePolicy {
+    static public let supported: [Double] = [0.5, 0.75, 1, 1.25, 1.5, 2]
+    static public let minimum = 0.5
+    static public let maximum = 2.0
 
-    static func clamped(_ rate: Double) -> Double {
+    static public func clamped(_ rate: Double) -> Double {
         guard rate.isFinite else { return 1 }
         return min(max(rate, minimum), maximum)
     }
@@ -176,7 +175,7 @@ nonisolated enum PlaybackRatePolicy {
     /// product stays inside the one envelope the rest of the engine scales
     /// its cushions and watermarks by. A correction of 1 — the only value
     /// outside a group — returns the viewer's rate unchanged.
-    static func effectiveRate(userRate: Double, correction: Double) -> Double {
+    static public func effectiveRate(userRate: Double, correction: Double) -> Double {
         let user = clamped(userRate)
         guard correction.isFinite, correction > 0 else { return user }
         return clamped(user * correction)
@@ -185,12 +184,12 @@ nonisolated enum PlaybackRatePolicy {
     /// How a rate is written for the viewer: no trailing zeros, always a
     /// multiplication sign. Lives here so the panel's rows and the readout
     /// beside the player's title cannot drift apart.
-    static func title(_ rate: Double) -> String {
+    static public func title(_ rate: Double) -> String {
         String(format: "%g×", clamped(rate))
     }
 
     /// Stable identifier for a rate, for accessibility and UI tests.
-    static func identifier(_ rate: Double) -> String {
+    static public func identifier(_ rate: Double) -> String {
         String(format: "%g", clamped(rate)).replacingOccurrences(of: ".", with: "_")
     }
 
@@ -201,7 +200,7 @@ nonisolated enum PlaybackRatePolicy {
     /// wrap. `nearest` first, because the engine accepts anything inside the
     /// envelope — Remote Command Center can hand it 1.1 — so stepping has to
     /// start from a value that may not be in the set.
-    static func stepped(from rate: Double, by direction: Int) -> Double {
+    static public func stepped(from rate: Double, by direction: Int) -> Double {
         let current = clamped(rate)
         guard direction != 0 else { return current }
         if direction > 0 {
@@ -218,11 +217,19 @@ nonisolated enum PlaybackRatePolicy {
 /// 60 Hz in whatever range it happens to be in — and the compositor
 /// cadence-converts and tone-maps every full-4K HDR frame forever, which
 /// is the standing suspect for the 2160p-only frame drops on hardware.
-nonisolated struct DisplayMatchRequest: Equatable {
-    let formatDescription: CMFormatDescription
-    let frameRate: Float
+public nonisolated struct DisplayMatchRequest: Equatable {
+    public init(
+        formatDescription: CMFormatDescription,
+        frameRate: Float
+    ) {
+        self.formatDescription = formatDescription
+        self.frameRate = frameRate
+    }
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    public let formatDescription: CMFormatDescription
+    public let frameRate: Float
+
+    static public func == (lhs: Self, rhs: Self) -> Bool {
         lhs.frameRate == rhs.frameRate
             && CMFormatDescriptionEqual(lhs.formatDescription, otherFormatDescription: rhs.formatDescription)
     }
@@ -230,28 +237,28 @@ nonisolated struct DisplayMatchRequest: Equatable {
 
 /// One selectable track as the engine reports it. `engineID` is the
 /// engine's own identifier (mpv aid/sid today), unique per kind only.
-nonisolated struct PlayerTrack: Identifiable, Equatable {
-    enum Kind: String {
+public nonisolated struct PlayerTrack: Identifiable, Equatable {
+    public enum Kind: String {
         case audio
         case subtitle
     }
 
-    let engineID: Int
-    let kind: Kind
-    let displayName: String
-    let isSelected: Bool
-    let languageTag: String?
-    let isForced: Bool
-    let isHearingImpaired: Bool
-    let source: Source
+    public let engineID: Int
+    public let kind: Kind
+    public let displayName: String
+    public let isSelected: Bool
+    public let languageTag: String?
+    public let isForced: Bool
+    public let isHearingImpaired: Bool
+    public let source: Source
 
-    enum Source: String, Equatable {
+    public enum Source: String, Equatable {
         case embedded
         case external
         case downloaded
     }
 
-    init(
+    public init(
         engineID: Int,
         kind: Kind,
         displayName: String,
@@ -271,29 +278,40 @@ nonisolated struct PlayerTrack: Identifiable, Equatable {
         self.source = source
     }
 
-    var id: String { "\(kind.rawValue)-\(engineID)" }
+    public var id: String { "\(kind.rawValue)-\(engineID)" }
 }
 
 /// Server-authored attributes for an embedded demux track. FFmpeg exposes
 /// language/title, but Jellyfin is the authority for accessibility flags;
 /// keeping this separate lets the engine merge both sources by ordinal.
-nonisolated struct PlayerTrackMetadata: Equatable, Sendable {
-    let languageTag: String?
-    let isForced: Bool
-    let isHearingImpaired: Bool
+public nonisolated struct PlayerTrackMetadata: Equatable, Sendable {
+    public init(
+        languageTag: String? = nil,
+        isForced: Bool,
+        isHearingImpaired: Bool
+    ) {
+        self.languageTag = languageTag
+        self.isForced = isForced
+        self.isHearingImpaired = isHearingImpaired
+    }
+
+    public let languageTag: String?
+    public let isForced: Bool
+    public let isHearingImpaired: Bool
 }
 
 /// A stretch of the item the server has classified — intro, recap, credits.
 /// Jellyfin 10.10+ serves these natively from `MediaSegments`,
 /// populated by whatever plugin the admin runs.
-nonisolated struct MediaSegment: Identifiable, Equatable {
-    /// What Jellyfin calls the segment. Only `intro` and `recap` are ever
+public nonisolated struct MediaSegment: Identifiable, Equatable {
+    /// What a server calls the segment; the raw values follow the common
+    /// convention. Only `intro` and `recap` are ever
     /// offered as a skip: `preview` and `commercial` exist in real
     /// libraries — a sampled film carries two `commercial` segments — and
     /// acting on them would raise a skip prompt in the middle of a movie.
     /// `outro` is deliberately not skippable either; the end of an episode
     /// is a hand-off to the next one, not something to jump over.
-    enum Kind: String {
+    public enum Kind: String {
         case intro = "Intro"
         case outro = "Outro"
         case recap = "Recap"
@@ -301,55 +319,90 @@ nonisolated struct MediaSegment: Identifiable, Equatable {
         case commercial = "Commercial"
         case other
 
-        var isSkippable: Bool { self == .intro || self == .recap }
+        public var isSkippable: Bool { self == .intro || self == .recap }
 
         /// What the button says. Recap gets its own word — being told
         /// "Skip Intro" over a previously-on montage reads as a bug.
-        var skipTitle: String {
+        public var skipTitle: String {
             self == .recap ? String(localized: "Skip Recap") : String(localized: "Skip Intro")
         }
     }
 
-    let id: String
-    let kind: Kind
-    let start: Double
-    let end: Double
+    public let id: String
+    public let kind: Kind
+    public let start: Double
+    public let end: Double
 
-    func contains(_ seconds: Double) -> Bool {
+    public init(id: String, kind: Kind, start: Double, end: Double) {
+        self.id = id
+        self.kind = kind
+        self.start = start
+        self.end = end
+    }
+
+    public func contains(_ seconds: Double) -> Bool {
         seconds >= start && seconds < end
     }
 }
 
 /// A chapter mark on the transport.
-nonisolated struct PlayerChapter: Identifiable, Equatable {
+public nonisolated struct PlayerChapter: Identifiable, Equatable {
+    public init(
+        id: Int,
+        name: String? = nil,
+        start: Double
+    ) {
+        self.id = id
+        self.name = name
+        self.start = start
+    }
+
     /// Position in the chapter list, which is also its display number.
-    let id: Int
-    let name: String?
-    let start: Double
+    public let id: Int
+    public let name: String?
+    public let start: Double
 }
 
 /// Everything the transport needs to pull trickplay preview frames: the
 /// sheet URLs already resolved (tokens included), plus the grid inside each
 /// sheet. Positions map to tiles through `tile(at:)`.
-nonisolated struct TrickplaySource: Equatable {
-    let sheetURLs: [URL]
+public nonisolated struct TrickplaySource: Equatable {
+    public let sheetURLs: [URL]
     /// One thumbnail's pixel size as the server declared it.
-    let tileSize: CGSize
-    let columns: Int
-    let rows: Int
+    public let tileSize: CGSize
+    public let columns: Int
+    public let rows: Int
     /// Seconds between thumbnails (the wire value is milliseconds).
-    let interval: Double
-    let thumbnailCount: Int
+    public let interval: Double
+    public let thumbnailCount: Int
     /// The trickplay route 401s without credentials and `sheetURLs` carry no
     /// query token, so the header credential rides with
     /// the source for `TrickplayLoader` to apply per fetch.
-    var authorization: MediaRequestAuthorization? = nil
+    public var authorization: MediaRequestAuthorization? = nil
 
-    var tilesPerSheet: Int { columns * rows }
+    public init(
+        sheetURLs: [URL],
+        tileSize: CGSize,
+        columns: Int,
+        rows: Int,
+        interval: Double,
+        thumbnailCount: Int,
+        authorization: MediaRequestAuthorization? = nil
+    ) {
+        self.sheetURLs = sheetURLs
+        self.tileSize = tileSize
+        self.columns = columns
+        self.rows = rows
+        self.interval = interval
+        self.thumbnailCount = thumbnailCount
+        self.authorization = authorization
+    }
+
+    public var tilesPerSheet: Int { columns * rows }
 
     /// Which sheet and cell a position lands in, or nil if it falls outside
     /// what the server generated.
-    func tile(at seconds: Double) -> TrickplayTile? {
+    public func tile(at seconds: Double) -> TrickplayTile? {
         guard interval > 0, tilesPerSheet > 0, thumbnailCount > 0 else { return nil }
         let index = min(max(Int(seconds / interval), 0), thumbnailCount - 1)
         let sheet = index / tilesPerSheet
@@ -359,65 +412,97 @@ nonisolated struct TrickplaySource: Equatable {
     }
 }
 
-nonisolated struct TrickplayTile: Equatable {
-    let sheet: Int
-    let column: Int
-    let row: Int
+public nonisolated struct TrickplayTile: Equatable {
+    public let sheet: Int
+    public let column: Int
+    public let row: Int
 }
 
 /// Everything the player's Info tab and transport show about the item —
 /// assembled by the playback controller, engine-independent.
-nonisolated struct PlayerItemInfo: Equatable {
+public nonisolated struct PlayerItemInfo: Equatable {
+    public init(
+        title: String,
+        subtitle: String? = nil,
+        overview: String? = nil,
+        facts: [String],
+        videoSummary: String? = nil,
+        posterURL: URL? = nil,
+        chapters: [PlayerChapter] = [],
+        trickplay: TrickplaySource? = nil,
+        segments: [MediaSegment] = []
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.overview = overview
+        self.facts = facts
+        self.videoSummary = videoSummary
+        self.posterURL = posterURL
+        self.chapters = chapters
+        self.trickplay = trickplay
+        self.segments = segments
+    }
+
     /// Transport headline: the series for episodes, the item otherwise.
-    let title: String
+    public let title: String
     /// Small line above the headline, e.g. "S1 E1 · Freedom Day".
-    let subtitle: String?
-    let overview: String?
+    public let subtitle: String?
+    public let overview: String?
     /// Infuse-style spaced tokens: runtime, year, size, "HEVC (4K DV)",
     /// "Dolby Digital+ 5.1", bitrate, fps, genres, rating.
-    let facts: [String]
+    public let facts: [String]
     /// The Video tab's single read-only line, e.g.
     /// "HEVC · 4K DV · 3840×1600 · 23.976 fps".
-    let videoSummary: String?
-    let posterURL: URL?
+    public let videoSummary: String?
+    public let posterURL: URL?
     /// Empty whenever the server has no chapters for the item — the ticks
     /// and chapter jumps simply don't appear.
-    var chapters: [PlayerChapter] = []
+    public var chapters: [PlayerChapter] = []
     /// nil when the server hasn't generated trickplay tiles; the scrub chip
     /// then shows the timestamp alone.
-    var trickplay: TrickplaySource?
+    public var trickplay: TrickplaySource?
     /// Empty when the server has no segments for the item.
-    var segments: [MediaSegment] = []
+    public var segments: [MediaSegment] = []
 }
 
 /// The episode queued behind the one playing, as the Up Next card shows it.
 /// Resolved by the host so the player view stays free of the
 /// Jellyfin client, exactly as `PlayerItemInfo` is.
-nonisolated struct NextUpEpisode: Equatable {
+public nonisolated struct NextUpEpisode: Equatable {
+    public init(
+        title: String,
+        subtitle: String? = nil,
+        imageURL: URL? = nil
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.imageURL = imageURL
+    }
+
     /// The episode's own name — never the series, which is the one thing
     /// the viewer already knows at this point.
-    let title: String
+    public let title: String
     /// "S1 E4", when the server numbered it.
-    let subtitle: String?
-    let imageURL: URL?
+    public let subtitle: String?
+    public let imageURL: URL?
 }
 
 /// A subtitle that lives outside the media file (Jellyfin external stream)
 /// for the engine to side-load at start.
-nonisolated struct ExternalSubtitleTrack {
-    let url: URL
+public nonisolated struct ExternalSubtitleTrack {
+    public let url: URL
     /// Provider downloads can be played even while Jellyfin's asynchronous
     /// library refresh has not produced a persistent DeliveryUrl yet.
-    let preloadedData: Data?
-    let title: String?
-    let language: String?
+    public let preloadedData: Data?
+    public let title: String?
+    public let language: String?
     /// Jellyfin's default-subtitle choice pointed at this external stream.
-    let select: Bool
-    let isForced: Bool
-    let isHearingImpaired: Bool
-    let isDownloaded: Bool
+    public let select: Bool
+    public let isForced: Bool
+    public let isHearingImpaired: Bool
+    public let isDownloaded: Bool
 
-    init(
+    public init(
         url: URL,
         preloadedData: Data? = nil,
         title: String?,

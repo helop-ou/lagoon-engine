@@ -11,8 +11,10 @@ import Foundation
 /// than 0.25 seconds of high-bitrate 4K media, so a fixed per-chunk cushion
 /// gain cannot identify spare capacity. Throughput also remains measurable
 /// after gentle pacing, which would otherwise hide that capacity indefinitely.
-nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
-    enum Decision: Equatable, Sendable {
+public nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
+    public init() {}
+
+    public enum Decision: Equatable, Sendable {
         case fetch
         case wait(TimeInterval)
         case stop
@@ -21,49 +23,69 @@ nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
     /// What the scheduler sees between fetches. `aheadSeconds` is nil when
     /// the title's duration or length is unknown; the policy then cannot
     /// compare fetch throughput with playback and keeps the gentle pace.
-    struct Snapshot: Equatable, Sendable {
-        var isPaused = false
-        var isBuffering = false
-        var newStall = false
-        var aheadSeconds: Double?
-        var averageBytesPerSecond: Double?
-        var playbackRate: Double = 1
-        var isWindowed = false
-        var bufferedFraction: Double?
+    public struct Snapshot: Equatable, Sendable {
+        public init(
+            isPaused: Bool = false,
+            isBuffering: Bool = false,
+            newStall: Bool = false,
+            aheadSeconds: Double? = nil,
+            averageBytesPerSecond: Double? = nil,
+            playbackRate: Double = 1,
+            isWindowed: Bool = false,
+            bufferedFraction: Double? = nil
+        ) {
+            self.isPaused = isPaused
+            self.isBuffering = isBuffering
+            self.newStall = newStall
+            self.aheadSeconds = aheadSeconds
+            self.averageBytesPerSecond = averageBytesPerSecond
+            self.playbackRate = playbackRate
+            self.isWindowed = isWindowed
+            self.bufferedFraction = bufferedFraction
+        }
+
+        public var isPaused = false
+        public var isBuffering = false
+        public var newStall = false
+        public var aheadSeconds: Double?
+        public var averageBytesPerSecond: Double?
+        public var playbackRate: Double = 1
+        public var isWindowed = false
+        public var bufferedFraction: Double?
     }
 
     /// Fill only begins after the player has presented its initial cushion.
-    static let warmupSeconds: TimeInterval = 3
+    static public let warmupSeconds: TimeInterval = 3
     /// A renderer stall means the foreground needs every byte it can get.
-    static let stallCooldownSeconds: TimeInterval = 20
+    static public let stallCooldownSeconds: TimeInterval = 20
     /// A full window waits for the playhead to make room.
-    static let idlePollSeconds: TimeInterval = 2
+    static public let idlePollSeconds: TimeInterval = 2
     /// Wall-clock seconds of cached playback the scheduler tries to keep at
     /// the viewer's current rate, within the existing disk cache capacity.
-    static let targetAheadSeconds: Double = 120
+    static public let targetAheadSeconds: Double = 120
     /// Below the target: yield this fraction of the last request's own time
     /// between chunks, so foreground requests keep a fixed share of the link
     /// however slow it is, and a fast link never idles. Deliberately not
     /// capped in seconds: a cap would shrink that share on exactly the slow
     /// links where the hurried branch is the steady state.
-    static let hurriedYieldFraction: Double = 0.5
+    static public let hurriedYieldFraction: Double = 0.5
     /// Leave a margin beyond break-even throughput after the foreground
     /// yield. An average container bitrate is an estimate, and a link that
     /// only just carries playback should keep the gentle background pace.
-    static let minimumHeadroomRatio: Double = 1.1
+    static public let minimumHeadroomRatio: Double = 1.1
     /// Above the target: the earlier pacing, roughly a 20% duty cycle.
-    static let relaxedPacingMultiplier: Double = 4
-    static let relaxedPacingCapSeconds: TimeInterval = 8
-    static let minimumMeasuredRequestSeconds: TimeInterval = 0.125
-    static let failureBackoffBaseSeconds: TimeInterval = 1
-    static let failureBackoffCapSeconds: TimeInterval = 30
+    static public let relaxedPacingMultiplier: Double = 4
+    static public let relaxedPacingCapSeconds: TimeInterval = 8
+    static public let minimumMeasuredRequestSeconds: TimeInterval = 0.125
+    static public let failureBackoffBaseSeconds: TimeInterval = 1
+    static public let failureBackoffCapSeconds: TimeInterval = 30
 
     private(set) var consecutiveFailures = 0
 
     /// Before a fetch: a title that fits under the cap finishes and the loop
     /// ends; a stall or buffering renderer gets the link to itself for a
     /// while.
-    func beforeFetch(_ snapshot: Snapshot) -> Decision {
+    public func beforeFetch(_ snapshot: Snapshot) -> Decision {
         if snapshot.bufferedFraction == 1, !snapshot.isWindowed {
             return .stop
         }
@@ -74,7 +96,7 @@ nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
     }
 
     /// After a fetch: pace, poll, back off, or stop, by what the fetch did.
-    mutating func afterFetch(_ outcome: PlaybackPrefetchOutcome, _ snapshot: Snapshot) -> Decision {
+    public mutating func afterFetch(_ outcome: PlaybackPrefetchOutcome, _ snapshot: Snapshot) -> Decision {
         switch outcome {
         case .cancelled:
             return .stop
@@ -119,14 +141,14 @@ nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
 
     /// Seconds of media a byte cushion represents, assuming the title's
     /// average bitrate. Nil when either side is unknown.
-    static func aheadSeconds(cachedBytesAhead: Int64, contentLength: Int64?, durationSeconds: Double) -> Double? {
+    static public func aheadSeconds(cachedBytesAhead: Int64, contentLength: Int64?, durationSeconds: Double) -> Double? {
         guard let bytesPerSecond = averageBytesPerSecond(
             contentLength: contentLength, durationSeconds: durationSeconds
         ) else { return nil }
         return Double(max(cachedBytesAhead, 0)) / bytesPerSecond
     }
 
-    static func averageBytesPerSecond(contentLength: Int64?, durationSeconds: Double) -> Double? {
+    static public func averageBytesPerSecond(contentLength: Int64?, durationSeconds: Double) -> Double? {
         guard let contentLength, contentLength > 0,
               durationSeconds.isFinite, durationSeconds > 0 else { return nil }
         let bytesPerSecond = Double(contentLength) / durationSeconds

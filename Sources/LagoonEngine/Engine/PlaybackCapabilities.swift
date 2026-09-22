@@ -14,9 +14,9 @@ import VideoToolbox
 /// - H.264 goes to the renderer compressed; the rest are libavcodec on CPU.
 ///
 /// A true is not a promise of availability. The delivery ladder covers that.
-nonisolated struct PlaybackCapabilities: Equatable, Sendable {
-    let hardwareHEVC: Bool
-    let hardwareAV1: Bool
+public nonisolated struct PlaybackCapabilities: Equatable, Sendable {
+    public let hardwareHEVC: Bool
+    public let hardwareAV1: Bool
     /// Whether AV1 may be offered to VideoToolbox at all.
     ///
     /// `VTIsHardwareDecodeSupported` reports hardware only, and Apple ships a
@@ -27,9 +27,9 @@ nonisolated struct PlaybackCapabilities: Equatable, Sendable {
     /// AV1 is now always offered and `VideoToolboxDecoder.canDecode` settles
     /// it per stream by creating a session. An A15 answers -12906 and the
     /// engine reopens on software; anywhere a decoder exists it is used.
-    var decodesAV1WithVideoToolbox: Bool { true }
+    public var decodesAV1WithVideoToolbox: Bool { true }
 
-    init(hardwareHEVC: Bool, hardwareAV1: Bool = false) {
+    public init(hardwareHEVC: Bool, hardwareAV1: Bool = false) {
         self.hardwareHEVC = hardwareHEVC
         self.hardwareAV1 = hardwareAV1
     }
@@ -41,7 +41,7 @@ nonisolated struct PlaybackCapabilities: Equatable, Sendable {
         av1: VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
     )
 
-    static var current: PlaybackCapabilities {
+    static public var current: PlaybackCapabilities {
         PlaybackCapabilities(hardwareHEVC: hardware.hevc, hardwareAV1: hardware.av1)
     }
 }

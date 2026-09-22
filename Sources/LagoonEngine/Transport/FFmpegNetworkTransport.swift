@@ -46,7 +46,7 @@ private final class FFmpegTransportSessionDelegate: NSObject, URLSessionDataDele
     private var targets: [Int: URLSessionByteSource] = [:]
     private let authorization: MediaRequestAuthorization?
 
-    init(authorization: MediaRequestAuthorization?) {
+    public init(authorization: MediaRequestAuthorization?) {
         self.authorization = authorization
     }
 
@@ -146,7 +146,7 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
         av_log_set_level(AV_LOG_QUIET)
     }()
 
-    init(
+    public init(
         isInterrupted: @escaping @Sendable () -> Bool,
         hlsCache: HLSPlaybackCacheScope? = nil,
         sessionConfiguration: URLSessionConfiguration = .ephemeral,
@@ -461,7 +461,7 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         return contentLengthStorage
     }
 
-    init(
+    public init(
         url: URL,
         session: URLSession,
         isInterrupted: @escaping @Sendable () -> Bool,
@@ -757,7 +757,7 @@ nonisolated final class AES128CBCByteSource: FFmpegByteSource, @unchecked Sendab
     var requestSize: Int64 { inner.requestSize }
     var contentLength: Int64? { nil }
 
-    init(inner: URLSessionByteSource, key: Data, iv: Data) {
+    public init(inner: URLSessionByteSource, key: Data, iv: Data) {
         self.inner = inner
         self.key = key
         self.iv = iv

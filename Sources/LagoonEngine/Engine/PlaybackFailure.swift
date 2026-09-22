@@ -6,18 +6,18 @@ import Foundation
 /// which is where URLs, file names and query strings live. A host that
 /// reports failures onward gets a stage, a domain token and a code, and
 /// nothing that could identify a viewer or a title.
-nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
-    enum Stage: String, Sendable {
+public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
+    public enum Stage: String, Sendable {
         case negotiate, open, seek, read, decode, videoRenderer, audioRenderer, subtitle, cache, start, handoff, unknown
     }
 
-    let stage: Stage
+    public let stage: Stage
     /// A token such as `AVFoundationErrorDomain`, `VideoToolbox`, `ffmpeg`,
     /// or `NSURLErrorDomain`. Nil when the layer gave none.
-    let domain: String?
-    let code: Int?
+    public let domain: String?
+    public let code: Int?
 
-    init(stage: Stage, domain: String? = nil, code: Int? = nil) {
+    public init(stage: Stage, domain: String? = nil, code: Int? = nil) {
         self.stage = stage
         self.domain = domain
         self.code = code
@@ -25,7 +25,7 @@ nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
 
     /// Domain and code from any error, and nothing else from it: not the
     /// description, not `userInfo`, which is where URLs and file names live.
-    init(stage: Stage, error: Error?) {
+    public init(stage: Stage, error: Error?) {
         guard let error else {
             self.init(stage: stage)
             return
@@ -36,7 +36,7 @@ nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
 
     /// The failure as diagnostic fields: stage always, domain only if it
     /// passes the token rule, code if there was one.
-    var fields: [String: DiagnosticValue] {
+    public var fields: [String: DiagnosticValue] {
         var fields: [String: DiagnosticValue] = ["stage": .string(stage.rawValue)]
         if let domain = DiagnosticToken.token(domain) {
             fields["errorDomain"] = domain
@@ -49,7 +49,7 @@ nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
 
     /// The part of a fingerprint that separates one kind of failure at a
     /// stage from another.
-    var fingerprint: [String] {
+    public var fingerprint: [String] {
         var parts = [stage.rawValue]
         if let domain, DiagnosticToken.isToken(domain) {
             parts.append(domain)
@@ -67,8 +67,8 @@ nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
 /// The `cause` is the engine's verdict about the samples, and it is the whole
 /// of what a host needs to decide whether asking for the media a different
 /// way could help. The engine does not know what other ways exist.
-nonisolated struct PlaybackEngineFailure: Equatable, Sendable {
-    enum Cause: Equatable, Sendable {
+public nonisolated struct PlaybackEngineFailure: Equatable, Sendable {
+    public enum Cause: Equatable, Sendable {
         /// The samples themselves cannot be decoded here — a codec outside
         /// the envelope, a decoder session the hardware declined, a decode
         /// that failed. Only a re-encode changes what the decoder is given.
@@ -78,13 +78,13 @@ nonisolated struct PlaybackEngineFailure: Equatable, Sendable {
         case delivery
     }
 
-    let cause: Cause
+    public let cause: Cause
     /// What the viewer is told if the host runs out of things to try.
-    let message: String
+    public let message: String
     /// The same failure in codes, for a diagnostic report. Never the message.
-    let detail: PlaybackFailureDetail?
+    public let detail: PlaybackFailureDetail?
 
-    init(cause: Cause, message: String, detail: PlaybackFailureDetail? = nil) {
+    public init(cause: Cause, message: String, detail: PlaybackFailureDetail? = nil) {
         self.cause = cause
         self.message = message
         self.detail = detail

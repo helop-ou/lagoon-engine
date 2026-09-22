@@ -276,7 +276,7 @@ nonisolated final class FFmpegDemuxer {
     nonisolated(unsafe) private var ioStartedAt: Double?
     nonisolated(unsafe) private var ioLastReadAt: Double = 0
 
-    init(capabilities: PlaybackCapabilities = .current) {
+    public init(capabilities: PlaybackCapabilities = .current) {
         self.capabilities = capabilities
     }
 

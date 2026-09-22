@@ -125,7 +125,7 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
             || status == kVTVideoDecoderNotAvailableNowErr
     }
 
-    init(
+    public init(
         formatDescription: CMVideoFormatDescription,
         recommendedPixelBufferAttributes: CVPixelBufferAttributes,
         reportedReorderDepth: Int,
@@ -385,7 +385,7 @@ nonisolated struct VideoPresentationOrderQueue<Element> {
     private var entries: [Entry] = []
     private var nextSequence = 0
 
-    init(depth: Int) {
+    public init(depth: Int) {
         self.depth = max(depth, 0)
     }
 

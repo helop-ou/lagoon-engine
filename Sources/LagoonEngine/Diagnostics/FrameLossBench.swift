@@ -105,7 +105,7 @@ nonisolated struct FrameLossBench: Equatable {
     private var peakFootprintBytes: Int64 = 0
     private var minimumAvailableBytes = Int.max
 
-    init(at position: Double, warmupSeconds: Double = 10, windowSeconds: Double = 60) {
+    public init(at position: Double, warmupSeconds: Double = 10, windowSeconds: Double = 60) {
         self.warmupSeconds = warmupSeconds
         self.windowSeconds = windowSeconds
         phase = .warming(measureFrom: position + warmupSeconds)

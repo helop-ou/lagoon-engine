@@ -39,7 +39,7 @@ nonisolated struct PassthroughAudioTimeline {
     /// overlap are worth reading in.
     var packetSeconds: Double { Double(framesPerPacket) / Double(sampleRate) }
 
-    init(sampleRate: Int32, framesPerPacket: Int) {
+    public init(sampleRate: Int32, framesPerPacket: Int) {
         self.sampleRate = max(sampleRate, 1)
         self.framesPerPacket = Int64(max(framesPerPacket, 1))
         gapTolerance = Double(self.framesPerPacket) / Double(self.sampleRate) / 2

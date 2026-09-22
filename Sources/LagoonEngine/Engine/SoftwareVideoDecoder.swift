@@ -350,7 +350,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         return toneMapHDRByDefault ? .gpuSDR : .gpuSource
     }
 
-    init(
+    public init(
         codecpar: UnsafeMutablePointer<AVCodecParameters>,
         timeBase: AVRational,
         frameRate: AVRational,

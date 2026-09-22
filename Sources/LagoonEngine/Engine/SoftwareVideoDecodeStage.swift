@@ -118,7 +118,7 @@ nonisolated final class SoftwareVideoDecodeStage: @unchecked Sendable {
         condition.unlock()
     }
 
-    init(
+    public init(
         decoder: SoftwareVideoDecoder,
         outputHandler: @escaping OutputHandler,
         errorHandler: @escaping ErrorHandler,

@@ -10,10 +10,10 @@ import Foundation
 /// both demux queues, and audio, having no cushion, goes silent at once.
 /// Whether turning this on fixes that is the open question the switch exists
 /// to answer.
-nonisolated enum PlaybackBufferPolicy {
-    static let backgroundBufferingEnabled = true
+public nonisolated enum PlaybackBufferPolicy {
+    static public let backgroundBufferingEnabled = true
 
-    static func customIOEnabled(
+    static public func customIOEnabled(
         for delivery: MediaDelivery,
         defaults: UserDefaults = .standard
     ) -> Bool {
@@ -38,7 +38,7 @@ nonisolated enum PlaybackBufferPolicy {
     /// through the session's byte source and cannot read the image from a
     /// plain file, so without the session a fully cached disc fell to the
     /// server remux the session exists to avoid.
-    static func engineUsesCacheSession(
+    static public func engineUsesCacheSession(
         playsFromCompleteFile: Bool,
         disc: Bool,
         delivery: MediaDelivery,
@@ -50,18 +50,18 @@ nonisolated enum PlaybackBufferPolicy {
 }
 
 /// A half-open byte interval stored in a playback cache file.
-nonisolated struct PlaybackByteRange: Equatable, Sendable {
-    let lowerBound: Int64
-    let upperBound: Int64
+public nonisolated struct PlaybackByteRange: Equatable, Sendable {
+    public let lowerBound: Int64
+    public let upperBound: Int64
 
-    init(_ lowerBound: Int64, _ upperBound: Int64) {
+    public init(_ lowerBound: Int64, _ upperBound: Int64) {
         self.lowerBound = lowerBound
         self.upperBound = max(upperBound, lowerBound)
     }
 
-    var count: Int64 { upperBound - lowerBound }
+    public var count: Int64 { upperBound - lowerBound }
 
-    func contains(_ other: PlaybackByteRange) -> Bool {
+    public func contains(_ other: PlaybackByteRange) -> Bool {
         lowerBound <= other.lowerBound && upperBound >= other.upperBound
     }
 }
@@ -181,49 +181,57 @@ nonisolated struct PlaybackByteRangeSet: Equatable, Sendable {
 /// A sparse cached byte island normalized onto the player timeline. Direct
 /// files can contain several of these after a seek; presenting all of them
 /// avoids pretending that only the uninterrupted byte-zero prefix survived.
-nonisolated struct PlaybackBufferedRange: Equatable, Hashable, Sendable {
-    let lowerFraction: Double
-    let upperFraction: Double
+public nonisolated struct PlaybackBufferedRange: Equatable, Hashable, Sendable {
+    public init(
+        lowerFraction: Double,
+        upperFraction: Double
+    ) {
+        self.lowerFraction = lowerFraction
+        self.upperFraction = upperFraction
+    }
+
+    public let lowerFraction: Double
+    public let upperFraction: Double
 }
 
 /// The container byte position FFmpeg selected for a known media time.
 /// Direct files are commonly variable bitrate, so this anchor is required
 /// to project sparse byte ranges onto the scrubber without putting the hot
 /// cache island visibly ahead of (or behind) the playhead.
-nonisolated struct PlaybackTimelineAnchor: Equatable, Sendable {
-    let byteOffset: Int64
-    let timeFraction: Double
+public nonisolated struct PlaybackTimelineAnchor: Equatable, Sendable {
+    public let byteOffset: Int64
+    public let timeFraction: Double
 }
 
-nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
-    let cachedBytes: Int64
-    let networkBytes: Int64
-    let cacheHitBytes: Int64
-    let requestCount: Int
-    let networkRequestSeconds: Double
-    let evictionCount: Int
-    let resourceCount: Int
-    let capacityBytes: Int64
-    let contiguousCachedBytes: Int64
-    let contentLength: Int64?
-    let cachedByteRanges: [PlaybackByteRange]
-    let playheadPrefetchCount: Int
-    let timelineAnchor: PlaybackTimelineAnchor?
+public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
+    public let cachedBytes: Int64
+    public let networkBytes: Int64
+    public let cacheHitBytes: Int64
+    public let requestCount: Int
+    public let networkRequestSeconds: Double
+    public let evictionCount: Int
+    public let resourceCount: Int
+    public let capacityBytes: Int64
+    public let contiguousCachedBytes: Int64
+    public let contentLength: Int64?
+    public let cachedByteRanges: [PlaybackByteRange]
+    public let playheadPrefetchCount: Int
+    public let timelineAnchor: PlaybackTimelineAnchor?
     /// True when the title is larger than the cap, so the cache holds a
     /// window that travels with the playhead instead of accumulating the
     /// whole file. Proactive fill never finishes in that mode.
-    let isWindowed: Bool
+    public let isWindowed: Bool
     /// Cached bytes contiguous from the most recent foreground read onward:
     /// the cushion the fill scheduler protects.
-    let cachedBytesAheadOfPlayhead: Int64
+    public let cachedBytesAheadOfPlayhead: Int64
     /// Bytes downloaded that were already on disk when they arrived — the
     /// cost of a foreground read overtaking a prefetch of the same range.
-    let duplicateNetworkBytes: Int64
+    public let duplicateNetworkBytes: Int64
     /// Foreground reads that waited for an in-flight prefetch of their
     /// bytes instead of downloading them again.
-    let sharedFetchCount: Int
+    public let sharedFetchCount: Int
 
-    init(
+    public init(
         cachedBytes: Int64,
         networkBytes: Int64,
         cacheHitBytes: Int64,
@@ -261,12 +269,12 @@ nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
         self.sharedFetchCount = sharedFetchCount
     }
 
-    var bufferedFraction: Double? {
+    public var bufferedFraction: Double? {
         guard let contentLength, contentLength > 0 else { return nil }
         return min(max(Double(contiguousCachedBytes) / Double(contentLength), 0), 1)
     }
 
-    var bufferedRanges: [PlaybackBufferedRange] {
+    public var bufferedRanges: [PlaybackBufferedRange] {
         guard let contentLength, contentLength > 0 else { return [] }
         return cachedByteRanges.compactMap { range in
             let lower = timelineFraction(for: range.lowerBound, contentLength: contentLength)
@@ -301,16 +309,16 @@ nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
                 / Double(contentLength - timelineAnchor.byteOffset)
     }
 
-    var hitRate: Double {
+    public var hitRate: Double {
         let total = cacheHitBytes + networkBytes
         return total > 0 ? Double(cacheHitBytes) / Double(total) : 0
     }
 
-    var averageRequestMilliseconds: Double {
+    public var averageRequestMilliseconds: Double {
         requestCount > 0 ? networkRequestSeconds * 1_000 / Double(requestCount) : 0
     }
 
-    static let zero = PlaybackCacheMetrics(
+    static public let zero = PlaybackCacheMetrics(
         cachedBytes: 0,
         networkBytes: 0,
         cacheHitBytes: 0,
@@ -321,7 +329,7 @@ nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
         capacityBytes: 0
     )
 
-    func adding(_ other: PlaybackCacheMetrics, includeCachedBytes: Bool = true) -> PlaybackCacheMetrics {
+    public func adding(_ other: PlaybackCacheMetrics, includeCachedBytes: Bool = true) -> PlaybackCacheMetrics {
         PlaybackCacheMetrics(
             cachedBytes: cachedBytes + (includeCachedBytes ? other.cachedBytes : 0),
             networkBytes: networkBytes + other.networkBytes,
@@ -339,7 +347,7 @@ nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
         )
     }
 
-    func reporting(evictionCount: Int, resourceCount: Int, capacityBytes: Int64) -> PlaybackCacheMetrics {
+    public func reporting(evictionCount: Int, resourceCount: Int, capacityBytes: Int64) -> PlaybackCacheMetrics {
         PlaybackCacheMetrics(
             cachedBytes: cachedBytes,
             networkBytes: networkBytes,
@@ -362,22 +370,22 @@ nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
 /// Shared accounting for caches made of multiple sparse files. Reservations
 /// happen before a write, so aggregate stored bytes cannot cross the cap even
 /// when FFmpeg opens or prefetches several HLS resources concurrently.
-nonisolated final class PlaybackCacheStorageBudget: @unchecked Sendable {
+public nonisolated final class PlaybackCacheStorageBudget: @unchecked Sendable {
     private let byteLimit: Int64
     private let lock = NSLock()
     private var usedBytes: Int64 = 0
 
-    init(byteLimit: Int64) {
+    public init(byteLimit: Int64) {
         self.byteLimit = max(byteLimit, 0)
     }
 
-    var availableBytes: Int64 {
+    public var availableBytes: Int64 {
         lock.lock()
         defer { lock.unlock() }
         return max(byteLimit - usedBytes, 0)
     }
 
-    func reserve(upTo byteCount: Int64) -> Int64 {
+    public func reserve(upTo byteCount: Int64) -> Int64 {
         lock.lock()
         defer { lock.unlock() }
         let reserved = min(max(byteCount, 0), max(byteLimit - usedBytes, 0))
@@ -385,20 +393,20 @@ nonisolated final class PlaybackCacheStorageBudget: @unchecked Sendable {
         return reserved
     }
 
-    func release(_ byteCount: Int64) {
+    public func release(_ byteCount: Int64) {
         lock.lock()
         usedBytes = max(usedBytes - max(byteCount, 0), 0)
         lock.unlock()
     }
 }
 
-nonisolated struct PlaybackRangeResponse: Sendable {
-    let data: Data
-    let offset: Int64
-    let totalLength: Int64?
-    let transferredBytes: Int64
+public nonisolated struct PlaybackRangeResponse: Sendable {
+    public let data: Data
+    public let offset: Int64
+    public let totalLength: Int64?
+    public let transferredBytes: Int64
 
-    init(data: Data, offset: Int64, totalLength: Int64?, transferredBytes: Int64? = nil) {
+    public init(data: Data, offset: Int64, totalLength: Int64?, transferredBytes: Int64? = nil) {
         self.data = data
         self.offset = offset
         self.totalLength = totalLength
@@ -406,7 +414,7 @@ nonisolated struct PlaybackRangeResponse: Sendable {
     }
 }
 
-nonisolated protocol PlaybackRangeLoading: AnyObject, Sendable {
+public nonisolated protocol PlaybackRangeLoading: AnyObject, Sendable {
     func load(url: URL, range: PlaybackByteRange, priority: Float) throws -> PlaybackRangeResponse
     func cancelAll()
     /// A foreground read has caught up with an in-flight low-priority
@@ -424,7 +432,7 @@ extension PlaybackRangeLoading {
 /// failed (and should be retried after a backoff) from one that found
 /// nothing left to fetch (the file is complete under the cap, or the
 /// window is full); a Boolean collapsed both into "stop".
-nonisolated enum PlaybackPrefetchOutcome: Equatable, Sendable {
+public nonisolated enum PlaybackPrefetchOutcome: Equatable, Sendable {
     /// A chunk landed: the bytes the request returned and how long that one
     /// request took, so pacing measures the prefetch itself rather than the
     /// cache's aggregate including foreground traffic.
@@ -433,7 +441,7 @@ nonisolated enum PlaybackPrefetchOutcome: Equatable, Sendable {
     case failed
     case cancelled
 
-    var advanced: Bool {
+    public var advanced: Bool {
         if case .fetched = self { return true }
         return false
     }
@@ -471,7 +479,7 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
     private var result: Result<PlaybackRangeResponse, Error>?
     private let taskPriority: Float
 
-    init(
+    public init(
         url: URL,
         range: PlaybackByteRange,
         priority: Float,
@@ -500,7 +508,7 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
         urlRequest = request
     }
 
-    func attach(_ task: URLSessionDataTask) {
+    public func attach(_ task: URLSessionDataTask) {
         lock.lock()
         self.task = task
         lock.unlock()
@@ -685,7 +693,7 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
     private var cancelled = false
     private let authorization: MediaRequestAuthorization?
 
-    init(configuration: URLSessionConfiguration = .ephemeral, authorization: MediaRequestAuthorization? = nil) {
+    public init(configuration: URLSessionConfiguration = .ephemeral, authorization: MediaRequestAuthorization? = nil) {
         delegateProxy = PlaybackRangeSessionDelegate()
         self.authorization = authorization
         super.init()
@@ -798,13 +806,13 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
 /// One item's sparse, discardable cache file. Reads happen on FFmpeg's demux
 /// queue. File/range bookkeeping is serialized, while low-priority prefetch
 /// and a foreground seek may fetch independently when foreground must win.
-nonisolated final class PlaybackCacheScope: @unchecked Sendable {
-    let itemID: String
-    let sourceURL: URL
-    let fileURL: URL
+public nonisolated final class PlaybackCacheScope: @unchecked Sendable {
+    public let itemID: String
+    public let sourceURL: URL
+    public let fileURL: URL
     /// Bytes one cache miss fetches. FFmpeg's AVIO buffer is sized to match
     /// so a single demux read is at most a single network request.
-    let requestSize: Int64
+    public let requestSize: Int64
 
     private let byteLimit: Int64
     private let loader: PlaybackRangeLoading
@@ -827,7 +835,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     /// bytes before fetching them itself. Two seconds covers a 1 MiB chunk on
     /// any link that can play the title at all; a seek past a stalled one
     /// pays at most this before it goes its own way.
-    static let sharedFetchWaitSeconds: TimeInterval = 2
+    static public let sharedFetchWaitSeconds: TimeInterval = 2
     /// The end of the most recent foreground demux read. FFmpeg has already
     /// translated media time into the correct container byte position here,
     /// so this is safer than estimating bytes from a VBR timeline fraction.
@@ -846,7 +854,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     /// a fixed cap plus unamplified reads.
     private var holePunchingUnavailable = false
 
-    init(
+    public init(
         itemID: String,
         sourceURL: URL,
         expectedLength: Int64?,
@@ -893,19 +901,19 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         storageBudget?.release(reservedBytes)
     }
 
-    var contentLength: Int64? {
+    public var contentLength: Int64? {
         lock.lock()
         defer { lock.unlock() }
         return knownLength
     }
 
-    var prefetchByteCount: Int64 {
+    public var prefetchByteCount: Int64 {
         lock.lock()
         defer { lock.unlock() }
         return min(knownLength ?? byteLimit, byteLimit)
     }
 
-    var metrics: PlaybackCacheMetrics {
+    public var metrics: PlaybackCacheMetrics {
         lock.lock()
         defer { lock.unlock() }
         return PlaybackCacheMetrics(
@@ -934,7 +942,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     /// Records the file position selected by FFmpeg for a concrete playback
     /// time. This is presentation metadata only; scheduling continues to use
     /// FFmpeg's observed foreground reads as its authoritative hot offset.
-    func setTimelineAnchor(byteOffset: Int64, timeFraction: Double) {
+    public func setTimelineAnchor(byteOffset: Int64, timeFraction: Double) {
         guard byteOffset >= 0, timeFraction.isFinite else { return }
         lock.lock()
         defer { lock.unlock() }
@@ -948,7 +956,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     /// The sparse file becomes a normal playable input only after every byte
     /// in the server-declared resource has been written. Partial files never
     /// escape this type, so a player cannot mistake a hole for media EOF.
-    var completeFileURL: URL? {
+    public var completeFileURL: URL? {
         lock.lock()
         defer { lock.unlock() }
         guard !storageDisabled,
@@ -960,13 +968,13 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         return fileURL
     }
 
-    func read(offset: Int64, length: Int, priority: Float = URLSessionTask.highPriority) throws -> Data {
+    public func read(offset: Int64, length: Int, priority: Float = URLSessionTask.highPriority) throws -> Data {
         try read(offset: offset, length: length, priority: priority, readAhead: true)
     }
 
     /// Disc metadata has its own aggregate byte budget. Do not amplify a
     /// small descriptor read into the streaming cache's megabyte read-ahead.
-    func readMetadata(offset: Int64, length: Int) throws -> Data {
+    public func readMetadata(offset: Int64, length: Int) throws -> Data {
         try read(offset: offset, length: length, priority: URLSessionTask.highPriority, readAhead: false)
     }
 
@@ -1120,7 +1128,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         return response.data.subdata(in: Int(relativeOffset)..<Int(relativeOffset + available))
     }
 
-    func prefetch(byteCount: Int64) async {
+    public func prefetch(byteCount: Int64) async {
         guard byteCount > 0 else { return }
         await Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
@@ -1141,7 +1149,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     /// prefix. The controller deliberately schedules one chunk at a time so
     /// foreground playback can pause or throttle proactive traffic between
     /// requests instead of being trapped behind a whole-title download.
-    func prefetchNextChunk() async -> PlaybackPrefetchOutcome {
+    public func prefetchNextChunk() async -> PlaybackPrefetchOutcome {
         await Task.detached(priority: .utility) { [weak self] in
             guard let self, !Task.isCancelled else { return .cancelled }
             let (offset, count) = self.nextPrefetchWindow()
@@ -1356,7 +1364,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         return 0
     }
 
-    func cancelAndRemove() {
+    public func cancelAndRemove() {
         cancellationLock.lock()
         guard !cancelled else {
             cancellationLock.unlock()
@@ -1388,7 +1396,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
 
     /// HLS retains range metadata for backwards seeks while closing inactive
     /// segment handles, keeping long movies far below tvOS descriptor limits.
-    func suspendStorage() {
+    public func suspendStorage() {
         lock.lock()
         file?.closeFile()
         file = nil
@@ -1423,8 +1431,8 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
 /// at once; a lease prevents the bounded LRU from evicting an AVIO context
 /// that is still reading. Playlists never enter this cache because Jellyfin
 /// can update them while a transcode is still being produced.
-nonisolated final class HLSPlaybackCacheLease: @unchecked Sendable {
-    let scope: PlaybackCacheScope
+public nonisolated final class HLSPlaybackCacheLease: @unchecked Sendable {
+    public let scope: PlaybackCacheScope
 
     private weak var owner: HLSPlaybackCacheScope?
     private let key: String
@@ -1446,7 +1454,7 @@ nonisolated final class HLSPlaybackCacheLease: @unchecked Sendable {
 
     deinit { close() }
 
-    func close() {
+    public func close() {
         lock.lock()
         guard !isClosed else {
             lock.unlock()
@@ -1464,9 +1472,9 @@ nonisolated final class HLSPlaybackCacheLease: @unchecked Sendable {
 /// inactive file handles are closed so a long movie cannot exhaust tvOS file
 /// descriptors. Closed entries are evicted LRU; active AVIO leases are never
 /// removed underneath FFmpeg.
-nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
-    let itemID: String
-    let sourceURL: URL
+public nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
+    public let itemID: String
+    public let sourceURL: URL
 
     private struct Entry {
         let generation: UUID
@@ -1490,7 +1498,7 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
     private var evictionCount = 0
     private var cancelled = false
 
-    init(
+    public init(
         itemID: String,
         sourceURL: URL,
         directory: URL,
@@ -1517,11 +1525,11 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    var prefetchByteCount: Int64 {
+    public var prefetchByteCount: Int64 {
         byteLimit
     }
 
-    var metrics: PlaybackCacheMetrics {
+    public var metrics: PlaybackCacheMetrics {
         lock.lock()
         let scopes = entries.values.map(\.scope)
         let retired = retiredMetrics
@@ -1536,7 +1544,7 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
             )
     }
 
-    var cachedResourceURLs: Set<URL> {
+    public var cachedResourceURLs: Set<URL> {
         lock.lock()
         defer { lock.unlock() }
         return Set(entries.keys.compactMap(URL.init(string:)))
@@ -1545,7 +1553,7 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
     /// Returns nil for mutable playlists, unsupported URL schemes, a stopped
     /// session, or the rare case where every bounded slot is actively leased.
     /// The demuxer falls back to avio_open2 in all of those cases.
-    func leaseResource(at url: URL) throws -> HLSPlaybackCacheLease? {
+    public func leaseResource(at url: URL) throws -> HLSPlaybackCacheLease? {
         guard Self.shouldCache(url: url) else { return nil }
         let key = url.absoluteString
         var retiredScopes: [PlaybackCacheScope] = []
@@ -1631,7 +1639,7 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
     /// without persistence so a growing Jellyfin transcode can never be
     /// frozen at an old manifest. Current playback still fills every segment
     /// FFmpeg consumes, while an 8 MiB staged warmup reaches the first frame.
-    func prefetch(byteCount: Int64) async {
+    public func prefetch(byteCount: Int64) async {
         guard byteCount > 0 else { return }
         await Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
@@ -1653,7 +1661,7 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
         }.value
     }
 
-    func cancelAndRemove() {
+    public func cancelAndRemove() {
         lock.lock()
         guard !cancelled else {
             lock.unlock()
@@ -1687,7 +1695,7 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
         lock.unlock()
     }
 
-    static func shouldCache(url: URL) -> Bool {
+    static public func shouldCache(url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
             return false
         }
@@ -1718,7 +1726,7 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
         return []
     }
 
-    static func playlistReferences(data: Data, relativeTo baseURL: URL) -> [URL] {
+    static public func playlistReferences(data: Data, relativeTo baseURL: URL) -> [URL] {
         guard let text = String(data: data, encoding: .utf8) else { return [] }
         var references: [URL] = []
         for rawLine in text.split(whereSeparator: \Character.isNewline) {
@@ -1739,7 +1747,7 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
         return references
     }
 
-    static func variantPlaylistURLs(data: Data, relativeTo baseURL: URL) -> [URL] {
+    static public func variantPlaylistURLs(data: Data, relativeTo baseURL: URL) -> [URL] {
         guard let text = String(data: data, encoding: .utf8) else { return [] }
         return text
             .split(whereSeparator: \Character.isNewline)
@@ -1753,58 +1761,58 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
 /// Uniform player-facing ownership for either a single direct-file cache or
 /// an HLS resource cache. Keeping the mode inside this object lets next-item
 /// promotion and lifecycle cleanup use the same invariant for every method.
-nonisolated final class PlaybackCacheSession: @unchecked Sendable {
-    enum Storage {
+public nonisolated final class PlaybackCacheSession: @unchecked Sendable {
+    public enum Storage {
         case direct(PlaybackCacheScope)
         case hls(HLSPlaybackCacheScope)
     }
 
-    let itemID: String
-    let sourceURL: URL
-    let storage: Storage
+    public let itemID: String
+    public let sourceURL: URL
+    public let storage: Storage
 
-    init(itemID: String, sourceURL: URL, storage: Storage) {
+    public init(itemID: String, sourceURL: URL, storage: Storage) {
         self.itemID = itemID
         self.sourceURL = sourceURL
         self.storage = storage
     }
 
-    var directScope: PlaybackCacheScope? {
+    public var directScope: PlaybackCacheScope? {
         guard case .direct(let scope) = storage else { return nil }
         return scope
     }
 
-    var hlsScope: HLSPlaybackCacheScope? {
+    public var hlsScope: HLSPlaybackCacheScope? {
         guard case .hls(let scope) = storage else { return nil }
         return scope
     }
 
-    var metrics: PlaybackCacheMetrics {
+    public var metrics: PlaybackCacheMetrics {
         switch storage {
         case .direct(let scope): scope.metrics
         case .hls(let scope): scope.metrics
         }
     }
 
-    var completeFileURL: URL? {
+    public var completeFileURL: URL? {
         directScope?.completeFileURL
     }
 
-    var prefetchByteCount: Int64 {
+    public var prefetchByteCount: Int64 {
         switch storage {
         case .direct(let scope): scope.prefetchByteCount
         case .hls(let scope): scope.prefetchByteCount
         }
     }
 
-    func prefetch(byteCount: Int64) async {
+    public func prefetch(byteCount: Int64) async {
         switch storage {
         case .direct(let scope): await scope.prefetch(byteCount: byteCount)
         case .hls(let scope): await scope.prefetch(byteCount: byteCount)
         }
     }
 
-    func prefetchNextChunk() async -> PlaybackPrefetchOutcome {
+    public func prefetchNextChunk() async -> PlaybackPrefetchOutcome {
         switch storage {
         case .direct(let scope):
             return await scope.prefetchNextChunk()
@@ -1815,7 +1823,7 @@ nonisolated final class PlaybackCacheSession: @unchecked Sendable {
         }
     }
 
-    func cancelAndRemove() {
+    public func cancelAndRemove() {
         switch storage {
         case .direct(let scope): scope.cancelAndRemove()
         case .hls(let scope): scope.cancelAndRemove()
@@ -1826,15 +1834,15 @@ nonisolated final class PlaybackCacheSession: @unchecked Sendable {
 /// Main-actor ownership of the only two cache scopes Lagoon permits: the
 /// active item and its staged successor.
 @MainActor
-final class PlaybackCacheCoordinator {
+public final class PlaybackCacheCoordinator {
     private let rootDirectory: URL
     private let byteLimit: Int64
     private let isEnabled: Bool
     private let allowsTranscodeCaching: Bool
-    private(set) var current: PlaybackCacheSession?
-    private(set) var next: PlaybackCacheSession?
+    public private(set) var current: PlaybackCacheSession?
+    public private(set) var next: PlaybackCacheSession?
 
-    init(
+    public init(
         rootDirectory: URL? = nil,
         byteLimit: Int64? = nil,
         isEnabled: Bool,
@@ -1858,7 +1866,7 @@ final class PlaybackCacheCoordinator {
         removeStaleScopes()
     }
 
-    func activate(
+    public func activate(
         itemID: String,
         url: URL,
         delivery: MediaDelivery,
@@ -1876,7 +1884,7 @@ final class PlaybackCacheCoordinator {
         return current
     }
 
-    func stageNext(
+    public func stageNext(
         itemID: String,
         url: URL,
         delivery: MediaDelivery,
@@ -1889,13 +1897,13 @@ final class PlaybackCacheCoordinator {
         return next
     }
 
-    func discardNext(itemID: String? = nil) {
+    public func discardNext(itemID: String? = nil) {
         guard itemID == nil || next?.itemID == itemID else { return }
         next?.cancelAndRemove()
         next = nil
     }
 
-    func discardCurrent(preservingNext: Bool) {
+    public func discardCurrent(preservingNext: Bool) {
         current?.cancelAndRemove()
         current = nil
         if !preservingNext {
@@ -1903,7 +1911,7 @@ final class PlaybackCacheCoordinator {
         }
     }
 
-    func discardAll() {
+    public func discardAll() {
         discardCurrent(preservingNext: false)
     }
 
@@ -1955,7 +1963,7 @@ final class PlaybackCacheCoordinator {
     /// Half of the remaining volume is available to the current title, which
     /// lets ordinary episodes and movies finish buffering when space permits
     /// without letting one disposable file consume the device.
-    nonisolated static func recommendedByteLimit(availableBytes: Int64?) -> Int64 {
+    nonisolated static public func recommendedByteLimit(availableBytes: Int64?) -> Int64 {
         let mebibyte: Int64 = 1_024 * 1_024
         let minimum = 64 * mebibyte
         let safetyReserve = 256 * mebibyte

@@ -10,8 +10,10 @@ import Foundation
 /// and scheduling priority — and every core's load through
 /// `host_processor_info`, and reports the deltas as one `CPUTrace` line per
 /// decode-trace tick. Off unless `-debug.decodeTrace YES`.
-nonisolated final class ProcessCPUTrace: @unchecked Sendable {
-    static let enabled = UserDefaults.standard.bool(forKey: "debug.decodeTrace")
+public nonisolated final class ProcessCPUTrace: @unchecked Sendable {
+    public init() {}
+
+    static public let enabled = UserDefaults.standard.bool(forKey: "debug.decodeTrace")
 
     /// Unnamed GCD threads are indistinguishable from each other, so the
     /// decode queue tags the thread it last ran on; it is the one thread whose
@@ -19,7 +21,7 @@ nonisolated final class ProcessCPUTrace: @unchecked Sendable {
     nonisolated(unsafe) private static var decodeThreadID: UInt64 = 0
     nonisolated(unsafe) private static var mainThreadID: UInt64 = 0
 
-    static func noteDecodeThread() {
+    static public func noteDecodeThread() {
         guard enabled else { return }
         var id: UInt64 = 0
         pthread_threadid_np(nil, &id)
@@ -37,7 +39,7 @@ nonisolated final class ProcessCPUTrace: @unchecked Sendable {
     private var previousCores: [[Int64]] = []
     private var previousInstant = ProcessInfo.processInfo.systemUptime
 
-    func tick() -> String {
+    public func tick() -> String {
         if Thread.isMainThread, Self.mainThreadID == 0 {
             pthread_threadid_np(nil, &Self.mainThreadID)
         }

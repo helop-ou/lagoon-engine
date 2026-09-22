@@ -6,7 +6,7 @@ import Foundation
 /// server refused to supply them — an expired session, a missing permission,
 /// a provider that ran out of downloads — is the host's to describe, because
 /// the host is the only party that knows what it asked and of whom.
-nonisolated enum SubtitleFileError: LocalizedError, Equatable {
+public nonisolated enum SubtitleFileError: LocalizedError, Equatable {
     /// Past the byte ceiling a subtitle is allowed to occupy.
     case tooLarge
     /// Parsed, but nothing in it was a cue. Usually the wrong file entirely.
@@ -15,7 +15,7 @@ nonisolated enum SubtitleFileError: LocalizedError, Equatable {
     /// success status.
     case invalidFile
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .tooLarge:
             "This subtitle file is too large to load."
