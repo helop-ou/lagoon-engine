@@ -97,7 +97,7 @@ ok "releasing into ${slug}"
 #    source archive to a release, which is how that is satisfied — so the
 #    materials have to be in the tree being archived.
 missing=""
-for material in LICENSE Artifacts/Libavformat.README.md Artifacts/Libdovi.README.md; do
+for material in LICENSE Artifacts/FFmpeg.README.md Artifacts/Libdovi.README.md; do
     git -C "$root" cat-file -e "${sha}:${material}" 2>/dev/null || missing="${missing} ${material}"
 done
 [ -z "$missing" ] || die "the revision is missing dependency materials:${missing}"
