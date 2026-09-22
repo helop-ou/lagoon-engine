@@ -9,10 +9,17 @@
 # software decoder agree on — the tests beside the renderer pin it to both.
 #
 # The renderer lives in the test target because that is the only place with
-# access to the table. It prints the document between two markers rather than
-# writing a file: a package test target runs in a generic runner whose
-# container is cleared when the run ends, so a path reported from inside it
-# points at nothing by the time this script looks.
+# access to the table. It prints the document rather than writing a file: a
+# package test target runs in a generic runner whose container is cleared when
+# the run ends, so a path reported from inside it points at nothing by the time
+# this script looks.
+#
+# Each printed line is wrapped in its own markers, because the test runner
+# writes progress to the same stream and its writes land inside these lines
+# rather than on lines of their own. Cutting between one begin/end pair failed
+# about half the time: the end marker came back as `CODEC_DOC_END✔ Test ...`,
+# an anchored pattern stopped matching it, and everything after it went into
+# the document.
 #
 #   scripts/generate-codec-support.sh           # regenerate the document
 #   scripts/generate-codec-support.sh --check   # fail if it is out of date
@@ -42,12 +49,31 @@ fi
 
 generated="$(mktemp)"
 trap 'rm -f "$log" "$generated"' EXIT
-awk '/^CODEC_SUPPORT_DOC_BEGIN$/ { on = 1; next }
-     /^CODEC_SUPPORT_DOC_END$/   { exit }
-     on' "$log" > "$generated"
+# Keep only what lies between a line's own markers, so runner output that
+# landed against either end is trimmed rather than taken for document text.
+awk '
+    { start = index($0, "CODEC_DOC|") }
+    start == 0 { next }
+    {
+        rest = substr($0, start + 10)
+        stop = index(rest, "|CODEC_DOC")
+    }
+    stop == 0 { next }
+    { print substr(rest, 1, stop - 1) }
+' "$log" > "$generated"
 if [ ! -s "$generated" ]; then
     echo "error: the generator printed no document" >&2
     tail -40 "$log" >&2
+    exit 1
+fi
+
+# A line lost to interleaving would otherwise be copied over the document as a
+# quiet truncation, so check the shape before trusting it.
+if [ "$(head -1 "$generated")" != "# Codec support" ] \
+    || ! grep -q '^## Audio$' "$generated" \
+    || ! grep -q '^## Interlacing$' "$generated"; then
+    echo "error: the extracted document is not shaped like the codec table" >&2
+    echo "       the runner's output may have interleaved past trimming" >&2
     exit 1
 fi
 
