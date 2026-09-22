@@ -179,8 +179,8 @@ minimum sits exactly on that boundary and is rejected (`ITMS-90208:
 … does not support the minimum OS Version specified in the
 Info.plist`). That is what happened to build 74. The value has no
 runtime meaning, because the stub never loads: dav1d is a static
-archive linked into the app binary, and all ten mpvkit artifacts
-beside it declare the same thing. The deployment targets still apply
+archive linked into the app binary, and every artifact beside it
+declares the same thing. The deployment targets still apply
 to the code itself, through `-target`.
 
 Re-check the committed artifact at any time:
