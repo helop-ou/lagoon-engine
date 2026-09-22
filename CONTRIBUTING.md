@@ -22,11 +22,23 @@ artifacts](#native-artifacts).
 
 ## Clone and build
 
-Clone the repository and build with Swift Package Manager:
+The package supports iOS and tvOS only, so build it against a simulator
+destination rather than the host:
 
 ```sh
-swift build
+xcodebuild -scheme LagoonEngine -destination 'generic/platform=tvOS Simulator' build
+xcodebuild -scheme LagoonEngine -destination 'generic/platform=iOS Simulator' build
 ```
+
+Run them one at a time. They share derived data, and running both at once
+fails one of them with exit 65 and no useful diagnosis.
+
+Bare `swift build` and `swift test` do not work, and are not expected to.
+SwiftPM builds for the host, and `Package.swift` declares no macOS platform,
+so the host build gets a default deployment target older than the APIs the
+engine uses — `Duration`, and `os_proc_available_memory()`, which is
+unavailable on macOS at any version. The failure looks like a broken checkout
+and is not one.
 
 The first build resolves the package's binary targets: some are
 checksum-pinned artifacts from MPVKit, fetched over the network, and the rest
@@ -34,10 +46,10 @@ are the vendored xcframeworks in this repository.
 
 ## Tests
 
-The unit suite covers the engine's pure logic:
+The unit suite covers the engine's pure logic, and runs on a booted simulator:
 
 ```sh
-swift test
+xcodebuild test -scheme LagoonEngine -destination 'platform=tvOS Simulator,name=Apple TV 4K (3rd generation)'
 ```
 
 ## Commits
