@@ -20,13 +20,13 @@ import Foundation
 /// Bounded on purpose. Only one retry is allowed per playback generation, so
 /// a stream that really is undecodable descends the ladder on its second
 /// failure, exactly as it did before, one seek later.
-public nonisolated enum PlaybackRestartPointPolicy {
+nonisolated enum PlaybackRestartPointPolicy {
     /// How close to the flush a failure has to be. An open GOP's leading
     /// pictures arrive immediately behind the picture the seek landed on;
     /// three samples covers a B-pyramid's worth and nothing beyond it.
-    static public let samplesAfterFlush = 3
+    static let samplesAfterFlush = 3
 
-    static public func shouldRetryInPlace(
+    static func shouldRetryInPlace(
         videoSamplesSinceFlush: Int,
         alreadyRetriedThisGeneration: Bool
     ) -> Bool {
@@ -82,8 +82,8 @@ nonisolated enum PlaybackRendererStartPolicy {
 /// reason: bounded at one rebuild per playback generation, so a session that
 /// genuinely cannot be made descends the ladder on its second fault instead
 /// of looping.
-public nonisolated enum PlaybackDecodeSessionPolicy {
-    public enum Resolution: Equatable {
+nonisolated enum PlaybackDecodeSessionPolicy {
+    enum Resolution: Equatable {
         /// Playback is already over — something else failed, or the viewer
         /// stopped. The samples still inside the decoder report the session
         /// going down with it, and a rebuild would seek a demux loop that
@@ -108,7 +108,7 @@ public nonisolated enum PlaybackDecodeSessionPolicy {
         case descend
     }
 
-    static public func resolve(
+    static func resolve(
         cancelled: Bool,
         videoOutputSuspended: Bool,
         recoveryInFlight: Bool,

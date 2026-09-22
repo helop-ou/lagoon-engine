@@ -55,6 +55,12 @@ public protocol PlayerEngineDiagnostics: AnyObject {
     /// asks for them rather than having them maintained continuously.
     func refreshVideoPerformanceMetrics()
 
+    /// The most decoded frames the engine will ever hold, whatever this
+    /// playback is doing. A host sizing a worst-case memory line needs the
+    /// ceiling rather than `videoQueueHardLimitDiagnostic`, which moves
+    /// with delivery.
+    var decodedVideoQueueCeiling: Int { get }
+
     // MARK: Byte cache
 
     /// The active cache scope's counters, or nil when nothing is cached.

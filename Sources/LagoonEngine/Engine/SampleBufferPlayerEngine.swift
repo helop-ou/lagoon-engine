@@ -144,6 +144,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     public var videoQueueHardLimitDiagnostic: Int {
         shared.withLock { $0.videoQueueHardLimit }
     }
+    public var decodedVideoQueueCeiling: Int {
+        DemuxBackpressurePolicy.videoHardLimit(videoIsDecoded: true)
+    }
     public var videoIntakeCountDiagnostic: Int { videoIntake.count }
     /// Samples refused as a flushed renderer's first, for this attempt.
     public var videoStartPointDropDiagnostic: Int { shared.withLock { $0.videoStartPointDrops } }
@@ -3986,7 +3989,7 @@ nonisolated enum PlaybackEndBoundary {
     }
 }
 
-nonisolated public enum DemuxBackpressureDecision: Equatable {
+nonisolated enum DemuxBackpressureDecision: Equatable {
     case read
     case waitForVideo(below: Int)
     case waitForAudio(below: Int)
@@ -3997,7 +4000,7 @@ nonisolated public enum DemuxBackpressureDecision: Equatable {
 /// is short, the fuller side may grow only to a hard limit and is then paced
 /// one dequeue at a time so the cursor can still reach packets for the side
 /// that needs them.
-public nonisolated enum DemuxBackpressurePolicy {
+nonisolated enum DemuxBackpressurePolicy {
     private static let audioHighWater = 180
     private static let audioLowWater = 144
     private static let audioHardWater = 270
@@ -4035,12 +4038,12 @@ public nonisolated enum DemuxBackpressurePolicy {
     /// the network takes longer than any cushion the renderer holds; the
     /// read has to start the moment the decoded queue is full, and the
     /// audio high water below is what bounds it.
-    static public let videoIntakeHardLimit = 600
-    static public let videoIntakeByteBudget = 128 * 1_048_576
+    static let videoIntakeHardLimit = 600
+    static let videoIntakeByteBudget = 128 * 1_048_576
 
     /// The audio depth being aimed for, so the HUD can show which profile
     /// is in force rather than leaving its absence to be inferred.
-    static public func audioCushionTarget(deliveryIsCached: Bool) -> Int {
+    static func audioCushionTarget(deliveryIsCached: Bool) -> Int {
         deliveryIsCached ? audioHighWater : uncachedAudioHighWater
     }
 
@@ -4055,13 +4058,13 @@ public nonisolated enum DemuxBackpressurePolicy {
     /// hardware-decoded path was already allowed — 30 frames of 4K P010 —
     /// so every configuration measured before this keeps the limit it was
     /// measured with, and only 4K software decode comes back under it.
-    static public let decodedQueueByteBudget: Int64 = 30 * 24_883_200
+    static let decodedQueueByteBudget: Int64 = 30 * 24_883_200
 
     /// Never below this however large a frame gets: a queue has to hold the
     /// codec's reorder depth plus a cushion or it stops being a queue.
     private static let decodedQueueFrameFloor = 8
 
-    static public func videoHardLimit(
+    static func videoHardLimit(
         videoIsDecoded: Bool,
         videoIsSoftwareDecoded: Bool = false,
         decodedFrameBytes: Int64 = 0
@@ -4074,7 +4077,7 @@ public nonisolated enum DemuxBackpressurePolicy {
 
     /// `deliveryIsCached` defaults true, which is the shape every caller had
     /// before the uncached profile existed.
-    static public func decision(
+    static func decision(
         videoCount: Int,
         audioCount: Int,
         audioBufferedSeconds: Double,

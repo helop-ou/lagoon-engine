@@ -7,11 +7,23 @@ public nonisolated enum SubtitleLoadState: Equatable {
 }
 
 public nonisolated enum ExternalSubtitleLoader {
+    /// Whether these bytes are a subtitle file this engine can play, without
+    /// keeping what it read.
+    ///
+    /// A host that has just fetched a sidecar from somewhere it does not
+    /// control wants to know before it commits — a provider returning a
+    /// login page with a 200 is the ordinary failure. Throws the same
+    /// `SubtitleFileError` a load would; the parsed cues are the engine's
+    /// business and are not returned.
+    static public func validate(_ data: Data, language: String?) async throws {
+        _ = try await parse(data, language: language)
+    }
+
     /// `authorization` attaches the session credential as a header rather
     /// than letting it ride in `track.url`'s query — Jellyfin delivery URLs
     /// can arrive with a legacy `api_key`, and any URL is otherwise a
     /// potential unified-log leak if the request fails.
-    static public func load(
+    static func load(
         _ track: ExternalSubtitleTrack,
         using downloader: BoundedDownload,
         authorization: MediaRequestAuthorization? = nil
@@ -30,7 +42,7 @@ public nonisolated enum ExternalSubtitleLoader {
         return try await parse(data, language: track.language)
     }
 
-    static public func parse(_ data: Data, language: String?) async throws -> [SubtitleCue] {
+    static func parse(_ data: Data, language: String?) async throws -> [SubtitleCue] {
         try Task.checkCancellation()
         guard data.count <= DownloadLimit.subtitle else { throw SubtitleFileError.tooLarge }
         let parsing = Task.detached(priority: .userInitiated) {

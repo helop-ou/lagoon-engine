@@ -41,13 +41,13 @@ nonisolated private let avErrorEOF: Int32 = -541_478_725 // AVERROR_EOF = -MKTAG
 nonisolated private let customIOFlag: Int32 = 0x0080 // AVFMT_FLAG_CUSTOM_IO
 nonisolated private let noFileFormatFlag: Int32 = 0x0001 // AVFMT_NOFILE
 
-public nonisolated enum DemuxError: LocalizedError {
+nonisolated enum DemuxError: LocalizedError {
     /// `code` is the AVERROR where libavformat gave one, else 0.
     case openFailed(String, code: Int32 = 0)
     case seekFailed(String, code: Int32 = 0)
     case unsupportedVideo(String)
 
-    public var errorDescription: String? {
+    var errorDescription: String? {
         switch self {
         case .openFailed(let detail, _): "The stream could not be opened (\(detail))."
         case .seekFailed(let detail, _): "The stream could not seek to that position (\(detail))."
@@ -57,7 +57,7 @@ public nonisolated enum DemuxError: LocalizedError {
 
     /// Stage and AVERROR for the diagnostic report; the codec name of an
     /// unsupported stream is already a fact of the attempt.
-    public var diagnosticDetail: PlaybackFailureDetail {
+    var diagnosticDetail: PlaybackFailureDetail {
         switch self {
         case .openFailed(_, let code):
             PlaybackFailureDetail(stage: .open, domain: "ffmpeg", code: code == 0 ? nil : Int(code))
@@ -71,7 +71,7 @@ public nonisolated enum DemuxError: LocalizedError {
     /// Whether a different delivery of the same media could help. Opening
     /// and seeking are container and transport problems, which a server-side
     /// remux routinely fixes; an unsupported codec is not.
-    public var cause: PlaybackEngineFailure.Cause {
+    var cause: PlaybackEngineFailure.Cause {
         switch self {
         case .openFailed, .seekFailed: .delivery
         case .unsupportedVideo: .undecodable

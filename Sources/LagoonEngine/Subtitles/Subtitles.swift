@@ -122,22 +122,22 @@ public nonisolated struct SubtitleTextCue: Equatable, Sendable {
     public var usesDefaultPlacement: Bool { alignment == nil && position == nil }
 }
 
-public nonisolated struct SubtitleCue {
-    public let start: Double
+nonisolated struct SubtitleCue {
+    let start: Double
     /// `.infinity` marks an open-ended cue (the PGS norm: display until
     /// the next composition event) — the store closes it on the next event.
-    public var end: Double
-    public let textCues: [SubtitleTextCue]
-    public let images: [SubtitleImage]
+    var end: Double
+    let textCues: [SubtitleTextCue]
+    let images: [SubtitleImage]
 
     /// Compatibility projection for parsers/tests and accessibility. The
     /// renderer consumes `textCues` so authored compositions stay separate.
-    public var text: String? {
+    var text: String? {
         let joined = textCues.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
         return joined.isEmpty ? nil : joined
     }
 
-    public init(start: Double, end: Double, text: String?, images: [SubtitleImage]) {
+    init(start: Double, end: Double, text: String?, images: [SubtitleImage]) {
         self.init(
             start: start,
             end: end,
@@ -146,7 +146,7 @@ public nonisolated struct SubtitleCue {
         )
     }
 
-    public init(start: Double, end: Double, textCues: [SubtitleTextCue], images: [SubtitleImage]) {
+    init(start: Double, end: Double, textCues: [SubtitleTextCue], images: [SubtitleImage]) {
         self.start = start
         self.end = end
         self.textCues = textCues
@@ -513,8 +513,8 @@ nonisolated enum ASSSubtitleTextParser {
 
 /// Parses the external subtitle files Jellyfin delivers (vtt per the
 /// device profile; srt tolerated since the timestamp shapes overlap).
-public nonisolated enum SubtitleParser {
-    static public func cues(from data: Data, languageHint: String? = nil) -> [SubtitleCue] {
+nonisolated enum SubtitleParser {
+    static func cues(from data: Data, languageHint: String? = nil) -> [SubtitleCue] {
         guard data.count <= DownloadLimit.subtitle, !Task.isCancelled,
               let content = SubtitleTextDecoder.text(from: data, languageHint: languageHint) else {
             return []
