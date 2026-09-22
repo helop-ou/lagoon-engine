@@ -33,6 +33,32 @@ nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
         let nsError = error as NSError
         self.init(stage: stage, domain: nsError.domain, code: nsError.code)
     }
+
+    /// The failure as diagnostic fields: stage always, domain only if it
+    /// passes the token rule, code if there was one.
+    var fields: [String: DiagnosticValue] {
+        var fields: [String: DiagnosticValue] = ["stage": .string(stage.rawValue)]
+        if let domain = DiagnosticToken.token(domain) {
+            fields["errorDomain"] = domain
+        }
+        if let code {
+            fields["errorCode"] = .int(code)
+        }
+        return fields
+    }
+
+    /// The part of a fingerprint that separates one kind of failure at a
+    /// stage from another.
+    var fingerprint: [String] {
+        var parts = [stage.rawValue]
+        if let domain, DiagnosticToken.isToken(domain) {
+            parts.append(domain)
+        }
+        if let code {
+            parts.append(String(code))
+        }
+        return parts
+    }
 }
 
 /// A failure the engine could not recover from on its own, handed to whoever

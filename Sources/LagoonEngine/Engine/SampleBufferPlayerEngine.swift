@@ -605,7 +605,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
     func play() {
         guard isPaused || synchronizer.rate == 0 else { return }
         isPaused = false
-        Diagnostics.record(.playbackPlay, ["position": .double(timePosition.rounded(toPlaces: 1))])
+        EngineDiagnostics.record(.playbackPlay, ["position": .double(timePosition.rounded(toPlaces: 1))])
         // A buffering engine resumes when its queue gate is satisfied;
         // forcing the clock here would run its timebase ahead of the samples.
         if !isBuffering {
@@ -637,7 +637,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
         }
         guard isPaused || synchronizer.rate == 0 else { return }
         isPaused = false
-        Diagnostics.record(.playbackPlay, ["position": .double(timePosition.rounded(toPlaces: 1))])
+        EngineDiagnostics.record(.playbackPlay, ["position": .double(timePosition.rounded(toPlaces: 1))])
         synchronizer.setRate(
             Float(effectiveRate),
             time: synchronizer.currentTime(),
@@ -676,7 +676,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
         clearPendingStallConfirmation()
         // A group pause overrides a group start that has not arrived yet.
         scheduledStartHostTime = nil
-        Diagnostics.record(.playbackPause, ["position": .double(timePosition.rounded(toPlaces: 1))])
+        EngineDiagnostics.record(.playbackPause, ["position": .double(timePosition.rounded(toPlaces: 1))])
         // Soak diagnostic: this is the one call in the pause path
         // that reaches AVFoundation's own state; a pause that starts taking
         // real wall time is what "pause takes a minute" looks like from the
@@ -723,7 +723,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
 
     func selectAudioTrack(id: Int?) {
         guard let id, id - 1 < audioTracks.count else { return }
-        Diagnostics.record(.playbackTrack, [
+        EngineDiagnostics.record(.playbackTrack, [
             "track": .string("audio"),
             "trackSource": .string(audioTracks.first { $0.engineID == id }?.source.rawValue ?? "embedded"),
             "position": .double(timePosition.rounded(toPlaces: 1)),
@@ -762,7 +762,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
         let ordinal = id ?? 0
         guard !shutdownRequested, ordinal >= 0,
               ordinal <= embeddedSubtitleCount + externalSubtitles.count else { return }
-        Diagnostics.record(.playbackTrack, [
+        EngineDiagnostics.record(.playbackTrack, [
             "track": .string("subtitle"),
             "trackSource": .string(ordinal == 0 ? "off" : ordinal > embeddedSubtitleCount ? "external" : "embedded"),
             "position": .double(timePosition.rounded(toPlaces: 1)),
@@ -857,8 +857,8 @@ final class SampleBufferPlayerEngine: PlayerEngine {
                 var fields = detail.fields
                 fields["track"] = .string("subtitle")
                 fields["trackSource"] = .string(track.isDownloaded ? "downloaded" : "external")
-                Diagnostics.record(.playbackSubtitleLoadFailed, fields)
-                Diagnostics.report(.playbackSubtitleLoadFailed, level: .warning, variant: detail.fingerprint, fields: fields)
+                EngineDiagnostics.record(.playbackSubtitleLoadFailed, fields)
+                EngineDiagnostics.report(.playbackSubtitleLoadFailed, level: .warning, variant: detail.fingerprint, fields: fields)
             }
         }
     }
@@ -1150,7 +1150,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
 
     func seek(to target: Double) {
         let clamped = max(0, duration > 0 ? min(target, duration - 1) : target)
-        Diagnostics.record(.playbackSeek, ["position": .double(clamped.rounded(toPlaces: 1))])
+        EngineDiagnostics.record(.playbackSeek, ["position": .double(clamped.rounded(toPlaces: 1))])
         // Optimistic: the playhead moves the instant the seek is asked
         // for — the engine will resume from exactly here. The
         // timed decisions hear about it too, so a paused scrub into an
@@ -1342,7 +1342,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
         guard isCurrent, !didFinish else { return }
         didFinish = true
         removeFinishObserver()
-        Diagnostics.record(.playbackFinished, ["position": .double(timePosition.rounded(toPlaces: 1))])
+        EngineDiagnostics.record(.playbackFinished, ["position": .double(timePosition.rounded(toPlaces: 1))])
         onFinished?()
     }
 
@@ -1513,7 +1513,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
         removeAudioRendererObservers()
         let outgoingError = outgoingAudio.error?.localizedDescription
         let outgoingFailure = PlaybackFailureDetail(stage: .audioRenderer, error: outgoingAudio.error)
-        Diagnostics.record(.playbackRendererRecovery, outgoingFailure.fields.merging([
+        EngineDiagnostics.record(.playbackRendererRecovery, outgoingFailure.fields.merging([
             "recovery": .string(replacement.reason.description),
             "position": .double(recoveryPosition.rounded(toPlaces: 1)),
         ]) { _, new in new })
@@ -1564,7 +1564,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
                         self.audioRendererRecoveryCount += 1
                     }
                     self.audioRendererReplacementID = nil
-                    Diagnostics.report(
+                    EngineDiagnostics.report(
                         .playbackRendererRecovery,
                         level: .warning,
                         variant: [replacement.reason.description] + outgoingFailure.fingerprint.dropFirst(),
@@ -1676,8 +1676,8 @@ final class SampleBufferPlayerEngine: PlayerEngine {
             "recovery": .string("requiresFlush"),
             "position": .double(recoveryPosition.rounded(toPlaces: 1)),
         ]) { _, new in new }
-        Diagnostics.record(.playbackRendererRecovery, fields)
-        Diagnostics.report(.playbackRendererRecovery, level: .warning, variant: ["requiresFlush"] + detail.fingerprint.dropFirst(), fields: fields)
+        EngineDiagnostics.record(.playbackRendererRecovery, fields)
+        EngineDiagnostics.report(.playbackRendererRecovery, level: .warning, variant: ["requiresFlush"] + detail.fingerprint.dropFirst(), fields: fields)
         seek(to: recoveryPosition)
         rendererRecoveryInProgress = false
     }
@@ -1742,8 +1742,8 @@ final class SampleBufferPlayerEngine: PlayerEngine {
                 "position": .double(recoveryPosition.rounded(toPlaces: 1)),
                 "samplesSinceFlush": .int(samplesSinceFlush),
             ]) { _, new in new }
-            Diagnostics.record(.playbackRendererRecovery, fields)
-            Diagnostics.report(.playbackRendererRecovery, level: .warning, variant: ["restartPoint"] + detail.fingerprint.dropFirst(), fields: fields)
+            EngineDiagnostics.record(.playbackRendererRecovery, fields)
+            EngineDiagnostics.report(.playbackRendererRecovery, level: .warning, variant: ["restartPoint"] + detail.fingerprint.dropFirst(), fields: fields)
             seek(to: recoveryPosition)
             // Recorded *after* the seek, because `seek` bumps the
             // generation: the retry is spent against the attempt it starts,
@@ -1983,7 +1983,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
         if cause == .audio {
             audioStallCount += 1
         }
-        Diagnostics.record(.playbackStallBegin, [
+        EngineDiagnostics.record(.playbackStallBegin, [
             "position": .double(timePosition.rounded(toPlaces: 1)),
             "stallCause": .string(cause.rawValue),
             "stalls": .int(stallCount),
@@ -2097,11 +2097,11 @@ final class SampleBufferPlayerEngine: PlayerEngine {
             "reprimes": .int(stallReprimeCount),
             "videoQueued": .int(videoQueue.count),
         ]
-        Diagnostics.record(.playbackStallEnd, fields)
+        EngineDiagnostics.record(.playbackStallEnd, fields)
         if outcome == "reprimed" {
-            Diagnostics.report(.playbackStall, level: .warning, variant: ["reprime", cause.rawValue], fields: fields)
+            EngineDiagnostics.report(.playbackStall, level: .warning, variant: ["reprime", cause.rawValue], fields: fields)
         } else if elapsedMs >= Self.sustainedStallSeconds * 1_000 {
-            Diagnostics.report(.playbackStall, level: .warning, variant: ["sustained", cause.rawValue], fields: fields)
+            EngineDiagnostics.report(.playbackStall, level: .warning, variant: ["sustained", cause.rawValue], fields: fields)
         }
     }
 
@@ -2235,7 +2235,7 @@ final class SampleBufferPlayerEngine: PlayerEngine {
             } catch where cacheSession != nil && disc == nil {
                 demuxer.close()
                 deliveryIsCached = false
-                Diagnostics.record(.playbackCacheFallback, ["recovery": .string("cacheFallback")])
+                EngineDiagnostics.record(.playbackCacheFallback, ["recovery": .string("cacheFallback")])
                 Task { @MainActor in self.onPlaybackCacheFallback?() }
                 try demuxer.open(
                     url: openTarget,
@@ -3042,9 +3042,9 @@ final class SampleBufferPlayerEngine: PlayerEngine {
         let fields = detail.fields.merging([
             "recovery": .string(recovery),
         ]) { _, new in new }
-        Diagnostics.record(.playbackRendererRecovery, fields)
+        EngineDiagnostics.record(.playbackRendererRecovery, fields)
         guard recovery == "decodeSessionRebuilt" else { return }
-        Diagnostics.report(
+        EngineDiagnostics.report(
             .playbackRendererRecovery,
             level: .warning,
             variant: [recovery] + detail.fingerprint.dropFirst(),
