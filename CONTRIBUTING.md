@@ -57,9 +57,12 @@ xcodebuild test -scheme LagoonEngine -destination 'platform=tvOS Simulator,name=
 Work goes straight to `main`. Subjects are conventional and lowercase
 imperative — `feat: move the demux, decode, render and transport core`, `fix:`, `chore:`,
 `docs:` — with no scope parentheses. The house style is many small thematic
-commits, usually one file each, ordered so every intermediate state builds. A
-substantial `fix:` earns a body explaining the mechanism; a mechanical one
-stays subject-only. Keep structural moves separate from behaviour changes.
+commits, usually one file each, ordered so every intermediate state builds.
+Subject line only, however substantial the change: reasoning that wants a
+paragraph goes in the documentation, where it can be found later and kept
+current, rather than in a message nobody reads again. One mechanical change
+repeated across many files is still one commit. Keep structural moves separate
+from behaviour changes.
 
 ## Releasing
 
