@@ -28,7 +28,7 @@ Apple Clang, including FFmpeg's host tools. No GCC installation is needed.
 
 ```sh
 python3 scripts/build-ffmpeg-format.py --work /private/tmp/lagoon-libavformat-build
-python3 scripts/build-ffmpeg-format.py --verify-only Packages/LagoonFFmpeg/Artifacts/Libavformat.xcframework
+python3 scripts/build-ffmpeg-format.py --verify-only Artifacts/Libavformat.xcframework
 ```
 
 The script downloads checksum-pinned sources, retains upstream's selected

@@ -26,7 +26,7 @@ import urllib.request
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / "Packages/LagoonFFmpeg"
+PACKAGE = ROOT
 PATCHES = sorted((PACKAGE / "Patches").glob("*.patch"))
 VERSION = "8.1.2"
 SOURCE_URL = "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2"

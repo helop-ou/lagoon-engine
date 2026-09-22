@@ -49,7 +49,7 @@ IOS_MIN="26.0"
 MACOS_MIN="14.0"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-output="$root/Packages/LagoonFFmpeg/Artifacts"
+output="$root/Artifacts"
 work=""
 verify_only=""
 
