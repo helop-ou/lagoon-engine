@@ -3,23 +3,20 @@ import Foundation
 
 /// Where the CPU goes while software video decodes.
 ///
-/// A software decoder shares six cores with everything else the process and
-/// the system do, so "dav1d is slower in the app than in a bare test process"
-/// has to be split into *who else is running*. This samples every thread in
-/// the process through `thread_info(THREAD_EXTENDED_INFO)` — name, CPU time
-/// and scheduling priority — and every core's load through
-/// `host_processor_info`, and reports the deltas as one `CPUTrace` line per
-/// decode-trace tick. Off unless `-debug.decodeTrace YES`.
+/// A software decoder shares six cores with the rest of the process and system.
+/// This samples every thread (`thread_info(THREAD_EXTENDED_INFO)`: name, CPU
+/// time, priority) and every core (`host_processor_info`), and prints the
+/// deltas as one `CPUTrace` line per decode-trace tick. Off unless
+/// `-debug.decodeTrace YES`.
 public nonisolated final class ProcessCPUTrace: @unchecked Sendable {
     public init() {}
 
-    /// Read once per process: the trace tags threads as they run, so it must
-    /// not start and stop underneath a decode that is already sampling.
+    /// Read once: the trace tags threads as they run, so it must not toggle
+    /// under a decode that is sampling.
     static public let enabled = EngineTuning.current.tracesDecodeThreads
 
-    /// Unnamed GCD threads are indistinguishable from each other, so the
-    /// decode queue tags the thread it last ran on; it is the one thread whose
-    /// share matters most, because it blocks inside libavcodec.
+    /// GCD threads are anonymous, so the decode queue tags the thread it last
+    /// ran on. It matters most because it blocks inside libavcodec.
     nonisolated(unsafe) private static var decodeThreadID: UInt64 = 0
     nonisolated(unsafe) private static var mainThreadID: UInt64 = 0
 
@@ -129,9 +126,7 @@ public nonisolated final class ProcessCPUTrace: @unchecked Sendable {
                 name = "main"
             } else if name.isEmpty {
                 // GCD workers carry no name. Reading their queue through the
-                // debugger slot the kernel exposes was tried and retained a
-                // dead queue; the answer it gave (the pump queue) is in
-                // docs/playback.md, and the shipping fix removed that load.
+                // kernel's debugger slot retained a dead queue, so do not.
                 name = "unnamed"
             }
             samples[identifier.thread_id] = ThreadSample(
@@ -167,12 +162,10 @@ public nonisolated final class ProcessCPUTrace: @unchecked Sendable {
 
 /// Experiment: raise the scheduling class of dav1d's worker threads.
 ///
-/// dav1d creates its pool with plain `pthread_create`, which on Darwin lands
-/// in the default (legacy, priority 31) band, below every `.userInitiated`
-/// queue in this engine. `-debug.dav1dWorkerQoS userInitiated` (or
-/// `userInteractive`) applies a QoS override to every thread named
-/// `dav1d-worker` right after libavcodec opens the decoder. Diagnostic only:
-/// the override handles are kept for the life of the process.
+/// dav1d's `pthread_create` threads land in the legacy priority-31 band, below
+/// every `.userInitiated` queue here. `-debug.dav1dWorkerQoS userInitiated` (or
+/// `userInteractive`) overrides QoS on each `dav1d-worker` thread after the
+/// decoder opens. Diagnostic only: the overrides live for the whole process.
 nonisolated enum Dav1dWorkerQoS {
     static let defaultsKey = "debug.dav1dWorkerQoS"
     nonisolated(unsafe) private static var overrides: [pthread_override_t] = []

@@ -1,12 +1,9 @@
 import Foundation
 
-/// A credential carried as a request header for one origin, so the URL a
-/// transport hands to URLSession never contains it: CFNetwork logs a failed
-/// task's full URL into the unified log, and so would any diagnostic that
-/// prints one.
+/// A credential sent as a header to one origin, so it never appears in a URL:
+/// CFNetwork logs a failed task's full URL, and so would any diagnostic.
 public nonisolated struct MediaRequestAuthorization: Sendable, Equatable {
-    /// Scheme, host and effective port are what matter; path and query are
-    /// ignored when comparing against a request's URL.
+    /// Only scheme, host and effective port are compared.
     public let origin: URL
     /// The header to send, usually `Authorization`.
     public let headerName: String
@@ -27,9 +24,8 @@ public nonisolated struct MediaRequestAuthorization: Sendable, Equatable {
         self.queryNames = queryNames
     }
 
-    /// Same scheme, host (case-insensitive) and effective port as `origin`.
-    /// This is the sole authority every media consumer defers to for
-    /// same-origin checks — nothing else reimplements it.
+    /// Same scheme, host (case-insensitive) and effective port as `origin`. The
+    /// only same-origin check; nothing else reimplements it.
     public func applies(to url: URL) -> Bool {
         url.scheme?.lowercased() == origin.scheme?.lowercased()
             && url.host?.lowercased() == origin.host?.lowercased()
@@ -44,10 +40,8 @@ public nonisolated struct MediaRequestAuthorization: Sendable, Equatable {
         request.setValue(headerValue, forHTTPHeaderField: headerName)
     }
 
-    /// The URL with the credential removed when it targets `origin`; other
-    /// origins are left untouched. For consumers that still need a bare URL
-    /// (a server-generated HLS manifest reference, a display-only value)
-    /// rather than a request they can attach the header to.
+    /// The URL without the credential when it targets `origin`. For callers
+    /// that need a bare URL, such as an HLS manifest reference, not a request.
     public func sanitizedURL(_ url: URL) -> URL {
         applies(to: url) ? strippingCredentials(from: url) : url
     }

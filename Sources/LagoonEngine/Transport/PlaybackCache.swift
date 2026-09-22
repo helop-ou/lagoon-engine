@@ -1,15 +1,10 @@
 import Foundation
 
-/// Chooses where Lagoon may safely put a cache in the playback path. Direct
-/// files have one stable, seekable resource and can use the sparse AVIO cache.
-/// A Jellyfin HLS transcode has mutable manifests and stays on libavformat's
-/// native transport unless the diagnostic switch is on.
-///
-/// That leaves a transcode with no buffering whatsoever between the network
-/// and the renderers: any hitch in segment delivery drains
-/// both demux queues, and audio, having no cushion, goes silent at once.
-/// Whether turning this on fixes that is the open question the switch exists
-/// to answer.
+/// Where the playback path may cache. A stable file is one seekable resource
+/// and uses the sparse AVIO cache. An HLS transcode has mutable manifests and
+/// stays uncached unless tuning turns it on. Uncached, it has no buffer between
+/// network and renderers, so a segment hitch drains both queues and silences
+/// audio; the switch exists to find out whether caching fixes that.
 nonisolated enum PlaybackBufferPolicy {
     static let backgroundBufferingEnabled = true
 
@@ -21,22 +16,16 @@ nonisolated enum PlaybackBufferPolicy {
         case .stableFile:
             true
         case .segmentedManifest:
-            // Off by default, so a host that installs nothing behaves exactly
-            // as before. Honoured in Release rather than DEBUG-only because
-            // the only hardware that can answer whether this helps is an
-            // Apple TV, and pairing one to Xcode costs it HDCP 2.2 until it
-            // is unpaired again — so a debug build is not a thing that can be
-            // run there in practice.
+            // Off by default. Honoured in Release because only an Apple TV can
+            // answer whether it helps, and pairing one to Xcode costs it HDCP
+            // 2.2.
             tuning.cachesSegmentedManifests
         }
     }
 
-    /// Whether the engine is handed the cache session at all. A complete
-    /// cache file is played straight from disk, so the session would only
-    /// add a layer, except for a disc image: the demuxer mounts a disc
-    /// through the session's byte source and cannot read the image from a
-    /// plain file, so without the session a fully cached disc fell to the
-    /// server remux the session exists to avoid.
+    /// Whether the engine gets the cache session. A complete cache file plays
+    /// from disk, except a disc image: the demuxer can mount a disc only
+    /// through the session's byte source.
     static func engineUsesCacheSession(
         playsFromCompleteFile: Bool,
         disc: Bool,
@@ -65,8 +54,7 @@ nonisolated public struct PlaybackByteRange: Equatable, Sendable {
     }
 }
 
-/// Sorted, coalesced ranges. Keeping this logic independent from file and
-/// network I/O makes cache accounting and cap enforcement deterministic.
+/// Sorted, coalesced ranges, kept free of I/O so accounting is deterministic.
 nonisolated struct PlaybackByteRangeSet: Equatable, Sendable {
     private(set) var ranges: [PlaybackByteRange] = []
 
@@ -93,11 +81,9 @@ nonisolated struct PlaybackByteRangeSet: Equatable, Sendable {
         return offset
     }
 
-    /// Returns the first hole at or after `offset`, bounded by both the
-    /// caller's scheduling window and the next cached island. Proactive
-    /// buffering uses this instead of blindly extending the byte-zero
-    /// prefix so a foreground seek can move its work to the new playhead
-    /// without redownloading or discarding any earlier ranges.
+    /// First hole at or after `offset`, bounded by the window and the next
+    /// cached island. Filling holes, not extending the prefix, lets a seek move
+    /// work to the new playhead without refetching earlier ranges.
     func firstUncachedRange(
         startingAt offset: Int64,
         endingBefore upperBound: Int64,
@@ -150,11 +136,9 @@ nonisolated struct PlaybackByteRangeSet: Equatable, Sendable {
         return byteCount - before
     }
 
-    /// Drops a byte interval, splitting any island it lands inside. Eviction
-    /// is the only caller: a windowed cache has to give bytes back before it
-    /// can take new ones, and `ranges` is the sole authority on what a read
-    /// may take from the file, so a removed interval is immediately a miss
-    /// rather than a hole that could be read back as zeros.
+    /// Drops a byte interval, splitting any island it lands in. `ranges` alone
+    /// says what a read may take from the file, so a removed interval is a
+    /// miss, never zeros read back from a hole.
     @discardableResult
     mutating func remove(_ range: PlaybackByteRange) -> Int64 {
         guard range.count > 0 else { return 0 }
@@ -177,9 +161,8 @@ nonisolated struct PlaybackByteRangeSet: Equatable, Sendable {
     }
 }
 
-/// A sparse cached byte island normalized onto the player timeline. Direct
-/// files can contain several of these after a seek; presenting all of them
-/// avoids pretending that only the uninterrupted byte-zero prefix survived.
+/// A cached byte island mapped onto the player timeline. A file can have
+/// several after a seek.
 public nonisolated struct PlaybackBufferedRange: Equatable, Hashable, Sendable {
     public init(
         lowerFraction: Double,
@@ -193,10 +176,8 @@ public nonisolated struct PlaybackBufferedRange: Equatable, Hashable, Sendable {
     public let upperFraction: Double
 }
 
-/// The container byte position FFmpeg selected for a known media time.
-/// Direct files are commonly variable bitrate, so this anchor is required
-/// to project sparse byte ranges onto the scrubber without putting the hot
-/// cache island visibly ahead of (or behind) the playhead.
+/// The byte offset FFmpeg chose for a known media time. Files are often
+/// variable bitrate, so this anchors cached ranges to the scrubber.
 nonisolated public struct PlaybackTimelineAnchor: Equatable, Sendable {
     public let byteOffset: Int64
     public let timeFraction: Double
@@ -216,9 +197,8 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
     public let cachedByteRanges: [PlaybackByteRange]
     public let playheadPrefetchCount: Int
     public let timelineAnchor: PlaybackTimelineAnchor?
-    /// True when the title is larger than the cap, so the cache holds a
-    /// window that travels with the playhead instead of accumulating the
-    /// whole file. Proactive fill never finishes in that mode.
+    /// True when the title exceeds the cap: the cache holds a window that moves
+    /// with the playhead, and proactive fill never finishes.
     public let isWindowed: Bool
     /// Cached bytes contiguous from the most recent foreground read onward:
     /// the cushion the fill scheduler protects.
@@ -283,10 +263,8 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
         }
     }
 
-    /// Piecewise-linear projection through the most recent timeline anchor.
-    /// byte-to-time relationship is still an estimate between known points,
-    /// but the active playhead itself is exact and both file boundaries stay
-    /// pinned to 0 and 1.
+    /// Piecewise-linear projection through the latest timeline anchor: exact at
+    /// the playhead, pinned to 0 and 1 at the file ends.
     private func timelineFraction(for byteOffset: Int64, contentLength: Int64) -> Double {
         let byteOffset = min(max(byteOffset, 0), contentLength)
         guard let timelineAnchor,
@@ -366,9 +344,8 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
     }
 }
 
-/// Shared accounting for caches made of multiple sparse files. Reservations
-/// happen before a write, so aggregate stored bytes cannot cross the cap even
-/// when FFmpeg opens or prefetches several HLS resources concurrently.
+/// Shared accounting for multi-file caches. Bytes are reserved before a write,
+/// so concurrent HLS resources cannot cross the cap together.
 nonisolated final class PlaybackCacheStorageBudget: @unchecked Sendable {
     private let byteLimit: Int64
     private let lock = NSLock()
@@ -416,10 +393,8 @@ nonisolated struct PlaybackRangeResponse: Sendable {
 nonisolated protocol PlaybackRangeLoading: AnyObject, Sendable {
     func load(url: URL, range: PlaybackByteRange, priority: Float) throws -> PlaybackRangeResponse
     func cancelAll()
-    /// A foreground read has caught up with an in-flight low-priority
-    /// request for `range`: finish it at foreground priority rather than
-    /// letting a second request for the same bytes race it.
-    /// Optional for loaders that have no priority to raise.
+    /// A foreground read caught up with an in-flight low-priority request for
+    /// `range`: raise it to foreground priority instead of racing a duplicate.
     func promote(range: PlaybackByteRange)
 }
 
@@ -427,14 +402,11 @@ extension PlaybackRangeLoading {
     func promote(range: PlaybackByteRange) {}
 }
 
-/// What one proactive fetch did. The scheduler needs to tell a fetch that
-/// failed (and should be retried after a backoff) from one that found
-/// nothing left to fetch (the file is complete under the cap, or the
-/// window is full); a Boolean collapsed both into "stop".
+/// What one proactive fetch did. The scheduler retries a failure after a
+/// backoff, but stops when nothing is left to fetch.
 nonisolated enum PlaybackPrefetchOutcome: Equatable, Sendable {
-    /// A chunk landed: the bytes the request returned and how long that one
-    /// request took, so pacing measures the prefetch itself rather than the
-    /// cache's aggregate including foreground traffic.
+    /// The bytes and seconds of this one request, so pacing measures the
+    /// prefetch without foreground traffic.
     case fetched(bytes: Int, seconds: Double)
     case exhausted
     case failed
@@ -462,10 +434,8 @@ nonisolated enum PlaybackCacheError: LocalizedError {
     }
 }
 
-/// A bounded streaming range request. A server that ignores `Range` cannot
-/// back a seekable sparse file: accepting its 200 response would repeatedly
-/// redownload and discard the prefix as buffering advances. Reject it before
-/// body delivery so the engine can retry through native libavformat instead.
+/// A bounded streaming range request. A server that ignores `Range` would make
+/// every fill redownload the prefix, so its 200 is rejected before the body.
 nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
     let urlRequest: URLRequest
     private let requestedRange: PlaybackByteRange
@@ -495,14 +465,13 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
         )
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         if priority <= URLSessionTask.lowPriority {
-            // Proactive fill must never consume metered/Low Data Mode paths.
-            // Foreground playback remains allowed and wins independently.
+            // Proactive fill never uses expensive or Low Data Mode paths.
+            // Foreground reads still may.
             request.allowsExpensiveNetworkAccess = false
             request.allowsConstrainedNetworkAccess = false
         }
-        // Strips any query-string token and sets the Authorization header,
-        // but only for the Jellyfin origin — an HLS child playlist or
-        // segment can be server-generated and point elsewhere entirely.
+        // Sets the Authorization header only for the media origin: an HLS
+        // playlist or segment can point elsewhere.
         authorization?.apply(to: &request)
         urlRequest = request
     }
@@ -646,9 +615,8 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
     }
 }
 
-/// URLSession retains its delegate until invalidation. Keeping that delegate
-/// as a weak forwarding proxy avoids a loader/session cycle even if cache
-/// construction fails before the normal player lifecycle can call cancel.
+/// URLSession retains its delegate until invalidation. A weak forwarding proxy
+/// avoids a loader/session cycle even if setup fails before cancel is called.
 nonisolated private final class PlaybackRangeSessionDelegate: NSObject,
     URLSessionDataDelegate, @unchecked Sendable {
     weak var owner: URLSessionPlaybackRangeLoader?
@@ -740,8 +708,7 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
                 throw PlaybackCacheError.cancelled
             } catch PlaybackCacheError.rangeUnsupported {
                 removeActive(identifier)
-                // A retry cannot make a deterministic HTTP capability
-                // change, and would only delay the native fallback.
+                // Retrying cannot change a server's range support.
                 throw PlaybackCacheError.rangeUnsupported
             } catch {
                 removeActive(identifier)
@@ -802,15 +769,15 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
     }
 }
 
-/// One item's sparse, discardable cache file. Reads happen on FFmpeg's demux
-/// queue. File/range bookkeeping is serialized, while low-priority prefetch
-/// and a foreground seek may fetch independently when foreground must win.
+/// One item's sparse, discardable cache file. Reads run on FFmpeg's demux
+/// queue. Bookkeeping is serialized, but a low-priority prefetch and a
+/// foreground seek may fetch at once so the foreground can win.
 nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     let itemID: String
     let sourceURL: URL
     let fileURL: URL
-    /// Bytes one cache miss fetches. FFmpeg's AVIO buffer is sized to match
-    /// so a single demux read is at most a single network request.
+    /// Bytes one miss fetches. FFmpeg's AVIO buffer matches, so one demux read
+    /// is at most one request.
     let requestSize: Int64
 
     private let byteLimit: Int64
@@ -830,27 +797,24 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     private var storageDisabled = false
     private var reservedBytes: Int64 = 0
     private var inFlight: [UUID: (range: PlaybackByteRange, priority: Float)] = [:]
-    /// How long a foreground read waits for a promoted prefetch of its own
-    /// bytes before fetching them itself. Two seconds covers a 1 MiB chunk on
-    /// any link that can play the title at all; a seek past a stalled one
-    /// pays at most this before it goes its own way.
+    /// How long a foreground read waits for a promoted prefetch of its bytes
+    /// before fetching them itself. Two seconds covers a 1 MiB chunk on any
+    /// link that can play the title.
     static let sharedFetchWaitSeconds: TimeInterval = 2
-    /// The end of the most recent foreground demux read. FFmpeg has already
-    /// translated media time into the correct container byte position here,
-    /// so this is safer than estimating bytes from a VBR timeline fraction.
+    /// End of the latest foreground demux read. FFmpeg has already mapped media
+    /// time to a byte here, which beats estimating from a VBR timeline
+    /// fraction.
     private var preferredPrefetchOffset: Int64 = 0
     private var playheadPrefetchCount = 0
     private var duplicateNetworkBytes: Int64 = 0
     private var sharedFetchCount = 0
     private var timelineAnchor: PlaybackTimelineAnchor?
-    /// Sparse-file granularity. Blocks are the only unit the filesystem can
-    /// give back, so eviction punches the block-aligned interior of a range
-    /// and leaves the ragged edges cached.
+    /// Sparse-file granularity. Eviction punches only the block-aligned
+    /// interior of a range and leaves the ragged edges cached.
     private let blockSize: Int64
     private var evictionCount = 0
-    /// Set the first time F_PUNCHHOLE fails. Without hole punching the file
-    /// can only grow, so the window is abandoned and the scope falls back to
-    /// a fixed cap plus unamplified reads.
+    /// Set when F_PUNCHHOLE first fails. The file can then only grow, so the
+    /// scope drops the window for a fixed cap and unamplified reads.
     private var holePunchingUnavailable = false
 
     init(
@@ -870,10 +834,8 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         self.knownLength = expectedLength.flatMap { $0 > 0 ? $0 : nil }
         self.byteLimit = max(byteLimit, 0)
         self.requestSize = max(requestSize, 1)
-        // A caller supplying its own loader (tests, or an HLS resource
-        // sharing its parent's) keeps it exactly as before; only the
-        // ordinary default constructs one, and that one needs the
-        // credential.
+        // Only the default loader needs the credential; a supplied one (tests,
+        // or an HLS resource sharing its parent's) is kept as is.
         self.loader = loader ?? URLSessionPlaybackRangeLoader(authorization: authorization)
         self.cancelsLoaderOnRemoval = cancelsLoaderOnRemoval
         self.storageBudget = storageBudget
@@ -938,9 +900,8 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         )
     }
 
-    /// Records the file position selected by FFmpeg for a concrete playback
-    /// time. This is presentation metadata only; scheduling continues to use
-    /// FFmpeg's observed foreground reads as its authoritative hot offset.
+    /// Records the byte FFmpeg chose for a playback time. Display only:
+    /// scheduling follows the observed foreground reads.
     func setTimelineAnchor(byteOffset: Int64, timeFraction: Double) {
         guard byteOffset >= 0, timeFraction.isFinite else { return }
         lock.lock()
@@ -952,9 +913,8 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         )
     }
 
-    /// The sparse file becomes a normal playable input only after every byte
-    /// in the server-declared resource has been written. Partial files never
-    /// escape this type, so a player cannot mistake a hole for media EOF.
+    /// Non-nil only once every declared byte is written, so a player never
+    /// mistakes a hole for EOF.
     var completeFileURL: URL? {
         lock.lock()
         defer { lock.unlock() }
@@ -971,8 +931,8 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         try read(offset: offset, length: length, priority: priority, readAhead: true)
     }
 
-    /// Disc metadata has its own aggregate byte budget. Do not amplify a
-    /// small descriptor read into the streaming cache's megabyte read-ahead.
+    /// Disc metadata has its own byte budget, so small descriptor reads skip
+    /// the megabyte read-ahead.
     func readMetadata(offset: Int64, length: Int) throws -> Data {
         try read(offset: offset, length: length, priority: URLSessionTask.highPriority, readAhead: false)
     }
@@ -999,9 +959,9 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
             return Data()
         }
         if priority >= URLSessionTask.defaultPriority {
-            // Cached hits count too: after a backwards seek the correct hot
-            // window may already be on disk, and prefetch should continue at
-            // the end of that island rather than stay near the old playhead.
+            // Hits count too: after a backwards seek the hot window may already
+            // be on disk, and prefetch should continue from the end of that
+            // island.
             preferredPrefetchOffset = requested.upperBound
         }
         if cached.contains(requested), let file {
@@ -1014,16 +974,15 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
                     return data
                 }
             } catch {
-                // A cache file is an optimization. Storage pressure or a
-                // purged file must fall through to the network, never turn
-                // a healthy stream into EOF.
+                // The cache is an optimisation: storage pressure or a purged
+                // file falls through to the network, never to EOF.
             }
             disableStorageLocked()
         }
 
-        // Low-priority prefetch follows an overlapping foreground miss
-        // instead of downloading the same chunk twice. A foreground seek
-        // never waits behind low-priority prefetch; it starts its own request.
+        // A low-priority read follows an overlapping foreground fetch rather
+        // than downloading twice. A foreground read never waits behind a
+        // prefetch.
         if inFlight.values.contains(where: {
             $0.range.contains(requested) && $0.priority >= priority
         }) {
@@ -1031,18 +990,17 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
             lock.unlock()
             return try read(offset: offset, length: length, priority: priority, readAhead: readAhead)
         }
-        // Playback caught up with a prefetch of these very bytes. Starting a
-        // second request used to move 2 MiB to store 1; instead promote the
-        // one in flight to foreground priority and give it a bounded moment
-        // to land. Past the bound the read falls through to its own request,
-        // so a seek onto a slow prefetch never waits behind it.
+        // Playback caught up with a prefetch of these bytes. Promote it and
+        // wait a bounded moment rather than fetching the same bytes twice; past
+        // the bound the read goes its own way, so a seek never waits behind a
+        // slow prefetch.
         if priority > URLSessionTask.lowPriority,
            let pending = inFlight.values.first(where: { $0.range.contains(requested) }) {
             loader.promote(range: pending.range)
             let deadline = Date().addingTimeInterval(Self.sharedFetchWaitSeconds)
-            // The condition is broadcast for every finished fetch, so keep
-            // waiting until these bytes are on disk, the promoted fetch has
-            // gone away (failed or cancelled), or the bound has passed.
+            // The condition is broadcast for every finished fetch: wait until
+            // the bytes are on disk, the promoted fetch is gone, or the bound
+            // passes.
             while !cached.contains(requested),
                   inFlight.values.contains(where: { $0.range == pending.range }),
                   lock.wait(until: deadline) {}
@@ -1051,7 +1009,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
                 lock.unlock()
                 return try read(offset: offset, length: length, priority: priority, readAhead: readAhead)
             }
-            // A scope cancelled during the wait must not start one more request.
+            // Cancelled during the wait: start no new request.
             do {
                 try checkCancellation()
             } catch {
@@ -1060,11 +1018,10 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
             }
         }
 
-        // Make room before deciding how much to ask for. A read whose bytes
-        // cannot be kept must fetch only what the caller asked for: pulling a
-        // whole request to satisfy one AVIO buffer and discarding the rest
-        // multiplies both bandwidth and round trips by the ratio between them,
-        // which is what turned a full cache into permanent rebuffering.
+        // Make room before sizing the request. A read whose bytes cannot be
+        // kept fetches only what was asked: fetching a whole request to fill
+        // one AVIO buffer and discarding the rest turned a full cache into
+        // permanent rebuffering.
         makeRoomLocked(for: readAhead ? requestSize : requested.count)
         let readAheadEnd = readAhead && storableCapacityLocked() > 0
             ? max(requested.upperBound, requested.lowerBound + min(requestSize, Int64.max - requested.lowerBound))
@@ -1144,10 +1101,8 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         }.value
     }
 
-    /// Fetches at most one bounded chunk after the uninterrupted cached
-    /// prefix. The controller deliberately schedules one chunk at a time so
-    /// foreground playback can pause or throttle proactive traffic between
-    /// requests instead of being trapped behind a whole-title download.
+    /// Fetches at most one bounded chunk. One chunk at a time lets playback
+    /// pause or throttle proactive traffic between requests.
     func prefetchNextChunk() async -> PlaybackPrefetchOutcome {
         await Task.detached(priority: .utility) { [weak self] in
             guard let self, !Task.isCancelled else { return .cancelled }
@@ -1177,11 +1132,10 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         guard !storageDisabled else { return (0, 0) }
 
         if isWindowedLocked {
-            // Read-ahead only, and only as far as the window reaches. Closing
-            // a hole behind the window would be evicted by the next request,
-            // and clamping the search to the first `byteLimit` bytes — as the
-            // whole-file scheduler below does — would stop buffering entirely
-            // once the playhead passed the cap.
+            // Read-ahead only, within the window. A hole behind the window
+            // would be evicted by the next request, and the whole-file clamp to
+            // `byteLimit` below would stop buffering once the playhead passed
+            // the cap.
             let window = hotWindowLocked
             let upperBound = min(window.upperBound, knownLength ?? window.upperBound)
             let start = min(max(preferredPrefetchOffset, 0), upperBound)
@@ -1211,9 +1165,9 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
             return (range.lowerBound, Int(range.count))
         }
 
-        // Once the hot playhead-to-EOF window is complete, wrap around and
-        // close the oldest remaining hole. This still allows a whole cached
-        // file to emerge, just without making a new seek wait behind it.
+        // Once playhead-to-EOF is complete, wrap around and close the oldest
+        // hole, so a whole file can still emerge without a seek waiting behind
+        // it.
         guard let range = cached.firstUncachedRange(
             startingAt: 0,
             endingBefore: upperBound,
@@ -1224,47 +1178,36 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
 
     // MARK: - Sliding window
 
-    /// A cache large enough for the whole title keeps its original behaviour:
-    /// nothing is evicted and proactive fill converges on a complete file.
-    /// A title larger than the cap cannot do that — filling to the cap and
-    /// stopping leaves the rest of the movie uncached, and every later read
-    /// then pays a network round trip. Those titles get a window that travels
-    /// with the playhead instead.
+    /// A title that fits the cap evicts nothing and fill converges on a
+    /// complete file. A larger title gets a window that moves with the
+    /// playhead; filling to the cap and stopping would leave every later read
+    /// on the network.
     private var isWindowedLocked: Bool {
         guard byteLimit > 0, !holePunchingUnavailable else { return false }
         guard let knownLength else { return true }
         return knownLength > byteLimit
     }
 
-    /// Bytes kept behind the playhead so ordinary backwards scrubbing stays
-    /// local. Everything else buffers ahead, which is what actually protects
-    /// playback from network jitter.
+    /// Bytes kept behind the playhead so backwards scrubbing stays local. The
+    /// rest buffers ahead, which is what protects against network jitter.
     private var retainBehindLocked: Int64 {
         min(byteLimit / 8, 256 * 1_024 * 1_024)
     }
 
-    /// A whole cap's worth of file, positioned around the playhead. Only the
-    /// bytes that actually exist behind the playhead count against the
-    /// reserve: near the start of a title the lower half of the window would
-    /// otherwise hang off the front of the file, and that capacity simply
-    /// went unused — a viewer who paused a minute in buffered up to 256 MiB
-    /// less than the cache was allowed to hold. Read-ahead takes whatever the
-    /// reserve does not need, so the window stays [0, cap] until the playhead
-    /// has passed the reserve distance and only then begins to slide.
+    /// A cap's worth of file around the playhead. Only bytes that exist behind
+    /// the playhead count against the reserve, so near the start the window is
+    /// [0, cap] and slides only once the playhead passes the reserve distance.
     private var hotWindowLocked: PlaybackByteRange {
         let playhead = max(preferredPrefetchOffset, 0)
         let behind = min(retainBehindLocked, playhead)
-        // At least one request: the window has to contain the fetch being
-        // issued right now, or eviction would drop the bytes it just paid for.
+        // At least one request, or eviction would drop the fetch being issued.
         let ahead = max(byteLimit - behind, requestSize)
         return PlaybackByteRange(playhead - behind, playhead + ahead)
     }
 
-    /// Disk the sparse file actually occupies. The logical range set is not
-    /// enough on its own: punching a hole is the only way to hand blocks
-    /// back, so if the filesystem refuses, real allocation is what has to
-    /// hold the cap. A few blocks of slack absorb the difference between
-    /// byte-exact bookkeeping and block-granular allocation.
+    /// Disk the sparse file actually occupies. If hole punching fails, real
+    /// allocation must hold the cap; a few blocks of slack cover block-granular
+    /// allocation.
     private func allocatedBytesLocked() -> Int64 {
         guard let file else { return 0 }
         var status = stat()
@@ -1272,16 +1215,14 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         return max(Int64(status.st_blocks) * 512 - 4 * blockSize, 0)
     }
 
-    /// Bytes that may still be written before the cap binds, measured against
-    /// whichever of the two accountings is currently worse.
+    /// Bytes writable before the cap binds, by whichever accounting is worse.
     private func storableCapacityLocked() -> Int64 {
         guard !storageDisabled else { return 0 }
         return max(byteLimit - max(cached.byteCount, allocatedBytesLocked()), 0)
     }
 
-    /// Deallocates the block-aligned interior of a range and returns exactly
-    /// what was freed. Partial blocks at either edge still hold bytes the
-    /// cache is keeping, so they stay in the range set.
+    /// Deallocates the block-aligned interior of a range and returns what was
+    /// freed. Partial edge blocks stay cached.
     private func punchLocked(_ range: PlaybackByteRange) -> PlaybackByteRange? {
         guard let file, blockSize > 0, !holePunchingUnavailable else { return nil }
         let lower = ((range.lowerBound + blockSize - 1) / blockSize) * blockSize
@@ -1297,20 +1238,17 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
             fcntl(file.fileDescriptor, F_PUNCHHOLE, UnsafeMutableRawPointer($0)) == 0
         }
         guard punched else {
-            // Without reclaimable space the window cannot hold the cap.
-            // Fall back to a fixed cap; reads stay unamplified because they
-            // stop asking for bytes they are not allowed to keep.
+            // No reclaimable space: fall back to a fixed cap. Reads stay
+            // unamplified because they stop asking for bytes they may not keep.
             holePunchingUnavailable = true
             return nil
         }
         return PlaybackByteRange(lower, upper)
     }
 
-    /// Frees room for `byteCount` by dropping cached islands furthest from
-    /// the playhead first, and only ever from outside the retained window.
-    /// `preferredPrefetchOffset` follows every foreground read, so a
-    /// backwards seek re-centres the window on its next demux read and the
-    /// bytes that are now far *ahead* become the eviction candidates.
+    /// Frees room by trimming islands furthest from the playhead, only outside
+    /// the retained window. The playhead follows every foreground read, so
+    /// after a backwards seek the bytes far ahead become the candidates.
     private func makeRoomLocked(for byteCount: Int64) {
         guard byteCount > 0, isWindowedLocked else { return }
         var shortfall = byteCount - storableCapacityLocked()
@@ -1337,10 +1275,9 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
 
         for candidate in candidates {
             guard shortfall > 0 else { break }
-            // Give back only what is needed, taken from the end of the island
-            // furthest from the playhead. Dropping a whole island to make room
-            // for one request would throw away read-ahead that is still worth
-            // more than the bytes replacing it.
+            // Trim only what is needed from the far end of the island; dropping
+            // a whole island would throw away read-ahead worth more than its
+            // replacement.
             let trimmed = candidate.lowerBound >= playhead
                 ? PlaybackByteRange(max(candidate.upperBound - shortfall, candidate.lowerBound), candidate.upperBound)
                 : PlaybackByteRange(candidate.lowerBound, min(candidate.lowerBound + shortfall, candidate.upperBound))
@@ -1380,9 +1317,8 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         reservedBytes = 0
         lock.unlock()
         storageBudget?.release(releasedBytes)
-        // A range request may still be unwinding on the demux queue. File
-        // closure and deletion wait there, never on the main actor that is
-        // animating player dismissal or an episode handoff.
+        // A range request may still be unwinding on the demux queue, so closing
+        // and deleting happen off the main actor.
         DispatchQueue.global(qos: .utility).async { [self] in
             lock.lock()
             file?.closeFile()
@@ -1393,8 +1329,8 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         }
     }
 
-    /// HLS retains range metadata for backwards seeks while closing inactive
-    /// segment handles, keeping long movies far below tvOS descriptor limits.
+    /// Keeps range metadata for backwards seeks but closes the handle, keeping
+    /// long HLS titles under tvOS descriptor limits.
     func suspendStorage() {
         lock.lock()
         file?.closeFile()
@@ -1426,10 +1362,9 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
 
 }
 
-/// One checked-out HLS media resource. FFmpeg may keep several segments open
-/// at once; a lease prevents the bounded LRU from evicting an AVIO context
-/// that is still reading. Playlists never enter this cache because Jellyfin
-/// can update them while a transcode is still being produced.
+/// One checked-out HLS resource. A lease stops the LRU evicting an AVIO context
+/// that is still reading. Playlists are never cached: the server can rewrite
+/// them while a transcode runs.
 nonisolated final class HLSPlaybackCacheLease: @unchecked Sendable {
     let scope: PlaybackCacheScope
 
@@ -1466,11 +1401,9 @@ nonisolated final class HLSPlaybackCacheLease: @unchecked Sendable {
     }
 }
 
-/// A VOD HLS cache made of small per-resource sparse files. A shared budget
-/// keeps aggregate storage at 512 MiB, each resource is capped at 32 MiB, and
-/// inactive file handles are closed so a long movie cannot exhaust tvOS file
-/// descriptors. Closed entries are evicted LRU; active AVIO leases are never
-/// removed underneath FFmpeg.
+/// A VOD HLS cache of small per-resource sparse files: 512 MiB shared, 32 MiB
+/// per resource. Idle handles are closed so a long movie cannot exhaust tvOS
+/// file descriptors. Closed entries are evicted LRU; leased ones never are.
 nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
     let itemID: String
     let sourceURL: URL
@@ -1516,9 +1449,8 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
         resourceByteLimit = max(min(byteLimit, 32 * 1_024 * 1_024), 1)
         self.requestSize = max(min(requestSize, resourceByteLimit), 1)
         storageBudget = PlaybackCacheStorageBudget(byteLimit: byteLimit)
-        // Test doubles keep whatever loader they were given; the ordinary
-        // defaults each get their own session, both carrying the credential
-        // segments and the manifest itself need.
+        // Test doubles keep their loader. The defaults each get a session
+        // carrying the credential.
         self.resourceLoader = resourceLoader ?? URLSessionPlaybackRangeLoader(authorization: authorization)
         self.playlistLoader = playlistLoader ?? URLSessionPlaybackRangeLoader(authorization: authorization)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1549,9 +1481,8 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
         return Set(entries.keys.compactMap(URL.init(string:)))
     }
 
-    /// Returns nil for mutable playlists, unsupported URL schemes, a stopped
-    /// session, or the rare case where every bounded slot is actively leased.
-    /// The demuxer falls back to avio_open2 in all of those cases.
+    /// Nil for playlists, non-HTTP schemes, a stopped session, or when every
+    /// slot is leased.
     func leaseResource(at url: URL) throws -> HLSPlaybackCacheLease? {
         guard Self.shouldCache(url: url) else { return nil }
         let key = url.absoluteString
@@ -1634,10 +1565,8 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
         return lease
     }
 
-    /// Warm a transcode's selected media resources. The playlist is read
-    /// without persistence so a growing Jellyfin transcode can never be
-    /// frozen at an old manifest. Current playback still fills every segment
-    /// FFmpeg consumes, while an 8 MiB staged warmup reaches the first frame.
+    /// Warms a transcode's first media resources. The playlist is never
+    /// persisted, so a growing transcode is never frozen at an old manifest.
     func prefetch(byteCount: Int64) async {
         guard byteCount > 0 else { return }
         await Task.detached(priority: .utility) { [weak self] in
@@ -1654,8 +1583,8 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
                     remaining -= max(added, 1)
                 }
             } catch {
-                // Prefetch is opportunistic. FFmpeg's native/cached foreground
-                // opens remain authoritative if manifest warmup is unavailable.
+                // Opportunistic: foreground opens still work without the
+                // warmup.
             }
         }.value
     }
@@ -1701,9 +1630,8 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
         return url.pathExtension.lowercased() != "m3u8"
     }
 
-    /// Resolve one master indirection plus its media playlist. Jellyfin's
-    /// transcode profile normally exposes one video variant. Attribute URIs
-    /// (for example alternate audio) are excluded from variant selection.
+    /// Follows one master indirection to a media playlist. Attribute URIs, such
+    /// as alternate audio, are not variants.
     private func firstMediaResources() throws -> [URL] {
         var playlistURL = sourceURL
         for _ in 0..<2 {
@@ -1757,9 +1685,8 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
     }
 }
 
-/// Uniform player-facing ownership for either a single direct-file cache or
-/// an HLS resource cache. Keeping the mode inside this object lets next-item
-/// promotion and lifecycle cleanup use the same invariant for every method.
+/// One player-facing owner for a direct-file or HLS cache, so promotion and
+/// cleanup follow the same rules for both.
 nonisolated final class PlaybackCacheSession: @unchecked Sendable {
     enum Storage {
         case direct(PlaybackCacheScope)
@@ -1816,8 +1743,8 @@ nonisolated final class PlaybackCacheSession: @unchecked Sendable {
         case .direct(let scope):
             return await scope.prefetchNextChunk()
         case .hls:
-            // HLS progress is segment-shaped rather than a contiguous byte
-            // timeline. Its bounded warmup remains explicit in prefetch(_:).
+            // HLS progress is per segment, not a byte timeline; its warmup is
+            // `prefetch`.
             return .exhausted
         }
     }
@@ -1830,8 +1757,8 @@ nonisolated final class PlaybackCacheSession: @unchecked Sendable {
     }
 }
 
-/// Main-actor ownership of the only two cache scopes Lagoon permits: the
-/// active item and its staged successor.
+/// Main-actor owner of the only two cache scopes allowed: the active item and
+/// its staged successor.
 @MainActor
 final class PlaybackCacheCoordinator {
     private let rootDirectory: URL
@@ -1958,10 +1885,9 @@ final class PlaybackCacheCoordinator {
         }
     }
 
-    /// Use cache storage only after preserving a fixed 256 MiB safety reserve.
-    /// Half of the remaining volume is available to the current title, which
-    /// lets ordinary episodes and movies finish buffering when space permits
-    /// without letting one disposable file consume the device.
+    /// Keeps a 256 MiB reserve free, then gives the current title half of what
+    /// is left, so most titles can buffer fully without one file filling the
+    /// device.
     nonisolated static func recommendedByteLimit(availableBytes: Int64?) -> Int64 {
         let mebibyte: Int64 = 1_024 * 1_024
         let minimum = 64 * mebibyte
@@ -1972,9 +1898,8 @@ final class PlaybackCacheCoordinator {
         return max(minimum, (availableBytes - safetyReserve) / 2)
     }
 
-    /// A device only reaches the windowed path after buffering gigabytes, so
-    /// a host can force a small cap and make the sliding window observable
-    /// within a minute of ordinary playback.
+    /// The window only engages after gigabytes of buffering, so a host can
+    /// force a small cap to observe it within a minute.
     private static func capOverride() -> Int64? {
         let megabytes = EngineTuning.current.cacheCapacityMegabytes
         return megabytes > 0 ? Int64(megabytes) * 1_024 * 1_024 : nil

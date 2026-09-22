@@ -1,20 +1,13 @@
 import Foundation
 
-/// The measurement discipline, encoded so nobody has to remember it: a
-/// frame-loss number is comparable only from the same scene over the same
-/// media-time window, untouched. Both earlier false positives broke that.
+/// The measurement discipline in code: a frame-loss number compares only from
+/// the same scene over the same media-time window, untouched.
 ///
-/// Armed by Settings → Debug → Frame-loss bench. After every start or seek it
-/// warms up for `warmupSeconds` of *media time*, measures for
-/// `windowSeconds`, then freezes the result (HUD line + `Bench Result`
-/// signpost). Touching the transport re-arms from the new position, so "seek
-/// to the scene, hands off, read the number" is the whole protocol, identical
-/// in the simulator and on hardware.
-///
-/// Windows key on playback position, not wall time: screenshots and stalls
-/// stretch wall time but not media time, so the denominator stays honest.
-/// Stalls inside the window are reported, not discarded — a stall is a
-/// finding.
+/// Armed by `EngineTuning.runsFrameLossBench`. After every start or seek it
+/// warms up for `warmupSeconds` of media time, measures for `windowSeconds`,
+/// then freezes the result (HUD line and `Bench Result` signpost). Touching the
+/// transport re-arms. Windows use media time, so screenshots and stalls do not
+/// skew the denominator. Stalls inside the window are reported, not discarded.
 nonisolated struct FrameLossBench: Equatable {
     struct Sample: Equatable {
         var position: Double
@@ -24,15 +17,13 @@ nonisolated struct FrameLossBench: Equatable {
         var stalls: Int
         /// Of those, the ones called on audio.
         var audioStalls: Int = 0
-        /// Audio-dry episodes (`aDry`), counted regardless of whether they
-        /// became a confirmed stall.
+        /// Audio-dry episodes (`aDry`), whether or not they became a stall.
         var audioDry: Int = 0
         var audioGaps: Int
         var videoQueueDepth: Int
         var optimizedFrames = 0
         var accumulatedDelay = 0.0
-        /// Physical footprint and jetsam headroom sampled in the same
-        /// controlled window as frame loss.
+        /// Footprint and jetsam headroom, sampled in the same window.
         var footprintBytes: Int64 = 0
         var availableBytes: Int = 0
     }
@@ -46,15 +37,12 @@ nonisolated struct FrameLossBench: Equatable {
         var stalls: Int
         /// Of those, the ones called on audio.
         var audioStalls: Int = 0
-        /// Audio-dry episodes (`aDry`), counted regardless of whether they
-        /// became a confirmed stall. Silence used to leave no trace in a
-        /// bench window at all.
+        /// Audio-dry episodes (`aDry`), whether or not they became a stall.
         var audioDry: Int = 0
         var audioGaps: Int
         var minVideoQueue: Int
-        /// Frames that took the direct-display path inside the window —
-        /// compare against `frames` to see whether video is being
-        /// composited with UI.
+        /// Frames on the direct-display path; compare with `frames` to see
+        /// whether video is composited with UI.
         var optimizedFrames = 0
         /// Seconds of accumulated display lateness inside the window.
         var accumulatedDelay = 0.0
@@ -67,13 +55,10 @@ nonisolated struct FrameLossBench: Equatable {
             frames > 0 ? Double(dropped) / Double(frames) * 100 : 0
         }
 
-        /// One line for the HUD *and* for the `player.regression.frameLoss`
-        /// probe, which `FrameLossRegressionResult` in the UI tests parses.
-        /// Every field named here is part of that contract; removing one
-        /// silently stops the regression reading its own result, which is
-        /// how `testVC1DirectPlayMaintainsContinuousAudioAndVideo` was once
-        /// broken, by dropping `corrupt` and `aGaps` to make room for the
-        /// memory figures. `regressionSummaryIsParseable` pins it.
+        /// One line for the HUD and the `player.regression.frameLoss` probe,
+        /// which the UI tests' `FrameLossRegressionResult` parses. Every field
+        /// named here is part of that contract; dropping one silently breaks
+        /// the regression. `regressionSummaryIsParseable` pins it.
         var regressionSummary: String {
             String(
                 format: "%.2f%% (%d/%d) · corrupt %d · stalls %d · aStalls %d · aDry %d · aGaps %d · minQ %d · peak %.0f MB (+%.0f) · @%.0f+%.0fs",
@@ -111,8 +96,8 @@ nonisolated struct FrameLossBench: Equatable {
         phase = .warming(measureFrom: position + warmupSeconds)
     }
 
-    /// The transport was touched (seek, pause) — the running window is no
-    /// longer a controlled measurement. Start over from the new position.
+    /// The transport was touched, so the window is no longer controlled. Start
+    /// over.
     mutating func rearm(at position: Double) {
         phase = .warming(measureFrom: position + warmupSeconds)
         start = nil
@@ -121,8 +106,8 @@ nonisolated struct FrameLossBench: Equatable {
         minimumAvailableBytes = .max
     }
 
-    /// Feed one metrics snapshot; returns the result exactly once, on the
-    /// sample that completes the window.
+    /// Feeds one snapshot; returns the result once, on the sample that
+    /// completes the window.
     mutating func record(_ sample: Sample) -> Result? {
         switch phase {
         case .done:

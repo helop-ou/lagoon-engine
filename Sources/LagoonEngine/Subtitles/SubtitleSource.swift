@@ -1,9 +1,7 @@
 import Foundation
 
-/// One subtitle a host has found and could fetch, in the engine's own terms.
-///
-/// A host maps whatever its server reports onto this, so neither the engine
-/// nor a player panel bound to it follows any one server's wire shape.
+/// One subtitle a host found and could fetch, in the engine's terms. A host
+/// maps its server's results onto this, so no one server's wire shape leaks in.
 public nonisolated struct SubtitleCandidate: Identifiable, Equatable, Sendable {
     public let id: String
     public let name: String?
@@ -16,8 +14,8 @@ public nonisolated struct SubtitleCandidate: Identifiable, Equatable, Sendable {
     public let isForced: Bool
     public let isMachineTranslated: Bool
     public let isAITranslated: Bool
-    /// The host's own identifier for fetching this result. Opaque here: the
-    /// engine never parses it, it only hands it back.
+    /// The host's own identifier for fetching this result. Opaque to the
+    /// engine.
     public let providerID: String
 
     public init(

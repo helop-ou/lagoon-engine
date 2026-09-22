@@ -1,15 +1,10 @@
 import Foundation
 
 /// ISO 639-1 to ISO 639-2/T, for matching a track's language against a
-/// preference when the two are written to different standards.
-///
-/// The table itself is not anyone's wire format — it is the Library of
-/// Congress's official ISO 639-2 list — so it belongs with the subtitle
-/// code that needs it rather than with any one server's client.
+/// preference written in the other standard.
 nonisolated enum SubtitleLanguageCode {
-    /// ISO 639-1 → ISO 639-2/T. Source: the Library of Congress's official
-    /// ISO 639-2 table. Languages that only have a three-letter code pass
-    /// through unchanged below.
+    /// Source: the Library of Congress ISO 639-2 table. Three-letter-only
+    /// languages pass through unchanged.
     private static let common: [String: String] = [
         "aa": "aar", "ab": "abk", "af": "afr", "ak": "aka", "sq": "sqi", "am": "amh",
         "ar": "ara", "an": "arg", "hy": "hye", "as": "asm", "av": "ava", "ae": "ave",
@@ -46,8 +41,7 @@ nonisolated enum SubtitleLanguageCode {
 
     private static let reverse: [String: String] = {
         var result = Dictionary(uniqueKeysWithValues: common.map { ($0.value, $0.key) })
-        // ISO 639-2/B aliases still appear in older media libraries even
-        // though Jellyfin normally emits the terminological form above.
+        // ISO 639-2/B aliases still appear in older libraries.
         result.merge([
             "alb": "sq", "arm": "hy", "baq": "eu", "bur": "my", "chi": "zh",
             "cze": "cs", "dut": "nl", "fre": "fr", "geo": "ka", "ger": "de",

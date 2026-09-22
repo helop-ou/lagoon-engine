@@ -7,18 +7,17 @@ nonisolated private let avSeekForce: Int32 = 0x20000
 nonisolated private let avIOErrorEOF: Int32 = -541_478_725
 nonisolated private let avIOErrorIO: Int32 = -5
 
-/// Bridges FFmpeg's synchronous AVIO callbacks to Lagoon's bounded sparse
-/// range cache. The object is retained by FFmpegDemuxer for longer than the
-/// AVIOContext; the callback's unmanaged reference is therefore unretained.
+/// Bridges FFmpeg's synchronous AVIO callbacks to a byte source. FFmpegDemuxer
+/// retains this longer than the AVIOContext, so the callback reference is
+/// unretained.
 nonisolated final class FFmpegCachedIO {
     private let source: any FFmpegByteSource
     private var position: Int64 = 0
     private(set) var context: UnsafeMutablePointer<AVIOContext>?
 
-    /// The AVIO buffer defaults to the cache's own request size. Anything
-    /// smaller costs a whole network request per buffer whenever the bytes
-    /// cannot be stored — a full window, or storage disabled — because the
-    /// remainder of each fetch is then discarded instead of cached.
+    /// The AVIO buffer defaults to the source's request size. A smaller buffer
+    /// costs a whole request per refill whenever bytes cannot be stored,
+    /// because the rest of each fetch is discarded.
     public init(source: any FFmpegByteSource, bufferSize: Int32? = nil) throws {
         let bufferSize = bufferSize
             ?? Int32(min(max(source.requestSize, 64 * 1_024), 1_024 * 1_024))
@@ -63,10 +62,9 @@ nonisolated final class FFmpegCachedIO {
         avio_context_free(&context)
     }
 
-    /// Captures FFmpeg's logical file position after a media-time seek. AVIO
-    /// may already have read ahead into its own buffer, so `position` alone
-    /// points past the actual demux cursor; ask AVIO for its public logical
-    /// SEEK_CUR position instead.
+    /// Records FFmpeg's logical position after a media-time seek. AVIO may have
+    /// read ahead, so ask for its SEEK_CUR position rather than using
+    /// `position`.
     func setTimelineAnchor(seconds: Double, duration: Double) {
         guard seconds.isFinite, duration.isFinite, duration > 0 else { return }
         var byteOffset = position
@@ -79,9 +77,8 @@ nonisolated final class FFmpegCachedIO {
         setTimelineAnchor(byteOffset: byteOffset, seconds: seconds, duration: duration)
     }
 
-    /// Video packets carry a more precise byte/time pair than the cursor
-    /// approximation above. Refreshing the anchor while demuxing also keeps
-    /// playback that started at 0:00 aligned as bitrate changes.
+    /// Video packets give a more precise byte/time pair than the cursor.
+    /// Refreshing while demuxing keeps the anchor aligned as bitrate changes.
     func setTimelineAnchor(byteOffset: Int64, seconds: Double, duration: Double) {
         guard byteOffset >= 0,
               seconds.isFinite,
@@ -107,11 +104,10 @@ nonisolated final class FFmpegCachedIO {
             position += Int64(data.count)
             return Int32(data.count)
         } catch {
-            // EOF means a successfully-read resource ended. Turning a range,
-            // authentication, connectivity, or storage failure into EOF made
-            // libavformat declare a truncated movie complete and left the UI
-            // looking like permanent buffering. Preserve it as an I/O error
-            // so the demuxer's bounded retry/error path remains authoritative.
+            // EOF is only the end of a successfully read resource. Reporting a
+            // range, auth, network or storage failure as EOF made libavformat
+            // end a truncated movie as complete; an I/O error keeps the
+            // demuxer's retry path in charge.
             return avIOErrorIO
         }
     }

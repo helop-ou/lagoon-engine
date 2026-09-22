@@ -2,10 +2,9 @@ import Foundation
 
 /// A disc image, addressed in bytes.
 ///
-/// The volume reader asks for small scattered reads — descriptors,
-/// directories, playlists — so an implementation is expected to cache rather
-/// than fetch exactly what it is asked for. Over a network the whole mount
-/// costs a handful of requests when it does.
+/// The volume reader makes small scattered reads, so an implementation should
+/// cache rather than fetch exactly what is asked. Then a mount over the network
+/// costs a handful of requests.
 nonisolated protocol DiscImageSource: AnyObject {
     /// The image's total length, when the transport knows it.
     var imageLength: Int64? { get }
@@ -13,9 +12,8 @@ nonisolated protocol DiscImageSource: AnyObject {
 }
 
 nonisolated enum DiscImageError: LocalizedError, Equatable {
-    /// No UDF filesystem at the anchor. A DVD image or a plain file lands
-    /// here, and so does anything the reader should decline rather than guess
-    /// at.
+    /// No UDF at the anchor: a DVD image, a plain file, or anything the reader
+    /// should decline rather than guess at.
     case notUDF
     case unsupported(String)
     case malformed(String)
@@ -38,9 +36,8 @@ nonisolated enum DiscImageError: LocalizedError, Equatable {
     }
 }
 
-/// One budget for mounting AND selecting a title. Per-file limits alone let
-/// hundreds of individually small files consume unbounded startup work.
-/// Owned by the demux worker; cancellation is supplied by its locked flag.
+/// One budget for mounting and title selection, so hundreds of small files
+/// cannot add up to unbounded startup work. Owned by the demux worker.
 nonisolated final class DiscReadBudget {
     static let maxReadBytes = 64 * 1_024
     private var bytesRemaining: Int
@@ -78,11 +75,10 @@ nonisolated final class DiscReadBudget {
     }
 }
 
-/// Ask the demuxer to read the media as a disc image rather than as a stream.
+/// Asks the demuxer to read the media as a disc image rather than a stream.
 public nonisolated struct DiscPlaybackRequest: Equatable {
-    /// What the server says the film runs for. The strongest signal there is
-    /// for picking the main title out of sixty-odd playlists, and one only a
-    /// client talking to a media server ever has.
+    /// The runtime the server reports: the best signal for picking the main
+    /// title among dozens of playlists.
     public let runtimeSeconds: Double?
 
     public init(runtimeSeconds: Double?) {
@@ -98,9 +94,8 @@ nonisolated struct DiscExtent: Equatable {
 
 /// A title's extents laid end to end, as one addressable stream.
 ///
-/// A Blu-ray main title is rarely one file. Seamless branching splits it
-/// into dozens of clips — WALL·E's is 42 — and the filesystem fragments some
-/// of those again, so the mapping has to be per extent rather than per file.
+/// A Blu-ray main title is often dozens of clips, and some clips are
+/// fragmented, so the mapping is per extent, not per file.
 nonisolated struct DiscStreamMap: Equatable {
     static let maxExtents = 65_536
     let extents: [DiscExtent]
@@ -127,11 +122,9 @@ nonisolated struct DiscStreamMap: Equatable {
         self.length = total
     }
 
-    /// Where `offset` lands in the image, and how much can be read there
-    /// before the next extent begins. nil past the end.
-    ///
-    /// Binary search rather than a walk: a fragmented title can carry
-    /// hundreds of extents and this answers every read the demuxer makes.
+    /// Where `offset` lands in the image and how much can be read before the
+    /// next extent; nil past the end. Binary search, since a title can have
+    /// hundreds of extents and this runs on every read.
     func locate(_ offset: Int64) -> (imageOffset: Int64, available: Int)? {
         guard offset >= 0, offset < length, !extents.isEmpty else { return nil }
         var low = 0
@@ -151,9 +144,8 @@ nonisolated struct DiscStreamMap: Equatable {
     }
 }
 
-/// Little-endian field access with bounds that are checked rather than
-/// trusted: every one of these reads is parsing bytes a server handed over,
-/// and a malformed image must fail the open rather than the process.
+/// Bounds-checked little-endian field access. The bytes come from a server, and
+/// a malformed image must fail the open, not the process.
 nonisolated struct DiscBytes {
     let data: Data
 
@@ -205,8 +197,7 @@ nonisolated struct DiscBytes {
         }
     }
 
-    /// A UDF regid's identifier, which names things like the metadata
-    /// partition.
+    /// A UDF regid identifier, such as the metadata partition's name.
     func identifier(_ offset: Int) throws -> String {
         try require(offset, 24)
         let raw = try bytes(offset + 1, 23)

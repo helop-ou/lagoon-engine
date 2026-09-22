@@ -1,10 +1,7 @@
 import Foundation
 
-/// One field on a diagnostic event.
-///
-/// Four scalar kinds and nothing else. Anything a host eventually sends
-/// onward has to be built out of these, which is what keeps a URL, a title or
-/// an account out of a report by construction rather than by review.
+/// One field on a diagnostic event. Only four scalar kinds, which keeps a URL,
+/// title or account out of a report by construction.
 public nonisolated enum DiagnosticValue: Equatable, Sendable {
     case int(Int)
     case double(Double)
@@ -12,13 +9,9 @@ public nonisolated enum DiagnosticValue: Equatable, Sendable {
     case string(String)
 }
 
-/// What a string field may contain.
-///
-/// Strings are the only kind that could carry private content, so a string
-/// the engine did not choose itself has to pass this before it becomes a
-/// field: letters, digits, `.`, `_`, `-` and `,`, never whitespace, `/`, `:`,
-/// `@` or `?`. That rules out URLs, hostnames with paths, query strings and
-/// file paths.
+/// What a string field may contain: letters, digits, `.`, `_`, `-` and `,`.
+/// Strings the engine did not choose must pass this, which rules out URLs,
+/// query strings and file paths.
 nonisolated enum DiagnosticToken {
     static let maximumLength = 48
 
@@ -37,20 +30,16 @@ nonisolated enum DiagnosticToken {
         }
     }
 
-    /// The value for a string that qualifies, and nothing for one that does
-    /// not. A field is dropped rather than truncated, because a truncated
-    /// URL is still a URL.
+    /// The value if the string qualifies, else nil. Dropped, not truncated: a
+    /// truncated URL is still a URL.
     static func token(_ text: String?) -> DiagnosticValue? {
         guard let text, isToken(text) else { return nil }
         return .string(text)
     }
 }
 
-/// Rounding for numbers that become diagnostic fields.
-///
-/// A playback position reported to the nanosecond is both noise and a
-/// sharper identifier than it needs to be; one decimal place is enough to
-/// see what happened.
+/// Rounding for numeric fields. One decimal place shows what happened without
+/// nanosecond noise or a sharper identifier.
 nonisolated extension Double {
     public func rounded(toPlaces places: Int) -> Double {
         let scale = pow(10, Double(places))

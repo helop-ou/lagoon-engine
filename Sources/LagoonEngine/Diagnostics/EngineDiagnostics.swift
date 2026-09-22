@@ -1,12 +1,8 @@
 import Foundation
 import os
 
-/// What the engine observed, in its own vocabulary.
-///
-/// These are the engine's events, not a host's. A host that reports
-/// diagnostics onward maps them to whatever its own schema calls them; a host
-/// that does not care never sees them, because the default sink discards
-/// everything.
+/// What the engine observed, in its own vocabulary. A host maps these to its
+/// own schema; by default they are discarded.
 public nonisolated enum EngineDiagnosticEvent: String, Sendable, CaseIterable {
     case playbackPlay
     case playbackPause
@@ -20,10 +16,8 @@ public nonisolated enum EngineDiagnosticEvent: String, Sendable, CaseIterable {
     case playbackSubtitleLoadFailed
 }
 
-/// Something that went wrong and is worth grouping across viewers.
-///
-/// Distinct from an event: an incident is a thing a maintainer would want
-/// counted and fingerprinted, not a step in normal playback.
+/// Something that went wrong and is worth counting and fingerprinting across
+/// viewers, unlike a routine event.
 public nonisolated enum EngineDiagnosticIncident: String, Sendable, CaseIterable {
     case playbackStall
     case playbackRendererRecovery
@@ -46,16 +40,14 @@ public nonisolated enum EngineDiagnosticLevel: String, Sendable, Comparable {
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rank < rhs.rank }
 }
 
-/// Where the engine's diagnostics go, if anywhere.
-///
-/// The engine has no opinion about reporting. It does not know whether a host
-/// has a diagnostics service, whether a viewer consented to one, or what a
-/// report costs — so it states what happened and stops there.
+/// Where the engine's diagnostics go, if anywhere. The engine does not know
+/// whether a host reports or a viewer consented, so it only states what
+/// happened.
 public nonisolated protocol EngineDiagnosticSink: Sendable {
     func record(_ event: EngineDiagnosticEvent, _ fields: [String: DiagnosticValue])
 
-    /// Returns whether the incident was accepted, which a caller may use to
-    /// avoid doing expensive work for a report that was going to be dropped.
+    /// Whether the incident was accepted, so a caller can skip work for a
+    /// dropped report.
     @discardableResult
     func report(
         _ incident: EngineDiagnosticIncident,
@@ -65,10 +57,8 @@ public nonisolated protocol EngineDiagnosticSink: Sendable {
     ) -> Bool
 }
 
-/// The default: everything is discarded.
-///
-/// A library that reports by default would be reporting to its author about
-/// someone else's users, which is not a decision a dependency gets to make.
+/// The default: discard everything. A library must not report to its author
+/// about someone else's users.
 public nonisolated struct DiscardedDiagnostics: EngineDiagnosticSink {
     public init() {}
 
@@ -83,19 +73,15 @@ public nonisolated struct DiscardedDiagnostics: EngineDiagnosticSink {
     ) -> Bool { false }
 }
 
-/// The engine's own way of reaching whatever sink is installed.
-///
-/// A global rather than a value threaded through every type, because the call
-/// sites are spread across the decode path where an extra stored property per
-/// object costs more than the indirection saves.
+/// Reaches the installed sink. A global, because call sites are spread across
+/// the decode path where a stored property per object costs more.
 public nonisolated enum EngineDiagnostics {
     private static let installed = OSAllocatedUnfairLock<EngineDiagnosticSink>(
         initialState: DiscardedDiagnostics()
     )
 
-    /// Install once, before playback starts. Without one the engine's
-    /// diagnostics are discarded — the right default for a library, but
-    /// silence for a host that wanted them.
+    /// Install once, before playback starts. Without it, diagnostics are
+    /// discarded.
     public static func use(_ sink: EngineDiagnosticSink) {
         installed.withLock { $0 = sink }
     }

@@ -14,9 +14,9 @@ public nonisolated enum DownloadFailure: Error, Equatable {
     case unsafeRedirect
 }
 
-/// A reusable URLSession whose delegate bounds bytes before accumulating
-/// them. Content-Length is an early check, never the authority for the cap:
-/// chunked and decompressed response bytes are checked on every callback.
+/// A reusable URLSession that caps bytes as they arrive. Content-Length is only
+/// an early check: chunked and decompressed bytes are counted on every
+/// callback.
 public nonisolated final class BoundedDownload: Sendable {
     static public let shared = BoundedDownload()
 
@@ -66,8 +66,8 @@ public nonisolated final class BoundedDownload: Sendable {
     }
 }
 
-/// URLSession owns this delegate, but the delegate does not own its session.
-/// Transfers leave the locked map on every completion and cancellation path.
+/// URLSession owns this delegate; it does not own the session. Transfers leave
+/// the locked map on every completion and cancellation path.
 private nonisolated final class DownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var transfers: [Int: DownloadTransfer] = [:]
@@ -98,15 +98,14 @@ private nonisolated final class DownloadDelegate: NSObject, URLSessionDataDelega
             completionHandler(nil)
             return
         }
-        // URLSession handles normal redirects and platform TLS trust. Never
-        // manually copy Authorization or API keys to the redirected request.
+        // URLSession handles redirects and TLS trust. Never copy Authorization
+        // or API keys onto the redirected request by hand.
         completionHandler(request)
     }
 }
 
-/// Only the fields under `lock` are mutable. Resume, cancellation and map
-/// removal happen outside the lock and exactly once, including cancellation
-/// before the URLSession task/continuation has been installed.
+/// Only fields under `lock` are mutable. Resume, cancellation and removal run
+/// outside the lock exactly once, even when cancelled before the task exists.
 private nonisolated final class DownloadTransfer: @unchecked Sendable {
     private let lock = NSLock()
     private let limit: Int
@@ -153,8 +152,8 @@ private nonisolated final class DownloadTransfer: @unchecked Sendable {
             return true
         }
         guard active else { return false }
-        // Retain a small error body for Jellyfin's useful provider messages,
-        // but authentication/permission failures need no body or extra wait.
+        // Keep a small error body for the server's provider messages; auth
+        // failures need none.
         if !statusCodes.contains(http.statusCode) {
             if [401, 403, 429].contains(http.statusCode) {
                 finish(.failure(DownloadFailure.httpStatus(http.statusCode, Data())))

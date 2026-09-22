@@ -1,20 +1,14 @@
 import Foundation
 
-/// The DVD-Video half of disc reading.
+/// DVD-Video disc reading.
 ///
-/// Far less work than Blu-ray turned out to need, for two reasons. The
-/// filesystem is the same one already written: a DVD image is UDF 1.02, which
-/// is the 2.50 reader minus the metadata partition, and it mounts unchanged.
-/// And a title is not assembled from a playlist but simply *is* a title set's
-/// VOB files in numeric order, split at 1 GB because that is as much as the
-/// filesystem was ever asked to address in one file.
+/// A DVD image is UDF 1.02, which the 2.50 reader mounts unchanged. A title is
+/// a title set's VOB files in numeric order, split at 1 GB.
 nonisolated enum DVDDisc {
     static let directory = "VIDEO_TS"
 
-    /// `VTS_01_2.VOB` -> title set 1, part 2.
-    ///
-    /// Part 0 is deliberately excluded: `VTS_nn_0.VOB` is that title set's
-    /// menu, not its film, and `VIDEO_TS.VOB` is the disc's own menu.
+    /// `VTS_01_2.VOB` -> title set 1, part 2. Part 0 (`VTS_nn_0.VOB`) is the
+    /// title set's menu and `VIDEO_TS.VOB` the disc's, so both are excluded.
     static func titleSetPart(of name: String) -> (titleSet: Int, part: Int)? {
         let upper = name.uppercased()
         guard upper.utf8.count == 12, upper.hasPrefix("VTS_"), upper.hasSuffix(".VOB") else { return nil }
@@ -36,11 +30,8 @@ nonisolated enum DVDDisc {
 
     /// The largest title set, its parts laid end to end.
     ///
-    /// Size rather than a program chain read out of the IFO files. On a disc
-    /// holding one film this is the film, which is the case worth getting
-    /// right first; a disc of episodes keeps them in one title set and will
-    /// play them in sequence, which is the honest limitation of choosing this
-    /// way and is recorded on the ticket rather than hidden here.
+    /// Chosen by size, not from the IFO program chains. Right for a single
+    /// film; a disc of episodes plays them in sequence, a known limitation.
     static func mainTitle(in volume: UDFVolume) throws -> DiscStreamMap {
         guard let videoTS = try volume.entry(at: directory) else {
             throw DiscImageError.noTitle
@@ -66,8 +57,7 @@ nonisolated enum DVDDisc {
         guard let chosen = parts.max(by: { left, right in
             let leftBytes = sizes[left.key, default: 0]
             let rightBytes = sizes[right.key, default: 0]
-            // Ties by title set number, so the choice cannot depend on
-            // dictionary order.
+            // Ties by title set number, independent of dictionary order.
             return leftBytes == rightBytes ? left.key > right.key : leftBytes < rightBytes
         }) else {
             throw DiscImageError.noTitle
@@ -82,14 +72,12 @@ nonisolated enum DVDDisc {
     }
 }
 
-/// Which kind of disc this is, and what to play off it.
-///
-/// The image says so itself, so nothing upstream has to guess from the
-/// server's `IsoType` and be wrong about a mislabelled disc.
+/// Which kind of disc this is, and what to play off it. Read from the image, so
+/// a mislabelled `IsoType` upstream cannot mislead it.
 nonisolated enum DiscTitle {
     struct Selection {
-        /// The playlist a Blu-ray title came from, for diagnostics. nil for a
-        /// DVD, which has no such thing.
+        /// The source playlist of a Blu-ray title, for diagnostics; nil for a
+        /// DVD.
         let playlist: BlurayPlaylist?
         let stream: DiscStreamMap
     }

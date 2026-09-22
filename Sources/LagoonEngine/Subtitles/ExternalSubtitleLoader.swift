@@ -7,22 +7,16 @@ public nonisolated enum SubtitleLoadState: Equatable {
 }
 
 public nonisolated enum ExternalSubtitleLoader {
-    /// Whether these bytes are a subtitle file this engine can play, without
-    /// keeping what it read.
-    ///
-    /// A host that has just fetched a sidecar from somewhere it does not
-    /// control wants to know before it commits — a provider returning a
-    /// login page with a 200 is the ordinary failure. Throws the same
-    /// `SubtitleFileError` a load would; the parsed cues are the engine's
-    /// business and are not returned.
+    /// Whether these bytes are a playable subtitle file, keeping nothing. Lets
+    /// a host check a sidecar from a source it does not control (a login page
+    /// served with 200 is the usual failure). Throws the `SubtitleFileError` a
+    /// load would.
     static public func validate(_ data: Data, language: String?) async throws {
         _ = try await parse(data, language: language)
     }
 
-    /// `authorization` attaches the session credential as a header rather
-    /// than letting it ride in `track.url`'s query — Jellyfin delivery URLs
-    /// can arrive with a legacy `api_key`, and any URL is otherwise a
-    /// potential unified-log leak if the request fails.
+    /// `authorization` sends the credential as a header instead of in
+    /// `track.url`'s query, since a failed request can log its full URL.
     static func load(
         _ track: ExternalSubtitleTrack,
         using downloader: BoundedDownload,
@@ -64,8 +58,8 @@ public nonisolated enum ExternalSubtitleLoader {
         } onCancel: { parsing.cancel() }
     }
 
-    /// External sidecars may come from a CDN or another service. Do not
-    /// mislabel their access failures as a Jellyfin account being expired.
+    /// Sidecars may come from a CDN or another service, so an access failure is
+    /// not reported as an expired account.
     static public func message(for error: Error) -> String {
         if let failure = error as? DownloadFailure {
             switch failure {

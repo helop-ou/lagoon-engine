@@ -1,7 +1,7 @@
 import Foundation
 
-/// One playlist from `BDMV/PLAYLIST`, in the only terms title selection
-/// needs: what it plays, in what order, and for how long.
+/// One `BDMV/PLAYLIST` entry, as title selection needs it: clips, order,
+/// length.
 nonisolated struct BlurayPlaylist: Equatable {
     struct Item: Equatable {
         /// The five-digit clip name, without its extension.
@@ -16,12 +16,9 @@ nonisolated struct BlurayPlaylist: Equatable {
         items.reduce(0) { $0 + $1.seconds }
     }
 
-    /// Duration with each clip counted once.
-    ///
-    /// A menu loop is a playlist that plays the same clip a few hundred
-    /// times: WALL·E's `00020.mpls` reports 323 minutes from two distinct
-    /// clips, more film than the image physically holds. Collapsing repeats
-    /// drops it to 2 minutes and leaves the real titles at the top.
+    /// Duration with each clip counted once. A menu loop repeats a clip
+    /// hundreds of times (one test disc reports 323 minutes from two clips);
+    /// collapsing repeats keeps it below the real titles.
     var collapsedSeconds: Double {
         guard !items.isEmpty else { return 0 }
         let unique = Set(items.map(\.clip)).count
@@ -29,8 +26,7 @@ nonisolated struct BlurayPlaylist: Equatable {
     }
 }
 
-/// Blu-ray playlists are big-endian, unlike the little-endian filesystem
-/// underneath them.
+/// Blu-ray playlists are big-endian, unlike the UDF underneath.
 nonisolated enum BlurayPlaylistParser {
     private static let maxItems = 4_096
     /// Presentation timestamps in a playlist are 45 kHz ticks.
@@ -99,15 +95,10 @@ nonisolated enum BlurayPlaylistParser {
 nonisolated enum BlurayTitlePolicy {
     /// Which playlist is the film.
     ///
-    /// The server has already probed this disc and reported a runtime, which
-    /// is a better signal than any heuristic a client can invent: WALL·E's
-    /// disc offers four plausible titles between 98.2 and 98.7 minutes, and
-    /// Jellyfin's 98.11 picks the right one. Without that hint the longest
-    /// title wins, loops collapsed.
-    ///
-    /// Ties resolve by name so the choice is deterministic across mounts —
-    /// `00004.mpls` and `00800.mpls` are the same film on this disc, and
-    /// which one plays should not depend on directory order.
+    /// The server's runtime beats any heuristic: one test disc has four titles
+    /// between 98.2 and 98.7 minutes, and the reported 98.11 picks the right
+    /// one. Without it the longest title wins, loops collapsed. Ties resolve by
+    /// name so the choice does not depend on directory order.
     static func mainTitle(
         from playlists: [BlurayPlaylist],
         runtimeSeconds: Double?
@@ -130,8 +121,7 @@ nonisolated enum BlurayDisc {
     private static let maxPlaylists = 512
     private static let maxPlaylistBytes = 1 * 1_024 * 1_024
 
-    /// True when the image carries a Blu-ray structure at all, which is what
-    /// separates a disc this reader can play from one it must decline.
+    /// True when the image has a Blu-ray structure this reader can play.
     static func isBluray(_ volume: UDFVolume) throws -> Bool {
         try volume.entry(at: playlistDirectory) != nil
     }
@@ -160,7 +150,7 @@ nonisolated enum BlurayDisc {
             guard attempted < maxPlaylists else { throw DiscImageError.resourceLimit }
             attempted += 1
             let data = try volume.data(of: entry.icb, limit: maxPlaylistBytes)
-            // One unreadable playlist among sixty-five is not a broken disc.
+            // One unreadable playlist is not a broken disc.
             do {
                 playlists.append(try BlurayPlaylistParser.parse(data, name: entry.name, budget: volume.budget))
             } catch DiscImageError.malformed {
@@ -169,8 +159,8 @@ nonisolated enum BlurayDisc {
         }
 
         guard let title = BlurayTitlePolicy.mainTitle(from: playlists, runtimeSeconds: runtimeSeconds) else {
-            // No playlist parsed. The largest stream is a poor title but a
-            // better outcome than refusing the disc.
+            // No playlist parsed: the largest stream is a poor title but beats
+            // refusing.
             return (nil, try largestClipStream(in: volume, clips: clips))
         }
 

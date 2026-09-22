@@ -3,21 +3,17 @@ import Foundation
 import Libavformat
 import Libavutil
 
-// Transport spike: libavformat is rebuilt without its
-// network stack, so http/https opens can no longer resolve themselves.
-// Every byte a demuxed AVFormatContext needs from the network — the top-level
-// manifest/file plus every HLS child resource and key — now comes from
-// URLSession, which is also where system certificate trust now lives instead
-// of the tls_verify/verifyhost options FFmpeg's own TLS used to take.
+// libavformat is built without its network stack. Every byte a demuxer needs
+// from the network, including HLS children and keys, comes from URLSession,
+// which also owns certificate trust.
 
 nonisolated let ffmpegErrorExit: Int32 = -1_414_092_869 // AVERROR_EXIT
 nonisolated let ffmpegErrorIO: Int32 = -5 // AVERROR(EIO)
 nonisolated let ffmpegErrorInvalid: Int32 = -22 // AVERROR(EINVAL)
 
-/// Errors this file's byte sources throw. `FFmpegCachedIO.read` collapses
-/// any of them to `AVERROR(EIO)` — see its comment on why an error must
-/// never read as EOF — so the specific case only matters to retry/close
-/// bookkeeping in this file.
+/// Errors this file's byte sources throw. `FFmpegCachedIO.read` maps them all
+/// to `AVERROR(EIO)`, so the case matters only to retry and close bookkeeping
+/// here.
 nonisolated enum FFmpegTransportError: Error {
     case closed
     case interrupted
@@ -28,19 +24,14 @@ nonisolated enum FFmpegTransportError: Error {
     case decodingFailed
 }
 
-/// Cancellable regardless of which byte source `FFmpegNetworkTransport`
-/// opened — lets `close`/`closeAll` treat both the plain and AES-wrapped
-/// cases the same way.
+/// Lets `close`/`closeAll` cancel plain and AES-wrapped sources alike.
 nonisolated private protocol TransportCancellable: AnyObject {
     func cancel()
 }
 
-/// Forwards one shared URLSession's delegate callbacks to whichever
-/// `URLSessionByteSource` currently owns each task. A transport hands out
-/// one session to every AVIOContext it opens — the root plus every HLS
-/// child — so many byte sources multiplex one delegate instance, told apart
-/// by task identifier the way `PlaybackRangeSessionDelegate` tells apart
-/// requests in PlaybackCache.swift.
+/// Routes one shared session's callbacks to the `URLSessionByteSource` that
+/// owns each task. Every AVIOContext a transport opens shares the session, so
+/// sources are told apart by task identifier.
 private final class FFmpegTransportSessionDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var targets: [Int: URLSessionByteSource] = [:]
@@ -91,12 +82,10 @@ private final class FFmpegTransportSessionDelegate: NSObject, URLSessionDataDele
         unregister(taskIdentifier: identifier)
     }
 
-    /// The credential header must never follow a request across origins:
-    /// this is the one point where URLSession itself would otherwise carry
-    /// it there on our behalf. Starts from `newRequest`; when the
-    /// authorization does not apply to its URL the header is stripped, and
-    /// when it does apply the header is (re-)set and the credential query
-    /// items are stripped, exactly as the first request was built.
+    /// The one place URLSession would carry the credential across origins
+    /// itself. A redirect keeps the header only where the authorization
+    /// applies, rebuilt exactly like the first request; elsewhere it is
+    /// stripped.
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -118,10 +107,8 @@ private final class FFmpegTransportSessionDelegate: NSObject, URLSessionDataDele
     }
 }
 
-/// Owns every AVIOContext one AVFormatContext opens through Lagoon's own
-/// transport. libavformat is built without its network stack, so http and
-/// https reach the server through URLSession, which is also where system
-/// certificate trust lives.
+/// Owns every AVIOContext one AVFormatContext opens. http and https go through
+/// URLSession because libavformat has no network stack.
 nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
     private struct TrackedContext {
         let io: FFmpegCachedIO
@@ -138,10 +125,8 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
     private let stateLock = NSLock()
     private var tracked: [UInt: TrackedContext] = [:]
 
-    // FFmpeg's default stderr logger prints complete HLS URLs on failures,
-    // including Jellyfin's query token. Lagoon reports av_strerror results
-    // and its own playback diagnostics; do not emit the native raw URL
-    // messages. One-shot: av_log_set_level is process-global state.
+    // FFmpeg's stderr logger prints full HLS URLs, query token included, so
+    // native logging is silenced. One-shot: av_log_set_level is process-global.
     private static let configureLogging: Void = {
         av_log_set_level(AV_LOG_QUIET)
     }()
@@ -170,10 +155,9 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
         session.invalidateAndCancel()
     }
 
-    /// Sets `context.pointee.opaque` to an unretained pointer to self and
-    /// installs `io_open`/`io_close2`. libavformat copies `opaque`, `io_open`
-    /// and `io_close2` into nested HLS format contexts, so installing once
-    /// on the root covers every child.
+    /// Sets `opaque` to an unretained self and installs `io_open`/`io_close2`.
+    /// libavformat copies all three into nested HLS contexts, so the root
+    /// covers every child.
     func install(on context: UnsafeMutablePointer<AVFormatContext>) {
         _ = Self.configureLogging
         context.pointee.opaque = Unmanaged.passUnretained(self).toOpaque()
@@ -253,9 +237,8 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
 
     // MARK: - Opening by scheme
 
-    /// `crypto+<url>` is how hls.c asks for an AES-128-CBC segment: the key
-    /// and IV travel as hex strings in `options` (`ff_data_to_hex` on the
-    /// native side) rather than in the URL itself.
+    /// `crypto+<url>` is how hls.c asks for an AES-128-CBC segment. The key and
+    /// IV come as hex strings in `options`, not in the URL.
     private func openCrypto(
         urlString: String,
         output: UnsafeMutablePointer<UnsafeMutablePointer<AVIOContext>?>,
@@ -297,9 +280,8 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
             if let result = openLeased(lease: lease, output: output) {
                 return result
             }
-            // Cache failure must never make an otherwise playable stream
-            // fail — fall through to the network exactly as the old
-            // openChildIO did.
+            // A cache failure never fails a playable stream: fall through to
+            // the network.
         }
         return openNetwork(url: resourceURL, output: output)
     }
@@ -309,10 +291,8 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
         output: UnsafeMutablePointer<UnsafeMutablePointer<AVIOContext>?>
     ) -> Int32? {
         do {
-            // FFmpeg holds several segment contexts open at once, and a
-            // whole segment fits under the per-resource cap, so these keep
-            // the small buffer: there is no unstorable-read case to
-            // amortize here.
+            // FFmpeg holds several segments open and each fits under the
+            // per-resource cap, so these keep the small buffer.
             let io = try FFmpegCachedIO(source: lease.scope, bufferSize: 64 * 1_024)
             guard let ioContext = io.context else {
                 lease.close()
@@ -347,11 +327,9 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
         }
     }
 
-    /// file:, data:, and anything else libavformat still natively supports
-    /// once the network stack is gone. avio_open2 cannot read the parent
-    /// AVFormatContext, so the protocol allow/deny list and interrupt
-    /// callback are copied across by hand, exactly as the policy this
-    /// replaces did.
+    /// file:, data: and whatever else libavformat still supports natively.
+    /// avio_open2 cannot see the parent context, so the protocol lists and
+    /// interrupt callback are copied by hand.
     private func openNative(
         context: UnsafeMutablePointer<AVFormatContext>?,
         output: UnsafeMutablePointer<UnsafeMutablePointer<AVIOContext>?>?,
@@ -411,14 +389,9 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
     }
 }
 
-/// A sequential-first URLSession byte source for one URL: streams the body
-/// of a ranged GET and serves reads at the stream position; a read at
-/// another offset restarts the request from there. Demuxing is sequential
-/// almost all the time — this exists instead of a general random-access
-/// loader (PlaybackCache's `URLSessionPlaybackRangeLoader`) because AVIO
-/// already buffers ahead through `FFmpegCachedIO`, so paying per-request
-/// HTTP overhead for every buffer refill would be wasteful; a genuine seek
-/// just restarts the GET at the new offset.
+/// A sequential-first byte source for one URL: streams a ranged GET and serves
+/// reads at the stream position; a read elsewhere restarts the GET there. AVIO
+/// already buffers ahead, so a request per refill would be wasted overhead.
 nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Sendable {
     private static let retryDelays: [TimeInterval] = [0.25, 0.5, 1.0]
     private static let maxRetries = retryDelays.count
@@ -433,9 +406,8 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
     private let priority: Float
     private let authorization: MediaRequestAuthorization?
 
-    // Every mutable field below is read and written only while holding
-    // `condition`; reads are called from the demuxer's serial queue while
-    // delegate callbacks land on the session's own delegate queue.
+    // Mutable fields below are touched only under `condition`: reads come from
+    // the demux queue, callbacks from the session's delegate queue.
     private let condition = NSCondition()
     private var activeTask: URLSessionDataTask?
     private var suspended = false
@@ -451,8 +423,7 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
     private var retryCount = 0
     private var closed = false
 
-    /// AVIO buffer sizing, per `FFmpegCachedIO`'s comment on why the buffer
-    /// should track the cache's own request size.
+    /// AVIO buffer size; see `FFmpegCachedIO`.
     var requestSize: Int64 { 256 * 1_024 }
 
     var contentLength: Int64? {
@@ -479,9 +450,7 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         cancel()
     }
 
-    /// FFmpeg's `SEEK_SIZE`/anchor bookkeeping already lives in
-    /// `FFmpegCachedIO` and the playback cache scopes; a plain network
-    /// stream has no separate timeline to anchor.
+    /// A plain network stream has no timeline to anchor.
     func setTimelineAnchor(byteOffset: Int64, timeFraction: Double) {}
 
     func cancel() {
@@ -588,10 +557,8 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         request.timeoutInterval = 15
         request.setValue("bytes=\(streamOffset)-", forHTTPHeaderField: "Range")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        // Moves the credential from the URL's query into this header for
-        // the server's own origin — CFNetwork logs a failed task's full URL
-        // (NSErrorFailingURLKey), and so would any diagnostic that prints
-        // one. Never applies to a third-party origin.
+        // Moves the credential from the query into the header, for the media
+        // origin only. CFNetwork logs a failed task's full URL.
         authorization?.apply(to: &request)
         let task = session.dataTask(with: request)
         task.priority = priority
@@ -681,8 +648,8 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         guard !closed, taskIdentifier == activeTask?.taskIdentifier else { return }
         if let error {
             if let urlError = error as? URLError, urlError.code == .cancelled {
-                // Self-inflicted: a new read superseded this request, or
-                // cancel() is tearing the source down. Neither is a failure.
+                // Superseded by a newer read or cancelled by teardown; not a
+                // failure.
             } else {
                 pendingError = error
             }
@@ -692,11 +659,9 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         condition.broadcast()
     }
 
-    /// HTTP 206 whose `Content-Range` starts at the requested offset is the
-    /// happy path. HTTP 200 is accepted at offset 0; at a non-zero offset it
-    /// means the server ignored `Range`, which is only survivable by
-    /// discarding a bounded prefix — past that it is cheaper to fail than to
-    /// silently redownload gigabytes.
+    /// 206 at the requested offset is the normal case, and 200 is fine at
+    /// offset 0. A 200 elsewhere means `Range` was ignored: discard a bounded
+    /// prefix, and past that fail rather than silently redownload gigabytes.
     private func validateResponseLocked(_ response: URLResponse) -> URLSession.ResponseDisposition {
         guard let http = response as? HTTPURLResponse else {
             pendingError = FFmpegTransportError.invalidResponse
@@ -735,12 +700,9 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
 nonisolated extension URLSessionByteSource: TransportCancellable {}
 nonisolated extension AES128CBCByteSource: TransportCancellable {}
 
-/// AES-128-CBC with PKCS#7 padding over another source, sequential only —
-/// what an HLS playlist's `EXT-X-KEY METHOD=AES-128` segment needs. Every
-/// read must land exactly on the decrypted position because CBC's block
-/// chaining make random access meaningless without re-deriving state from
-/// the start of the segment; nothing in this engine needs to seek within an
-/// encrypted segment anyway.
+/// AES-128-CBC with PKCS#7 padding over another source, for HLS `EXT-X-KEY
+/// METHOD=AES-128` segments. Sequential only: CBC chaining makes random access
+/// impossible without replaying from the segment start.
 nonisolated final class AES128CBCByteSource: FFmpegByteSource, @unchecked Sendable {
     private let inner: URLSessionByteSource
     private let key: Data

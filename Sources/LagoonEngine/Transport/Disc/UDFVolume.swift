@@ -2,18 +2,14 @@ import Foundation
 
 /// Enough read-only UDF to find a file and say where its bytes are.
 ///
-/// Not a general filesystem: it resolves names to extents and reads small
-/// files whole, which is all a disc image needs before the demuxer takes
-/// over. Written rather than linked because libavformat has no UDF at all,
-/// and libbluray/libudfread would be a new dependency that still could not
-/// reach a disc over HTTP without the same callbacks.
+/// Resolves names to extents and reads small files whole; the demuxer does the
+/// rest. Hand-written because libavformat has no UDF, and libbluray/libudfread
+/// would be a new dependency that still needs these callbacks to read over
+/// HTTP.
 ///
-/// UDF 2.50, which is what BD-ROM uses, keeps every file entry inside a
-/// *metadata partition* — a file in the physical partition that the volume
-/// then addresses as if it were a partition of its own. That indirection is
-/// the part worth knowing about: file entries live there, while the file data
-/// they describe lives in the physical partition, and a reader that misses
-/// the distinction reads empty directories.
+/// UDF 2.50 (BD-ROM) keeps file entries in a *metadata partition*: a file in
+/// the physical partition addressed as a partition of its own. File data stays
+/// in the physical partition. Miss the distinction and directories read empty.
 nonisolated final class UDFVolume {
     /// Where a file entry lives. `partition` is a reference into the volume's
     /// partition map, not a partition number.
@@ -48,12 +44,11 @@ nonisolated final class UDFVolume {
         static let extendedFileEntry: UInt16 = 266
     }
 
-    /// The anchor is at a fixed logical sector, which is what makes "is this
-    /// a UDF image at all" a cheap question to answer.
+    /// The anchor sits at a fixed sector, so detecting UDF is cheap.
     private static let anchorSector: Int64 = 256
     private static let sectorSize: Int64 = 2_048
-    /// Bounds on a structure a server handed us: a malformed image should
-    /// fail the open, never spin.
+    /// Bounds on server-supplied structures: a malformed image fails the open,
+    /// never spins.
     private static let maxVolumeDescriptors = 64
     private static let maxExtents = 8_192
     private static let maxAllocationContinuations = 64
@@ -134,9 +129,9 @@ nonisolated final class UDFVolume {
         root = try longAD(fileSet, at: 400)
     }
 
-    /// UDF 2.50's metadata partition, which every BD-ROM image uses. Its file
-    /// is described in the physical partition; once its extents are known,
-    /// logical blocks addressed to that partition are offsets into it.
+    /// UDF 2.50's metadata partition. Its file is described in the physical
+    /// partition; blocks addressed to the metadata partition are offsets into
+    /// it.
     private func mountMetadataPartition(in logicalVolume: DiscBytes) throws {
         let count = Int(try logicalVolume.u32(268))
         let tableLength = Int(try logicalVolume.u32(264))
@@ -167,8 +162,8 @@ nonisolated final class UDFVolume {
         guard offset == end else { throw DiscImageError.malformed("partition map count/length mismatch") }
         if let metadataFile {
             let entry = try physical(block: metadataFile.block, count: Int(blockSize))
-            // Read with no metadata mapping in place yet: the metadata
-            // file itself is always described in the physical partition.
+            // No metadata mapping yet: the metadata file is always described in
+            // the physical partition.
             guard case .extents(let extents) = try contents(ofEntry: entry, partition: nil) else {
                 throw DiscImageError.malformed("metadata file stored inside its own entry")
             }
@@ -218,9 +213,9 @@ nonisolated final class UDFVolume {
         return data
     }
 
-    /// Image extents for a run of logical blocks, resolved through the
-    /// metadata partition when the descriptor names it. A metadata run can
-    /// cross the metadata file's own extents, so this may return several.
+    /// Image extents for a run of logical blocks, through the metadata
+    /// partition when named. A run can cross the metadata file's extents, so
+    /// this may return several.
     private func imageExtents(block: UInt32, length: Int64, partition: UInt16?) throws -> [DiscExtent] {
         try checkBudget()
         guard length >= 0 else { throw DiscImageError.malformed("negative extent length") }
@@ -370,8 +365,8 @@ nonisolated final class UDFVolume {
                 guard mapped.count <= Self.maxExtents - extents.count else { throw DiscImageError.resourceLimit }
                 extents.append(contentsOf: mapped)
             default:
-                // Allocated but not recorded, or a terminator. Neither has
-                // bytes to read.
+                // Allocated but not recorded, or a terminator: no bytes to
+                // read.
                 if length == 0 { offset = end }
                 else { throw DiscImageError.unsupported("unrecorded file extents") }
             }
@@ -379,8 +374,7 @@ nonisolated final class UDFVolume {
         return .extents(extents)
     }
 
-    /// A whole file, for the small ones this reader is allowed to open: a
-    /// directory, a playlist. Never a stream.
+    /// A whole small file: a directory or a playlist, never a stream.
     func data(of icb: ICB, limit: Int = UDFVolume.maxDirectoryBytes) throws -> Data {
         guard limit >= 0, limit <= Self.maxDirectoryBytes else { throw DiscImageError.resourceLimit }
         switch try contents(of: icb) {
@@ -423,8 +417,7 @@ nonisolated final class UDFVolume {
             let implementationUse = Int(try data.u16(offset + 36))
             let nameOffset = offset + 38 + implementationUse
             try data.require(nameOffset, nameLength)
-            // Bit 3 marks the entry pointing back at the parent directory,
-            // which has no name and is not a child.
+            // Bit 3 marks the parent entry, which is not a child.
             if characteristics & 0x08 == 0, nameLength > 0 {
                 guard entries.count < Self.maxDirectoryEntries else { throw DiscImageError.resourceLimit }
                 let raw = try data.bytes(nameOffset, nameLength)
@@ -447,9 +440,8 @@ nonisolated final class UDFVolume {
         return entries
     }
 
-    /// Resolve a slash-separated path from the root. Case-insensitive: the
-    /// specification uppercases BDMV's names, and images in the wild are not
-    /// uniformly obedient about it.
+    /// Resolves a slash-separated path from the root. Case-insensitive, because
+    /// images do not all follow the spec's uppercase BDMV names.
     func entry(at path: String) throws -> Entry? {
         var current = Entry(name: "", isDirectory: true, icb: root)
         for component in path.split(separator: "/") {

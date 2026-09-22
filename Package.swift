@@ -1,22 +1,14 @@
 // swift-tools-version:6.2
 
-// Lagoon's playback engine, and the FFmpeg binaries it decodes with, as one
-// package.
+// Lagoon's playback engine and the native libraries it decodes with, as one
+// package. They cannot be a nested package: SwiftPM does not resolve a path
+// dependency inside a package fetched from a URL.
 //
-// The native libraries used to live in a separate `LagoonFFmpeg` package
-// inside the app repository. They are folded in here rather than kept as a
-// nested package because SwiftPM does not resolve a path dependency declared
-// inside a package that was itself fetched from a URL: a consumer adding
-// lagoon-engine as a dependency would fail to resolve. One package, many
-// targets, one product.
-//
-// Every native library is built by this repository, or vendored here with its
-// provenance, and nothing is fetched at resolve time. The four FFmpeg
-// libraries come from one configure (scripts/build-ffmpeg.py) without the
-// network stack: HTTP goes through URLSession in `FFmpegNetworkTransport`,
-// which is also where certificate trust lives, so GnuTLS and the
-// --enable-version3 its licence required are gone, and all four are
-// LGPL-2.1-or-later. Artifacts/FFmpeg.README.md has the detail.
+// Every native library is built here or vendored with its provenance; nothing
+// is fetched at resolve time. The four FFmpeg libraries come from one configure
+// (scripts/build-ffmpeg.py) without the network stack, since HTTP and
+// certificate trust live in `FFmpegNetworkTransport`. That keeps them
+// LGPL-2.1-or-later with no GnuTLS; see Artifacts/FFmpeg.README.md.
 
 import PackageDescription
 
@@ -40,8 +32,7 @@ let package = Package(
             ],
             path: "Sources/LagoonEngine",
             swiftSettings: [
-                // Matches the app's isolation model, so types keep the
-                // meaning they had before the move.
+                // Default MainActor isolation, matching the host app.
                 .defaultIsolation(MainActor.self),
                 .swiftLanguageMode(.v5),
             ]
@@ -85,10 +76,9 @@ let package = Package(
             path: "Sources/LagoonPixelOps",
             publicHeadersPath: "include",
             cSettings: [
-                // Xcode 26 enables coverage for Swift-package targets even
-                // when the containing app's Release target disables it.
-                // These are the per-pixel hot loops, so make the Release
-                // override explicit at the package boundary.
+                // Xcode 26 enables coverage for package targets even when the
+                // app's Release config disables it. These are per-pixel hot
+                // loops, so turn it off here.
                 .unsafeFlags(
                     ["-fno-profile-instr-generate", "-fno-coverage-mapping"],
                     .when(configuration: .release)
@@ -97,51 +87,37 @@ let package = Package(
         ),
         .binaryTarget(
             name: "Libavcodec",
-            // Rebuild/provenance: scripts/build-ffmpeg.py, which builds all
-            // four FFmpeg libraries together.
+            // Rebuild/provenance: scripts/build-ffmpeg.py.
             path: "Artifacts/Libavcodec.xcframework"
         ),
         .binaryTarget(
             name: "Libavformat",
-            // Rebuild/provenance: scripts/build-ffmpeg.py, which builds all
-            // four FFmpeg libraries together.
+            // Rebuild/provenance: scripts/build-ffmpeg.py.
             path: "Artifacts/Libavformat.xcframework"
         ),
         .binaryTarget(
             name: "Libavutil",
-            // Rebuild/provenance: scripts/build-ffmpeg.py, which builds all
-            // four FFmpeg libraries together.
+            // Rebuild/provenance: scripts/build-ffmpeg.py.
             path: "Artifacts/Libavutil.xcframework"
         ),
         .binaryTarget(
             name: "Libswresample",
-            // Rebuild/provenance: scripts/build-ffmpeg.py, which builds all
-            // four FFmpeg libraries together.
+            // Rebuild/provenance: scripts/build-ffmpeg.py.
             path: "Artifacts/Libswresample.xcframework"
         ),
-        // This repository also builds dav1d itself. mpvkit's dav1d is
-        // compiled with -Denable_asm=false, to silence an Xcode 15 linker
-        // warning about assembled objects carrying no platform load command,
-        // so every AV1 frame ran dav1d's portable C path: 11.4 fps against
-        // the 23.976 a 4K HDR10+ episode needs, on an Apple TV. Same dav1d
-        // 1.5.4, same headers, same public API, built by
-        // scripts/build-dav1d.sh with the assembly kept and the warning
-        // fixed properly by passing -target to the assembler.
-        //
-        // Vendored rather than fetched: there is nothing upstream to point
-        // at, and a URL that has to outlive the library is a worse dependency
-        // than eight megabytes in the repository.
+        // dav1d 1.5.4, built by scripts/build-dav1d.sh with its assembly kept.
+        // mpvkit's build disabled the assembly, and AV1 then decoded at
+        // 11.4 fps against the 23.976 a 4K episode needs on Apple TV.
+        // Vendored: there is no upstream binary to point at.
         .binaryTarget(
             name: "Libdav1d",
             path: "Artifacts/Libdav1d.xcframework"
         ),
-        // libdovi: the dolby_vision crate's C API (dovi_tool, MIT), for
-        // rewriting a Dolby Vision profile 7 RPU into profile 8.1 while the
-        // packet is in flight. Vendored from superuser404notfound/
-        // LibDovi 2.1.0 (dolby_vision 3.4.0), iOS/tvOS/macOS slices only,
-        // static libraries stripped of local symbols. The tvOS simulator slice
-        // is arm64 only: x86_64-apple-tvos is a tier-3 Rust target, so the
-        // project excludes x86_64 for that SDK. Rebuild recipe and provenance:
+        // libdovi: the dolby_vision crate's C API (dovi_tool, MIT), to rewrite
+        // a Dolby Vision profile 7 RPU as profile 8.1 in flight. Vendored from
+        // superuser404notfound/LibDovi 2.1.0 (dolby_vision 3.4.0), static,
+        // local symbols stripped. The tvOS simulator slice is arm64 only
+        // (x86_64-apple-tvos is a tier-3 Rust target). Provenance:
         // Artifacts/Libdovi.README.md.
         .binaryTarget(
             name: "Libdovi",

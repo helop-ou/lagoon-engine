@@ -1,12 +1,11 @@
 import Foundation
 
-/// Benchmark-only timing storage. Recording is deliberately
-/// allocation-light and silent: printing once per frame changes the pipeline
-/// being measured. Exact samples are sorted only when the completed bench
-/// asks for its summary.
+/// Benchmark-only timing storage. Recording is allocation-light and silent,
+/// since printing per frame would change what is measured. Samples are sorted
+/// only for the summary.
 nonisolated final class PipelineStageTimings: @unchecked Sendable {
-    /// Enough for more than thirteen minutes at 24 fps while preventing an
-    /// accidentally enabled diagnostic from becoming an unbounded leak.
+    /// Over thirteen minutes at 24 fps, and bounded so a diagnostic left on
+    /// cannot leak without limit.
     private static let maximumSamplesPerStage = 20_000
 
     enum Stage: String, CaseIterable {
@@ -143,10 +142,8 @@ nonisolated final class PipelineStageTimings: @unchecked Sendable {
     }
 }
 
-/// Time-weighted samples from the renderer side of the pipeline. A periodic
-/// sampler is necessary: checking readiness only when a decoded frame arrives
-/// would systematically miss the periods where the producer has nothing to
-/// offer.
+/// Time-weighted renderer-side samples. A periodic sampler is needed: checking
+/// only when a frame arrives misses the times the producer has nothing.
 nonisolated final class RendererPipelineTimings: @unchecked Sendable {
     private static let maximumStateSamples = 20_000
     private static let maximumEnqueueSamples = 20_000
@@ -320,9 +317,9 @@ nonisolated final class RendererPipelineTimings: @unchecked Sendable {
         return lines
     }
 
-    /// Treat each sample as the state until the next callback. Clipping each
-    /// interval to a requested band makes the readiness percentages genuinely
-    /// time-weighted even when the sampler itself is delayed.
+    /// Each sample holds until the next callback. Clipping intervals to the
+    /// band keeps readiness percentages time-weighted even when the sampler
+    /// runs late.
     private static func metrics(
         for samples: [StateSample],
         in range: ClosedRange<Double>? = nil

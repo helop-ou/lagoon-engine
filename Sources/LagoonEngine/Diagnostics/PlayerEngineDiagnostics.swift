@@ -1,20 +1,12 @@
 import Foundation
 
-/// What an engine will tell a host about its own internals.
+/// What an engine tells a host about its internals, for a HUD, a decode trace
+/// or an incident report.
 ///
-/// Separate from `PlayerEngine` on purpose. That protocol is what a player
-/// needs to show a picture and drive a transport, and a host that only wants
-/// to play something should not have to think about queue depths or renderer
-/// observer counts. This is the second, optional surface: everything a host
-/// samples when it is building a HUD, a decode trace or an incident report.
-///
-/// It exists because the alternative was worse. A host that wanted these
-/// numbers had to name the concrete engine, which meant exporting a class
-/// with around 140 stored properties and every type they reach, and it meant
-/// a second engine implementation could never supply a HUD.
-///
-/// Every member is a read, or a cheap refresh of a read. Nothing here changes
-/// what is played.
+/// Separate from `PlayerEngine`, which is all a host needs to play something.
+/// Without this a host would have to name the concrete engine, and a second
+/// engine could never supply a HUD. Every member is a read; nothing here
+/// changes playback.
 @MainActor
 public protocol PlayerEngineDiagnostics: AnyObject {
     // MARK: Audio delivery
@@ -38,34 +30,32 @@ public protocol PlayerEngineDiagnostics: AnyObject {
     var dolbyVisionRewriteInfo: String? { get }
     /// The software decoder's state, or nil when video decodes in hardware.
     var softwareDecodeDiagnostic: String? { get }
-    /// The same thing, condensed for a bench line. Readable off the main
-    /// actor because the bench line is assembled on a sampling queue.
+    /// The same, condensed for a bench line. Nonisolated because the bench line
+    /// is built on a sampling queue.
     nonisolated var softwareDecodeBenchField: String? { get }
     /// Presentation timing in one line.
     var videoTimingDiagnostic: String? { get }
     /// Samples a just-flushed renderer refused because the container did not
     /// call them a random-access point.
     var videoStartPointDropDiagnostic: Int { get }
-    /// How far past the seek the last refused sample sat, in milliseconds.
-    /// Together these two say whether a stall faked a delivery verdict.
+    /// How far past the seek the last refused sample sat, in milliseconds. With
+    /// the count above, says whether a stall faked a delivery verdict.
     var refusedSampleMsDiagnostic: Int? { get }
     /// Frames shown, dropped and composited, as of the last refresh.
     var videoPerformance: VideoPerformanceSnapshot? { get }
-    /// Re-reads the renderer's own counters. They are not free, so a host
-    /// asks for them rather than having them maintained continuously.
+    /// Re-reads the renderer's counters. Not free, so a host asks when it needs
+    /// them.
     func refreshVideoPerformanceMetrics()
 
-    /// The most decoded frames the engine will ever hold, whatever this
-    /// playback is doing. A host sizing a worst-case memory line needs the
-    /// ceiling rather than `videoQueueHardLimitDiagnostic`, which moves
-    /// with delivery.
+    /// The most decoded frames the engine will ever hold. Use this for a
+    /// worst-case memory line; `videoQueueHardLimitDiagnostic` moves with
+    /// delivery.
     var decodedVideoQueueCeiling: Int { get }
 
     // MARK: Byte cache
 
-    /// The active cache scope's counters, or nil when nothing is cached.
-    /// `PlayerEngine.bufferState` is the viewer-facing summary; this is the
-    /// whole of it, for a HUD and a decode trace.
+    /// The active cache scope's full counters, or nil.
+    /// `PlayerEngine.bufferState` is the viewer-facing summary.
     var playbackCacheMetrics: PlaybackCacheMetrics? { get }
 
     // MARK: Queues and scheduling
@@ -79,6 +69,6 @@ public protocol PlayerEngineDiagnostics: AnyObject {
     /// Takes the accumulated main-actor tick summary and clears it.
     func drainMainTickDiagnostic() -> String
     /// Times a round trip through the pump queue. Answers on an arbitrary
-    /// queue, which is why it takes a completion rather than returning.
+    /// queue.
     nonisolated func measurePumpQueueLatency(_ completion: @escaping @Sendable (Duration) -> Void)
 }

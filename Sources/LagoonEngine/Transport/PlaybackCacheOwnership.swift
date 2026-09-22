@@ -2,17 +2,10 @@ import Foundation
 
 /// The one playback cache in the process.
 ///
-/// A host used to own the coordinator, decide when to activate a scope, and
-/// run the fill loop itself. That put engine work on the other side of the
-/// package boundary: every input the fill loop reads — stall count, rate,
-/// duration, whether the picture is buffering — is the engine's, and the
-/// host was only relaying them back.
-///
-/// It is a single shared instance rather than one per engine because the
-/// invariant it protects is process-wide: one active scope and at most one
-/// staged successor. A successor scope is warmed while the outgoing engine
-/// is still playing, and an episode handoff shuts that engine down before
-/// the next one opens, so the coordinator has to outlive any one engine.
+/// Shared rather than per engine because its invariant is process-wide: one
+/// active scope and at most one staged successor. The successor warms while the
+/// outgoing engine plays, and a handoff stops that engine before the next
+/// opens, so the coordinator must outlive any one engine.
 @MainActor
 enum PlaybackCacheOwner {
     static let coordinator = PlaybackCacheCoordinator(
@@ -20,23 +13,19 @@ enum PlaybackCacheOwner {
     )
 }
 
-/// What a host can see of the cache without being able to steer it.
-///
-/// Enough to draw a scrub bar's buffered ranges and a diagnostics line, and
-/// nothing that would let a caller start, stop or discard a scope — those
-/// decisions belong to whichever engine is playing.
+/// What a host can see of the cache without steering it: enough for a scrub bar
+/// and a diagnostics line. Starting, stopping and discarding belong to the
+/// engine.
 public nonisolated struct PlaybackBufferState: Equatable, Sendable {
-    /// Whether a cache is in front of the bytes at all. False for a local
-    /// file, for a manifest the policy declines to cache, and once playback
-    /// has stopped.
+    /// Whether a cache sits in front of the bytes. False for a local file, an
+    /// uncached manifest, and after stop.
     public let isActive: Bool
-    /// How much of the file is cached, 0 to 1, or nil when the length is
-    /// unknown — a live stream or a manifest the server is still writing.
+    /// Fraction of the file cached, 0 to 1; nil when the length is unknown.
     public let bufferedFraction: Double?
     /// The cached byte ranges as fractions of the whole, for a scrub bar.
     public let bufferedRanges: [PlaybackBufferedRange]
-    /// How many fetches were aimed at the playhead rather than at filling
-    /// forward. A high count means seeking is outrunning the fill.
+    /// Fetches aimed at the playhead rather than filling forward. A high count
+    /// means seeks are outrunning the fill.
     public let playheadPrefetchCount: Int
 
     public init(

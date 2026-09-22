@@ -1,18 +1,14 @@
 import Foundation
 
-/// What is wrong with a subtitle file the engine was handed.
-///
-/// Only the failures that are a property of the bytes themselves. Why a
-/// server refused to supply them — an expired session, a missing permission,
-/// a provider that ran out of downloads — is the host's to describe, because
-/// the host is the only party that knows what it asked and of whom.
+/// What is wrong with a subtitle file's bytes. Why a server refused to supply
+/// them is the host's to describe.
 nonisolated enum SubtitleFileError: LocalizedError, Equatable {
     /// Past the byte ceiling a subtitle is allowed to occupy.
     case tooLarge
     /// Parsed, but nothing in it was a cue. Usually the wrong file entirely.
     case unsupportedFile
-    /// Not a subtitle at all — most often an HTML error page served with a
-    /// success status.
+    /// Not a subtitle at all, most often an HTML error page sent with a success
+    /// status.
     case invalidFile
 
     var errorDescription: String? {

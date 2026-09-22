@@ -1,9 +1,8 @@
 import LagoonPixelOps
 
-/// SIMD pixel primitives kept beside the pinned FFmpeg binaries. FFmpeg emits
-/// planar 4:2:0 for several codecs, while Core Video's Apple-recommended
-/// outputs are NV12/P010; doing the chroma zip in Swift consumed the software
-/// decoder's entire real-time budget on Apple TV.
+/// SIMD pixel primitives. FFmpeg emits planar 4:2:0 but Core Video wants
+/// NV12/P010, and doing the chroma zip in Swift used the software decoder's
+/// whole real-time budget on Apple TV.
 public enum LagoonPixelConversion {
     public static func interleave420Chroma(
         sourceU: UnsafePointer<UInt8>,

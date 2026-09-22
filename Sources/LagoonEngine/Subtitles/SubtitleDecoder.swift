@@ -3,10 +3,9 @@ import Foundation
 import Libavcodec
 import Libavutil
 
-/// Decodes embedded subtitle packets via libavcodec, which
-/// normalizes every text codec (srt/ass/ssa/mov_text/webvtt) to ASS event
-/// payloads and every bitmap codec (PGS/VobSub) to paletted rects.
-/// All methods run on the demux queue.
+/// Decodes embedded subtitle packets with libavcodec, which turns every text
+/// codec into ASS event payloads and every bitmap codec into paletted rects.
+/// Runs on the demux queue.
 nonisolated final class SubtitleDecoder {
     private let codecContext: UnsafeMutablePointer<AVCodecContext>
     private let timeBase: AVRational
@@ -85,9 +84,8 @@ nonisolated final class SubtitleDecoder {
         }
         guard !textCues.isEmpty || !images.isEmpty else { return [.clear(at: start)] }
 
-        // Bitmap events routinely leave the end open (0 or sentinel) and
-        // clear via a later empty composition; text without a duration
-        // gets a readable default instead of sticking forever.
+        // Bitmap events often leave the end open and clear with a later empty
+        // composition. Text without a duration gets a readable default.
         var end: Double = .infinity
         if subtitle.end_display_time > subtitle.start_display_time, subtitle.end_display_time != UInt32.max {
             end = base + Double(subtitle.end_display_time) / 1000
@@ -131,8 +129,8 @@ nonisolated final class SubtitleDecoder {
 
     // MARK: - Bitmap
 
-    /// PAL8 rect → premultiplied RGBA CGImage, positioned relative to the
-    /// codec's graphics plane (PGS composes on the video-sized plane).
+    /// PAL8 rect to premultiplied RGBA CGImage, positioned on the codec's
+    /// graphics plane (the video-sized plane for PGS).
     private func bitmap(from rect: UnsafeMutablePointer<AVSubtitleRect>) -> SubtitleImage? {
         let width = Int(rect.pointee.w)
         let height = Int(rect.pointee.h)

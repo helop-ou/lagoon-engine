@@ -1,15 +1,13 @@
 import Foundation
 
-/// Accumulates the cost and cadence of the engine's 10 Hz main-actor tick
-/// between two DecodeTrace lines. Pure so it can be pinned by a
-/// test; the engine is the only caller, and only while
+/// Cost and cadence of the engine's 10 Hz main-actor tick between two
+/// DecodeTrace lines. Pure so a test can pin it; used only while
 /// `ProcessCPUTrace.enabled`.
 nonisolated struct MainTickStatistics: Equatable, Sendable {
     private(set) var count = 0
     private(set) var totalDuration: Duration = .zero
     private(set) var maxDuration: Duration = .zero
-    /// Longest wall-clock gap between consecutive ticks; a 10 Hz tick that
-    /// arrives late means the main actor could not run it.
+    /// Longest gap between ticks; a late tick means the main actor was busy.
     private(set) var maxInterval: Duration = .zero
 
     mutating func record(duration: Duration, interval: Duration?) {
@@ -23,8 +21,7 @@ nonisolated struct MainTickStatistics: Equatable, Sendable {
         }
     }
 
-    /// One-line summary for a DecodeTrace tick, and resets the accumulator
-    /// so the next window starts empty.
+    /// One-line summary for a DecodeTrace tick; resets the accumulator.
     mutating func drain() -> String {
         let averageMs = count > 0 ? Self.milliseconds(totalDuration) / Double(count) : 0
         let line = String(

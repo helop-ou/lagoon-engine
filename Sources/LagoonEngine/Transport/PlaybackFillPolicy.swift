@@ -1,16 +1,13 @@
 import Foundation
 
-/// The proactive fill scheduler's decisions, kept free of the engine, the
-/// cache and the clock so a unit test can walk it through a session.
-/// `PlaybackController.startBufferFill` owns the loop; this owns
-/// what the loop does next.
+/// The fill scheduler's decisions, free of engine, cache and clock so a test
+/// can walk it through a session. The engine runs the loop; this decides each
+/// step.
 ///
-/// Below the cushion target, the measured fetch throughput must exceed the
-/// title's consumption rate even after yielding time to foreground reads.
-/// Use actual returned bytes: a production 1 MiB chunk contains much less
-/// than 0.25 seconds of high-bitrate 4K media, so a fixed per-chunk cushion
-/// gain cannot identify spare capacity. Throughput also remains measurable
-/// after gentle pacing, which would otherwise hide that capacity indefinitely.
+/// Below the cushion target, measured throughput must beat the title's
+/// consumption rate even after yielding to foreground reads. It uses returned
+/// bytes because a 1 MiB chunk can hold under 0.25 s of high-bitrate 4K, so a
+/// fixed per-chunk gain cannot reveal spare capacity.
 nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
     init() {}
 
@@ -21,8 +18,7 @@ nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
     }
 
     /// What the scheduler sees between fetches. `aheadSeconds` is nil when
-    /// the title's duration or length is unknown; the policy then cannot
-    /// compare fetch throughput with playback and keeps the gentle pace.
+    /// duration or length is unknown, and the policy keeps the gentle pace.
     struct Snapshot: Equatable, Sendable {
         init(
             isPaused: Bool = false,
@@ -60,20 +56,18 @@ nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
     static let stallCooldownSeconds: TimeInterval = 20
     /// A full window waits for the playhead to make room.
     static let idlePollSeconds: TimeInterval = 2
-    /// Wall-clock seconds of cached playback the scheduler tries to keep at
-    /// the viewer's current rate, within the existing disk cache capacity.
+    /// Wall-clock seconds of cached playback to keep at the current rate,
+    /// within the cache capacity.
     static let targetAheadSeconds: Double = 120
-    /// Below the target: yield this fraction of the last request's own time
-    /// between chunks, so foreground requests keep a fixed share of the link
-    /// however slow it is, and a fast link never idles. Deliberately not
-    /// capped in seconds: a cap would shrink that share on exactly the slow
-    /// links where the hurried branch is the steady state.
+    /// Below the target, yield this fraction of the last request's time between
+    /// chunks, so foreground reads keep a fixed share of any link. Not capped
+    /// in seconds: a cap would shrink that share on slow links, where this
+    /// branch is the steady state.
     static let hurriedYieldFraction: Double = 0.5
-    /// Leave a margin beyond break-even throughput after the foreground
-    /// yield. An average container bitrate is an estimate, and a link that
-    /// only just carries playback should keep the gentle background pace.
+    /// Margin over break-even throughput. Average bitrate is an estimate, and a
+    /// link that barely carries playback should stay at the gentle pace.
     static let minimumHeadroomRatio: Double = 1.1
-    /// Above the target: the earlier pacing, roughly a 20% duty cycle.
+    /// Above the target: roughly a 20% duty cycle.
     static let relaxedPacingMultiplier: Double = 4
     static let relaxedPacingCapSeconds: TimeInterval = 8
     static let minimumMeasuredRequestSeconds: TimeInterval = 0.125
@@ -82,9 +76,8 @@ nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
 
     private(set) var consecutiveFailures = 0
 
-    /// Before a fetch: a title that fits under the cap finishes and the loop
-    /// ends; a stall or buffering renderer gets the link to itself for a
-    /// while.
+    /// Before a fetch: a title that fits the cap finishes and the loop ends; a
+    /// stall or buffering renderer gets the link to itself for a while.
     func beforeFetch(_ snapshot: Snapshot) -> Decision {
         if snapshot.bufferedFraction == 1, !snapshot.isWindowed {
             return .stop
@@ -107,9 +100,8 @@ nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
             return .wait(min(backoff, Self.failureBackoffCapSeconds))
         case .exhausted:
             consecutiveFailures = 0
-            // A windowed cache's read-ahead is full: wait for the playhead to
-            // make room rather than give up on the rest of the movie. A
-            // whole-file cache with nothing left is done.
+            // A full window waits for the playhead to make room; a whole-file
+            // cache with nothing left is done.
             return snapshot.isWindowed ? .wait(Self.idlePollSeconds) : .stop
         case .fetched(let bytes, let seconds):
             consecutiveFailures = 0
@@ -132,15 +124,15 @@ nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
             let pacedRequestSeconds = seconds * (1 + Self.hurriedYieldFraction)
             let requiredMediaSeconds = pacedRequestSeconds * snapshot.playbackRate * Self.minimumHeadroomRatio
             guard fetchedMediaSeconds > requiredMediaSeconds else { return relaxed }
-            // No cushion history crosses a seek, pause, rate change, failure,
-            // or full-window wait. Each request measures today's capacity,
-            // including any contention with foreground reads during it.
+            // No cushion history crosses a seek, pause, rate change, failure or
+            // wait. Each request measures current capacity, contention
+            // included.
             return .wait(seconds * Self.hurriedYieldFraction)
         }
     }
 
-    /// Seconds of media a byte cushion represents, assuming the title's
-    /// average bitrate. Nil when either side is unknown.
+    /// Media seconds a byte cushion represents at the average bitrate; nil when
+    /// either is unknown.
     static func aheadSeconds(cachedBytesAhead: Int64, contentLength: Int64?, durationSeconds: Double) -> Double? {
         guard let bytesPerSecond = averageBytesPerSecond(
             contentLength: contentLength, durationSeconds: durationSeconds

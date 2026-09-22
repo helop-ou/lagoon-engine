@@ -2,9 +2,8 @@ import Foundation
 import OSLog
 import os
 
-/// Instruments/Console category shared by the controller and engine.
-/// Signposts stay enabled in Release so the TestFlight-only hardware path
-/// can be measured without shipping a separate diagnostics build.
+/// Instruments/Console category for playback. Signposts stay on in Release so
+/// hardware builds can be measured without a diagnostics build.
 public enum PlaybackPerformance {
     nonisolated static public let log = OSLog(
         subsystem: "ee.helop.lagoon",
@@ -12,9 +11,9 @@ public enum PlaybackPerformance {
     )
 }
 
-/// Resource-level playback accounting. A process footprint by itself cannot
-/// distinguish allocator caching from a player that is still decoding after
-/// its cover disappeared, so lifecycle benchmarks use both signals.
+/// Resource-level playback accounting. Footprint alone cannot tell allocator
+/// caching from a player still decoding after it closed, so benchmarks use
+/// both.
 nonisolated public struct PlaybackLifecycleSnapshot: Sendable {
     public let liveEngines: Int
     public let liveControllers: Int
@@ -44,9 +43,9 @@ nonisolated public struct PlaybackLifecycleSnapshot: Sendable {
     }
 }
 
-/// Thread-safe because demux closure and renderer removal complete on their
-/// own queues. It deliberately ships in Release: the Apple TV hardware path
-/// is where renderer retirement and jetsam headroom are meaningful.
+/// Thread-safe because demux close and renderer removal finish on their own
+/// queues. Ships in Release: renderer retirement and jetsam headroom only mean
+/// something on Apple TV hardware.
 public nonisolated enum PlaybackLifecycleDiagnostics {
     private static let state = State()
 
@@ -91,20 +90,17 @@ public nonisolated enum PlaybackLifecycleDiagnostics {
         state.snapshot(memory: .current())
     }
 
-    /// Starting a replacement player while the previous demuxer or renderer
-    /// set is retiring recreates the exact playback → Settings → replay
-    /// resource overlap that this diagnostic tracks. The wait is bounded so
-    /// a broken AVFoundation callback can be measured without deadlocking UI.
+    /// A replacement player must not start while the previous demuxer or
+    /// renderers are retiring. The wait is bounded so a broken AVFoundation
+    /// callback cannot deadlock the UI.
     static public func waitForMediaResourcesToRetire(
         timeout: Duration = .seconds(3)
     ) async -> Bool {
         await waitForMediaResourcesToRetire(engineID: nil, timeout: timeout)
     }
 
-    /// Handoffs care about the engine they just stopped, not an unrelated
-    /// diagnostic probe. Waiting by identity also lets the controller retain
-    /// the old engine until both its demux loop and asynchronous renderer
-    /// removals have completed.
+    /// Waits for one engine by identity, so a handoff waits for the engine it
+    /// stopped and can retain it until demux and renderer removal complete.
     static public func waitForMediaResourcesToRetire(
         for engineID: UUID,
         timeout: Duration = .seconds(15)
@@ -132,9 +128,8 @@ public nonisolated enum PlaybackLifecycleDiagnostics {
     private static func emit(_ event: String, _ id: UUID? = nil) {
         let value = snapshot()
         #if DEBUG
-        // `debug.playbackLifecycleLog`: the same events the signpost carries,
-        // on stdout, because signposts do not reach `simctl launch --console`
-        // and renderer retirement is exactly what needs watching there.
+        // The signpost events on stdout too, because signposts do not reach
+        // `simctl launch --console`.
         if EngineTuning.current.logsPlaybackLifecycle {
             let who = id.map { String($0.uuidString.prefix(4)) } ?? "----"
             print("Lifecycle \(event) id=\(who) \(value.regressionValue)")
@@ -207,10 +202,9 @@ nonisolated private final class State: @unchecked Sendable {
             uncleanDestructions += 1
         }
         shuttingDownEngines.remove(id)
-        // Do not clear demux/renderer membership here. Renderer removal is
-        // intentionally asynchronous and can outlive the lightweight Swift
-        // engine object; its real AVFoundation completion must balance the
-        // counter or the lifecycle benchmark should fail visibly.
+        // Keep demux/renderer membership. Renderer removal is asynchronous and
+        // can outlive the engine; its AVFoundation completion must balance the
+        // counter, or the benchmark should fail visibly.
         lock.unlock()
     }
 
@@ -254,11 +248,9 @@ nonisolated private final class State: @unchecked Sendable {
     }
 }
 
-/// App memory at a point in time. Playback is the only place where a slow
-/// leak is invisible until it is fatal: jetsam kills for `per-process-limit`
-/// leave a JetsamEvent report, not a crash trace, so nothing in the signpost
-/// stream explains the disappearance. Sampling it alongside the other
-/// playback metrics makes the climb obvious while it is still harmless.
+/// App memory at a point in time. A jetsam `per-process-limit` kill leaves no
+/// crash trace, so sampling memory with playback metrics shows a slow leak
+/// while it is still harmless.
 public nonisolated struct MemorySnapshot {
     /// What jetsam weighs against the per-process limit.
     public let footprintBytes: Int64
@@ -285,11 +277,9 @@ public nonisolated struct MemorySnapshot {
     }
 }
 
-/// The storage cost of a decoded 4:2:0 surface. Core Video's NV12 output is
-/// 1.5 bytes per pixel; P010 stores each 10-bit component in a 16-bit word,
-/// so it is 3 bytes per pixel. This is an estimate of Lagoon's visible queue,
-/// not VideoToolbox or renderer-private surfaces; the controlled bench peak
-/// above is the authority for the process ceiling.
+/// Estimated storage of a decoded 4:2:0 surface: NV12 is 1.5 bytes per pixel,
+/// P010 3. Covers the engine's visible queue only, not VideoToolbox or renderer
+/// surfaces; the bench peak is the authority on the process ceiling.
 public nonisolated enum DecodedFrameMemory {
     static public func bytesPer420Frame(width: Int, height: Int, bitDepth: Int) -> Int64 {
         guard width > 0, height > 0 else { return 0 }
@@ -307,13 +297,10 @@ nonisolated public struct VideoPerformanceSnapshot {
     public let totalFrames: Int
     public let droppedFrames: Int
     public let corruptedFrames: Int
-    /// Frames shown via the power-efficient direct path that bypasses UI
-    /// compositing ("optimized/detached mode"). The ratio of this to
-    /// `totalFrames` is the measurable answer to "is our video being
-    /// composited with UI every frame?".
+    /// Frames shown on the direct path that bypasses UI compositing. Compare
+    /// with `totalFrames` to see whether video is composited every frame.
     public let optimizedCompositingFrames: Int
-    /// Apple's own jitter metric: accumulated seconds between prescribed
-    /// and actual display times. "Non-zero delays are a sign of playback
-    /// jitter and possible loss of A/V sync."
+    /// Apple's jitter metric: accumulated seconds between prescribed and actual
+    /// display times.
     public let accumulatedFrameDelay: Double
 }

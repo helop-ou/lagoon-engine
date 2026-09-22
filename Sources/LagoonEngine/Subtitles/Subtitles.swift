@@ -1,12 +1,11 @@
 import CoreGraphics
 import Foundation
 
-// Subtitle model shared by the demuxed (embedded) and
-// downloaded (Jellyfin external) paths. Cues render as a SwiftUI overlay
-// in the player — nothing here touches the sample-buffer renderers.
+// Subtitle model shared by embedded and external tracks. Cues render in a host
+// overlay; nothing here touches the sample-buffer renderers.
 
-/// One decoded bitmap (PGS/VobSub) with its position, normalized to the
-/// subtitle plane so the overlay can scale it onto the displayed video.
+/// One decoded bitmap (PGS/VobSub), positioned on the normalized subtitle
+/// plane.
 public nonisolated struct SubtitleImage: Equatable {
     public init(
         image: CGImage,
@@ -24,9 +23,8 @@ public nonisolated struct SubtitleImage: Equatable {
     }
 }
 
-/// An authored ASS/SSA alignment, using the format's numeric-keypad layout.
-/// The value is kept independent of SwiftUI so parsing remains testable and
-/// safe on the demux queue.
+/// An ASS/SSA alignment in the format's numeric-keypad layout. Kept free of
+/// SwiftUI so it parses safely on the demux queue.
 public nonisolated enum SubtitleTextAlignment: Int, Equatable, Sendable {
     case bottomLeft = 1
     case bottomCenter = 2
@@ -39,9 +37,8 @@ public nonisolated enum SubtitleTextAlignment: Int, Equatable, Sendable {
     case topRight = 9
 }
 
-/// A point on the ASS script plane, normalized before it crosses from the
-/// decoder to the UI. The overlay can therefore map it onto the displayed
-/// presentation rect, including anamorphic sources.
+/// A point on the ASS script plane, normalized so the overlay can map it onto
+/// the presentation rect, anamorphic sources included.
 public nonisolated struct SubtitleTextPosition: Equatable, Sendable {
     public init(
         x: Double,
@@ -55,8 +52,7 @@ public nonisolated struct SubtitleTextPosition: Equatable, Sendable {
     public let y: Double
 }
 
-/// ASS primary colour after its BGR/inverted-alpha representation has been
-/// converted to ordinary RGBA bytes.
+/// ASS primary colour, converted from BGR with inverted alpha to RGBA.
 public nonisolated struct SubtitleTextColor: Equatable, Sendable {
     public let red: UInt8
     public let green: UInt8
@@ -64,9 +60,8 @@ public nonisolated struct SubtitleTextColor: Equatable, Sendable {
     public let alpha: UInt8
 }
 
-/// One inline-styled span. Keeping formatting on runs rather than on the
-/// whole event preserves mid-line emphasis without taking on a full libass
-/// renderer, karaoke timing, drawing commands, or transforms.
+/// One inline-styled span. Styling per run keeps mid-line emphasis without a
+/// full libass renderer.
 public nonisolated struct SubtitleTextRun: Equatable, Sendable {
     public let text: String
     public let primaryColor: SubtitleTextColor?
@@ -86,9 +81,8 @@ public nonisolated struct SubtitleTextRun: Equatable, Sendable {
     }
 }
 
-/// A text composition that must stay independent from simultaneous cues.
-/// Joining these into one string is what used to stack left/right speakers
-/// and move authored signs to the dialogue shelf.
+/// A text composition kept apart from simultaneous cues. Joining them stacks
+/// left/right speakers and moves signs to the dialogue shelf.
 public nonisolated struct SubtitleTextCue: Equatable, Sendable {
     public init(
         runs: [SubtitleTextRun],
@@ -124,14 +118,14 @@ public nonisolated struct SubtitleTextCue: Equatable, Sendable {
 
 nonisolated struct SubtitleCue {
     let start: Double
-    /// `.infinity` marks an open-ended cue (the PGS norm: display until
-    /// the next composition event) — the store closes it on the next event.
+    /// `.infinity` marks an open-ended cue (the PGS norm); the store closes it
+    /// on the next event.
     var end: Double
     let textCues: [SubtitleTextCue]
     let images: [SubtitleImage]
 
-    /// Compatibility projection for parsers/tests and accessibility. The
-    /// renderer consumes `textCues` so authored compositions stay separate.
+    /// Joined text for parsers, tests and accessibility. The renderer uses
+    /// `textCues`.
     var text: String? {
         let joined = textCues.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
         return joined.isEmpty ? nil : joined
@@ -161,11 +155,10 @@ nonisolated enum SubtitleEvent {
     case clear(at: Double)
 }
 
-/// The demux loop appends embedded cues; display refresh releases them as
-/// they expire. Seeking an embedded track resets this window and re-demuxes
-/// it. Downloaded tracks retain their complete timeline for backward seeks.
-/// Every mutable field is protected by `lock`, including the lookup cursor;
-/// no caller receives a reference to mutable storage.
+/// The demux loop appends embedded cues and display refresh drops them as they
+/// expire; a seek resets the window and re-demuxes. External tracks keep their
+/// whole timeline for backward seeks. All mutable state, cursor included, is
+/// under `lock`.
 nonisolated final class SubtitleStore: @unchecked Sendable {
     private enum Source {
         case embedded
@@ -195,8 +188,8 @@ nonisolated final class SubtitleStore: @unchecked Sendable {
     }
 
     func replaceExternalTrack(with newCues: [SubtitleCue]) {
-        // Sorting is independent of the live store and must not hold up the
-        // display tick's lock. Preserve authored order at equal timestamps.
+        // Sort outside the lock so the display tick never waits. Equal
+        // timestamps keep authored order.
         let sorted = newCues.enumerated().sorted {
             $0.element.start == $1.element.start
                 ? $0.offset < $1.offset : $0.element.start < $1.element.start
@@ -208,8 +201,8 @@ nonisolated final class SubtitleStore: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Call when selecting an embedded track or seeking it. The engine
-    /// serializes this reset against demux writes using its seek generation.
+    /// Call on selecting or seeking an embedded track. The engine orders this
+    /// against demux writes by seek generation.
     func resetForEmbeddedPlayback() {
         lock.lock()
         source = .embedded
@@ -218,9 +211,8 @@ nonisolated final class SubtitleStore: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Soak diagnostic: how many cues the store is holding, so a
-    /// growing embedded window is visible alongside the other DecodeTrace
-    /// figures. External tracks intentionally retain their full cue count.
+    /// Cues held, so a growing embedded window shows in DecodeTrace. External
+    /// tracks keep their full count.
     var count: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -235,10 +227,8 @@ nonisolated final class SubtitleStore: @unchecked Sendable {
         var images: [SubtitleImage] = []
         switch source {
         case .embedded:
-            // Remove the elements themselves so expired CGImages
-            // are released, not just skipped behind an advancing index.
-            // Only the demuxer's current read-ahead window remains to scan;
-            // future and overlapping/open-ended compositions stay intact.
+            // Remove, not skip, so expired CGImages are released. Future and
+            // open-ended cues stay.
             cues.removeAll { $0.end <= seconds }
             for cue in cues where cue.start <= seconds && seconds < cue.end {
                 textCues.append(contentsOf: cue.textCues)
@@ -265,9 +255,8 @@ nonisolated final class SubtitleStore: @unchecked Sendable {
             resetExternalCursorLocked()
         }
         externalActiveIndices.removeAll { cues[$0].end <= seconds }
-        // Each cue is visited once during forward playback. Rebuild only
-        // when time moves backward; retaining the full track makes that
-        // independent of another download or demux seek.
+        // Forward playback visits each cue once; rebuild only when time moves
+        // back.
         while externalNextIndex < cues.count, cues[externalNextIndex].start <= seconds {
             if seconds < cues[externalNextIndex].end {
                 externalActiveIndices.append(externalNextIndex)
@@ -288,15 +277,12 @@ nonisolated struct ASSPlayResolution: Equatable, Sendable {
     let width: Double
     let height: Double
 
-    /// ASS historically defaults to this script plane when the header omits
-    /// PlayRes. Real authored files nearly always supply both dimensions.
+    /// The ASS default when the header omits PlayRes.
     static let fallback = ASSPlayResolution(width: 384, height: 288)
 }
 
-/// The intentionally small ASS/SSA subset Lagoon renders. Positioning,
-/// alignment, primary colour, bold and italic cover signs and simultaneous
-/// speakers; unsupported tags are consumed and ignored so plain dialogue
-/// retains today's presentation.
+/// The small ASS/SSA subset rendered: position, alignment, primary colour, bold
+/// and italic. Other tags are consumed and ignored.
 nonisolated enum ASSSubtitleTextParser {
     private struct Style: Equatable {
         var primaryColor: SubtitleTextColor?
@@ -390,14 +376,10 @@ nonisolated enum ASSSubtitleTextParser {
         position: inout SubtitleTextPosition?,
         style: inout Style
     ) {
-        // \r or \rStyle resets inline state. The named style table remains
-        // deliberately out of scope.
-        //
-        // Overrides apply left to right, so a reset only clears what precedes
-        // it: `{\i1\r}` ends up plain and `{\r\i1}` ends up italic. Style
-        // tags are therefore read from whatever follows the last reset, while
-        // alignment and position — which are not part of `Style` — keep
-        // reading the whole block.
+        // \r or \rStyle resets inline state; named styles are out of scope. A
+        // reset clears only what precedes it (`{\i1\r}` is plain, `{\r\i1}`
+        // italic), so style tags are read after the last reset. Alignment and
+        // position read the whole block.
         var styleScope = block
         if let reset = lastResetRange(in: block) {
             style = Style()
@@ -511,8 +493,7 @@ nonisolated enum ASSSubtitleTextParser {
     }
 }
 
-/// Parses the external subtitle files Jellyfin delivers (vtt per the
-/// device profile; srt tolerated since the timestamp shapes overlap).
+/// Parses external subtitle files: vtt, and srt since the timestamps overlap.
 nonisolated enum SubtitleParser {
     static func cues(from data: Data, languageHint: String? = nil) -> [SubtitleCue] {
         guard data.count <= DownloadLimit.subtitle, !Task.isCancelled,
@@ -560,23 +541,17 @@ nonisolated enum SubtitleParser {
     }
 }
 
-/// Turns subtitle bytes into text without silently inventing them.
+/// Turns subtitle bytes into text without inventing them.
 ///
-/// The previous chain ended in `isoLatin1`, which cannot fail — it maps every
-/// byte — so a Windows-1251 Cyrillic file decoded to mojibake with no error
-/// anywhere. Jellyfin converts to UTF-8 on the way out, which hid it; a
-/// provider fetched directly does not.
-///
-/// The language is the strongest signal for a legacy file, a codepage not
-/// being recoverable from bytes alone: Cyrillic is almost certainly
-/// Windows-1251, Baltic Windows-1257. Every candidate is still
-/// sanity-checked, so a wrong hint degrades to the next option.
+/// A final `isoLatin1` fallback cannot fail, so a Windows-1251 file would
+/// decode silently to mojibake. The language is the best hint for a legacy
+/// codepage (Cyrillic: Windows-1251, Baltic: Windows-1257), and every candidate
+/// is sanity-checked, so a wrong hint falls through to the next.
 nonisolated enum SubtitleTextDecoder {
     static func text(from data: Data, languageHint: String? = nil) -> String? {
         guard !data.isEmpty else { return nil }
         if let viaBOM = decodeUsingBOM(data) { return viaBOM }
-        // Valid UTF-8 is never accidental at any real length, so it wins
-        // outright and needs no plausibility check.
+        // Valid UTF-8 is never accidental at real lengths, so it wins outright.
         if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
 
         var candidates: [String.Encoding] = []
@@ -591,9 +566,8 @@ nonisolated enum SubtitleTextDecoder {
             if isPlausibleSubtitleText(decoded) { return decoded }
             if fallback == nil { fallback = decoded }
         }
-        // Nothing looked like prose. Returning the first decodable form still
-        // beats dropping the file: the caller validates that cues parsed out
-        // of it, which is the check that actually protects playback.
+        // Nothing looked like prose. Return the first decodable form anyway;
+        // the caller checks that cues parse, which is what protects playback.
         return fallback
     }
 
@@ -611,9 +585,8 @@ nonisolated enum SubtitleTextDecoder {
         return nil
     }
 
-    /// The single-byte codepage a subtitle in this language is written in when
-    /// it is not UTF-8. Mapped from ISO 639 through Lagoon's existing
-    /// normalisation so both two- and three-letter forms resolve.
+    /// The single-byte codepage for this language when not UTF-8. Accepts two-
+    /// and three-letter ISO 639 codes.
     static func legacyEncoding(forLanguage language: String?) -> String.Encoding? {
         guard let language,
               let code = SubtitleLanguageCode.twoLetter(for: language) else { return nil }
@@ -641,17 +614,16 @@ nonisolated enum SubtitleTextDecoder {
         }
     }
 
-    /// Only a handful of these have `String.Encoding` constants; going through
-    /// CoreFoundation keeps the whole table in one shape.
+    /// Few of these have `String.Encoding` constants, so all go through
+    /// CoreFoundation.
     private static func encoding(_ value: CFStringEncodings) -> String.Encoding {
         String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
             CFStringEncoding(value.rawValue)
         ))
     }
 
-    /// Subtitle text is prose: letters, digits, punctuation and whitespace.
-    /// A codepage applied to the wrong bytes produces a scatter of symbols and
-    /// control characters instead, which this is enough to notice.
+    /// Subtitle text is prose. A wrong codepage yields scattered symbols and
+    /// control characters, which this detects.
     static func isPlausibleSubtitleText(_ text: String) -> Bool {
         var plausible = 0
         var implausible = 0
