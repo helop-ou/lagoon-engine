@@ -1,226 +1,205 @@
 # Playback cache and teardown
 
-Playback engineering notes retained during the September 10, 2026
-documentation cleanup. Start with the [engine
-guide](../engine.md) and the [notes index](README.md).
+The byte cache in front of the demuxer, and how a player shuts down. The
+contract is in the [engine guide](../engine.md).
 
-## Playback cache and teardown
+The cache predates the URLSession transport. Where a read "falls back to the
+native path", that path is now the same URLSession transport ([Network
+transport](transport.md#network-transport)): a fallback changes the byte
+source, never the security policy.
 
-The cache predates the transport replacement described in [Network
-transport](transport.md#network-transport). Where these notes say a read
-falls back to libavformat's "native" HTTP path, that path is now the
-URLSession transport too; what a fallback changes is the byte source, never
-the security policy.
+## The sparse range buffer
 
-Release direct-play and direct-stream files use the sparse range buffer. One
-custom `AVIOContext` lets libavformat read and seek through a discardable file
-under `Library/Caches/Lagoon/Playback`; authenticated `Range` misses fill that
-file and repeated reads are local. The engine tries this path first, but if
-the server rejects or ignores byte ranges during open it closes the partial
-context and immediately reopens the original URL through the demuxer's own
-transport. A whole-body `200` is rejected before its body is delivered:
-pretending it were a range would redownload and discard an ever-growing prefix
-for every chunk.
+- Direct-play and direct-stream files read through one custom `AVIOContext`
+  over a discardable sparse file under `Library/Caches/Lagoon/Playback`.
+  Authenticated `Range` misses fill the file; repeated reads are local.
+- If the server rejects or ignores byte ranges at open, the engine closes the
+  partial context and reopens the original URL through the demuxer's own
+  transport. A whole-body `200` is rejected before its body is delivered:
+  treating it as a range would re-download an ever-growing prefix for every
+  chunk.
+- Transcoded HLS does not use the range buffer, because its manifests change
+  while the server produces the rendition. An HLS resource cache exists only
+  behind `-debug.experimentalPlaybackCache YES`: playlists untouched,
+  immutable segments through bounded custom contexts. It is kept so the
+  segment-boundary regression stays reproducible.
 
-Transcoded HLS does not use the range buffer at all. Its manifests are mutable
-while the server produces the rendition, so a direct-file completion model does
-not apply. The HLS resource-cache experiment survives only behind
-`-debug.experimentalPlaybackCache YES`, leaving `.m3u8` playlists alone and
-routing immutable segments through bounded custom contexts — enough to keep
-the segment-boundary regression reproducible without shipping that ownership
-to TestFlight.
+## Fill pacing
 
-The active direct file begins proactive fill only after the initial playback
-cushion has reached the renderer, and fills cooperatively rather than in one
-large background request: one 1 MiB chunk at a time, with `PlaybackFillPolicy`
-(a pure, unit-tested value type) deciding what follows each chunk from the
-cushion of cached media ahead of the playhead and the throughput the chunk
-just measured. Below `targetAheadSeconds` (120 s of wall-clock playback at the
-current rate), the next chunk follows after a yield of half the request's own
-duration, uncapped so foreground reads keep a third of the link while a fast
-link never idles, but only when the chunk's media duration (its bytes over the
-title's average bitrate) exceeds the request plus that yield at the playback
-rate with a 10 % margin: in effect the link must carry about 1.65 × the
-title's bitrate. A link that can barely carry the title fails that test and
-gets the gentle pace before any stall has to force it, so the scheduler is
-self-limiting on tight links; an unknown cushion, bitrate or rate also keeps
-the gentle pace. The decision is per request with no history, so a seek, pause
-or rate change needs no reset. The first version of this guard required the
-cushion to have grown by 0.25 s since the previous chunk; a 1 MiB chunk holds
-0.25 s of media only below about 33 Mbps, so every 4K title fell back to the
-gentle pace and the 1080p bench could not see it. At or above the target the
-older pacing returns: four times the measured request duration, capped at 8 s.
-Before this scheduler, the fill loop applied that pacing always, a fixed ~20%
-duty cycle that capped read-ahead near 2 MiB/s however fast the link was.
-Pacing measures the prefetch's own request, never the cache's aggregate that
-foreground traffic also feeds. A 20-second cooldown follows buffering or a new
-stall. Pause allows full-speed fill; backgrounding cancels proactive work. The
-explicit scheduler exists because Apple documents URLSession priority as a
-hint rather than a bandwidth guarantee. Foreground misses stay high priority,
-and proactive requests disallow constrained or expensive paths.
+Proactive fill starts only once the initial cushion has reached the renderer,
+and runs one 1 MiB chunk at a time. `PlaybackFillPolicy` (a pure, unit-tested
+value type) decides what follows each chunk, from the cached media ahead of
+the playhead and the throughput the chunk just measured:
 
-When playback catches up with a prefetch of the very bytes it needs, the
-foreground read promotes that in-flight request to foreground priority and
-waits up to two seconds for it rather than starting a second request for the
-same range, which used to move 2 MiB to store 1; past the bound it fetches for
-itself, so a seek onto a stalled prefetch never waits behind it. The metrics
-count both outcomes (`sharedFetchCount`, `duplicateNetworkBytes`) and the
-HUD's "Ahead" line and the decode trace's `cacheMB`/`aheadMB`/`dupMB` fields
-show them; `scripts/fill-bench.sh` compares two builds' fill rates on one
-title.
+- **Below `targetAheadSeconds`** (120 s of playback at the current rate), the
+  next chunk follows after a yield of half the request's duration, so
+  foreground reads keep a third of the link and a fast link never idles. This
+  applies only when the chunk's media duration (its bytes over the title's
+  average bitrate) exceeds the request plus the yield at the playback rate,
+  with a 10% margin: in effect the link must carry about 1.65× the bitrate.
+  Otherwise, or when cushion, bitrate or rate is unknown, it takes the gentle
+  pace.
+- **At or above the target**, the gentle pace: four times the measured request
+  duration, capped at 8 s.
+- The decision is per request with no history, so a seek, pause or rate change
+  needs no reset. Do not gate on the cushion growing per chunk: a 1 MiB chunk
+  holds 0.25 s of media only below about 33 Mbps, so every 4K title would
+  stall at the gentle pace.
+- Pacing measures the prefetch's own request, never the cache's aggregate,
+  which foreground traffic also feeds.
+- A 20 s cooldown follows buffering or a new stall. Pause allows full-speed
+  fill; backgrounding cancels proactive work.
+- The scheduler exists because Apple documents URLSession priority as a hint,
+  not a bandwidth guarantee. Foreground misses stay high priority; proactive
+  requests disallow constrained or expensive paths.
 
-The coordinator preserves 256 MiB of free volume space and permits one half of
-the remainder for the current title. A declared resource smaller than that cap
-buffers completely and keeps the whole-file scheduler: nothing is evicted, and
-proactive fill wraps back to close early holes until the file is contiguous.
+When playback catches up with a prefetch of the bytes it needs, the foreground
+read promotes that request to foreground priority and waits up to two seconds
+for it, rather than fetching the same range twice. Past that it fetches for
+itself, so a seek never waits behind a stalled prefetch. `sharedFetchCount` and
+`duplicateNetworkBytes` count both outcomes; the HUD's "Ahead" line and the
+decode trace's `cacheMB`/`aheadMB`/`dupMB` show them. The host repository's
+`scripts/fill-bench.sh` compares two builds' fill rates on one title.
+
+## Size cap and the travelling window
+
+The coordinator leaves 256 MiB of volume space free and gives the current
+title half of the rest. A title smaller than that cap is buffered completely:
+nothing is evicted, and fill wraps back to close early holes until the file is
+contiguous.
 
 A title **larger** than the cap is buffered through a window that travels with
-the playhead. Filling to the cap and stopping was a cliff, not a graceful
-stop: once the playhead reached the filled edge every read missed, and because
-a miss fetched a whole 1 MiB request while storing none of it, one 64 KiB AVIO
-buffer cost a 1 MiB download and a round trip — sixteen times the bandwidth
-and sixteen times the requests, serialized on the demux thread. The engine's
-own cushion is only the sample queues (~4 s of compressed video), so that
-state was permanent rebuffering roughly an hour into a large movie. The window
-keeps `byteLimit / 8` (at most 256 MiB) behind the playhead for ordinary
-backwards scrubbing and spends the rest ahead of it, freeing the islands
-furthest from the playhead when a request needs room. The reserve is clamped
-to what actually exists behind the playhead, so the window is a whole cap's
-worth of file wherever it sits: near the start it stays `[0, cap]` and only
-begins to slide once the playhead has passed the reserve distance. Without
-that clamp its lower half hung off the front of the file and that capacity
-went unspent — a viewer who paused a minute in buffered up to 256 MiB less
-than the cache was allowed to hold. `preferredPrefetchOffset` follows every
-foreground read, so a backwards seek re-centres the window on its next demux
-read and the bytes now far *ahead* become the eviction candidates; anything
-evicted is simply refetched, because the range set is the sole authority on
-what the file may be read for.
+the playhead. Filling to the cap and stopping is a cliff: past the filled edge
+every 64 KiB read missed and fetched a 1 MiB request it could not store, which
+is sixteen times the bandwidth and requests on the demux thread, and permanent
+rebuffering about an hour into a large film.
 
-Eviction reclaims real blocks with `F_PUNCHHOLE` over the block-aligned
-interior of a range, and the cap is checked against `st_blocks` as well as the
-range bookkeeping — logical eviction without physical reclaim would let the
-file grow past the free-space reserve. If the filesystem refuses to punch, the
-scope abandons the window and falls back to a fixed cap, but reads then ask
-only for the bytes they were given, so the amplification never returns. For
-the same reason the AVIO buffer is sized to the cache's request size: one
-demux read is at most one network request even when nothing can be stored.
-`debug.playbackCacheCapMB` forces a small cap in DEBUG so the window is
-observable within a minute instead of after gigabytes.
+- The window keeps `byteLimit / 8` (at most 256 MiB) behind the playhead for
+  backward scrubbing and spends the rest ahead. When a request needs room, it
+  frees the islands furthest from the playhead.
+- The reserve is clamped to what exists behind the playhead, so near the start
+  the window is `[0, cap]` and only slides once the playhead passes the
+  reserve distance. Unclamped, a viewer a minute in buffered up to 256 MiB less
+  than allowed.
+- `preferredPrefetchOffset` follows every foreground read, so a backward seek
+  re-centres the window on its next read. Anything evicted is simply
+  refetched: the range set is the sole authority on what the file may be read
+  for.
+- Eviction reclaims real blocks with `F_PUNCHHOLE` over the block-aligned
+  interior of a range, and the cap is checked against `st_blocks` as well as
+  the range bookkeeping, or the file could grow past the free-space reserve.
+  If the filesystem refuses to punch, the scope falls back to a fixed cap, and
+  reads ask only for the bytes they were given, so the amplification never
+  returns.
+- The AVIO buffer is sized to the cache's request size, so one demux read is
+  at most one network request even when nothing can be stored.
+- `debug.playbackCacheCapMB` forces a small cap in DEBUG, so the window is
+  visible within a minute.
 
-A failed cache read returns an I/O error, never EOF: EOF is reserved for a
-successfully read resource ending. URL loading retries transient failures;
-deterministic range incompatibility does not retry, because the fallback open
-is both faster and safer. A proactive fetch reports a
-`PlaybackPrefetchOutcome` rather than a Boolean: a `.failed` chunk (the loader
-exhausted its retries) backs off, doubling from 1 s to a 30 s cap, and is
-retried, so fill resumes on its own once the link recovers, without a seek or
-a new session; before this policy, a failure was indistinguishable from
-completion and ended fill for the rest of the title, with the finished task
-handle also blocking `resumeBufferFill`. Reaching the disk cap does not end
-proactive fill for a windowed title — `.exhausted` there means the read-ahead
-is full, so the controller waits for the playhead to make room rather than
-giving up on the rest of the movie; for a title under the cap it means the
-file is complete. A sparse file is exposed as a normal local playback URL only
-after the complete server-declared byte range has been validated and
-synchronized, so a hole can never masquerade as EOF.
+Pausing freezes the window, not the fill. The demuxer parks on its
+watermarks, so `preferredPrefetchOffset` stops moving, while the fill drops
+its throttle because nothing competes for the link. The result is a
+full-speed fill to the window's edge, then an idle 2 s poll. **Nothing is
+evicted:** eviction runs only from a read that is short of capacity.
 
-Pausing freezes the window rather than the fill. The demuxer parks on its
-queue watermarks, so `preferredPrefetchOffset` stops moving and low-priority
-prefetch never advances it, while the fill loop drops its throttle entirely
-because no foreground demux request is competing for the link. The result is a
-full-speed fill up to the window's edge followed by an idle 2 s poll, and
-**nothing is evicted**: eviction only runs from a read that is short of
-capacity, so an idle cache never trims itself.
+## Failures
 
-For the UI, the legacy percentage diagnostic reports only the contiguous
-byte-zero prefix, which a windowed title drops to 0 as soon as the head is
-evicted; the scrubber's islands stay accurate. Because file-byte fractions are
-not timeline fractions for variable-bitrate media, it pairs FFmpeg's
-video-packet byte positions with their media timestamps as playback advances
-(a seek records an initial cursor anchor before the first post-seek packet
-arrives) and projects buffered ranges piecewise through the latest anchor,
-keeping the active island joined to the playhead while preserving 0 and EOF as
-exact endpoints. The Playback HUD reports contiguous MiB/total MiB,
-percentage, hit rate, request count and latency; a `Playback Buffer Progress`
-signpost carries the same fraction and stall count for Instruments runs.
+- A failed cache read returns an I/O error, never EOF. EOF means a resource
+  was read successfully to its end.
+- URL loading retries transient failures. Range incompatibility does not
+  retry, because the fallback open is faster and safer.
+- A proactive fetch reports a `PlaybackPrefetchOutcome`. A `.failed` chunk
+  (retries exhausted) backs off from 1 s, doubling to 30 s, and is retried, so
+  fill resumes by itself once the link recovers. `.exhausted` on a windowed
+  title means the read-ahead is full, and fill waits for the playhead to make
+  room; on a title under the cap it means the file is complete.
+- A sparse file is exposed as a local playback URL only after the whole
+  server-declared byte range is validated and synchronized, so a hole can
+  never pass for EOF.
 
-Cache ownership is part of the player lifecycle. There is one active scope
-and at most one staged successor. Dismissal, failure, or player replacement
-cancels requests and removes both; episode advance cancels/removes the old
-scope and promotes the staged one. Deletion waits for an in-flight demux read
-on a utility queue so the main actor does not inherit file/network teardown.
-Stale scope directories are discarded when a new coordinator starts.
+## Progress reporting
 
-Player exit is deliberately two-phase, and its first phase is synchronous:
-before the host dismisses the player the main actor cancels the clocks,
-observer and subtitle work, detaches system media state, marks the engine
-cancelled and interrupts FFmpeg. Renderer stop/flush, queued sample release
-and renderer removal are then serialized on the existing pump queue, and the
-FFmpeg codec/decoder wrappers are released by `FFmpegDemuxer.close()` on the
-demux queue, so dismissal never pays for hundreds of queued media-buffer
-releases or C decoder destruction. Only the host's stopped-playback report
-stays asynchronous: it is sent exactly once, after the host reads the
-engine's final position, from a task carrying copied values rather than
-retaining the engine. That reporting never gates dismissal.
+- The legacy percentage reports only the contiguous prefix from byte zero,
+  which drops to 0 on a windowed title once the head is evicted. The
+  scrubber's islands stay accurate.
+- File-byte fractions are not timeline fractions for variable-bitrate media.
+  The engine pairs FFmpeg's video-packet byte positions with their timestamps
+  as playback advances (a seek records an anchor before the first post-seek
+  packet), and projects buffered ranges through the latest anchor. The active
+  island stays joined to the playhead, and 0 and EOF stay exact.
+- The HUD reports contiguous MiB of total MiB, percentage, hit rate, request
+  count and latency. A `Playback Buffer Progress` signpost carries the same
+  fraction and the stall count for Instruments.
 
-A replacement player waits up to 15 s for the exact outgoing engine's demux
-loop and renderer set to retire. Renderer removal is asynchronous inside
-AVFoundation and can exceed the old three-second allowance after
-high-resolution playback. A timeout is recorded as `Playback Resource
-Retirement Timeout` and aborts the replacement instead of silently overlapping
-two media pipelines on one display-layer renderer.
+## Scope ownership and teardown
+
+**One active scope, at most one staged successor.** Dismissal, failure or
+player replacement cancels requests and removes both. Episode advance removes
+the old scope and promotes the staged one. Deletion waits for an in-flight
+demux read on a utility queue, so the main actor never inherits file or
+network teardown. Stale scope directories are discarded when a new
+coordinator starts.
+
+**Player exit is two-phase, and the first phase is synchronous.** Before the
+host dismisses the player, the main actor cancels clocks, observer and
+subtitle work, detaches system media state, marks the engine cancelled and
+interrupts FFmpeg. Then:
+
+- renderer stop, flush, queued sample release and renderer removal run on the
+  pump queue;
+- `FFmpegDemuxer.close()` releases the codec and decoder wrappers on the
+  demux queue.
+
+So dismissal never pays for hundreds of buffer releases or C decoder
+destruction. The host's stopped-playback report is sent once, after the host
+reads the final position, from a task holding copied values rather than the
+engine. It never gates dismissal.
+
+**A replacement player waits up to 15 s** for the outgoing engine's demux loop
+and renderer set to retire. Renderer removal is asynchronous inside
+AVFoundation and can take more than three seconds after high-resolution
+playback. A timeout is recorded as `Playback Resource Retirement Timeout` and
+aborts the replacement rather than overlap two pipelines on one display layer.
+
+## Lifecycle checks
 
 `Playback Lifecycle` signposts record live controllers, engines, demux loops,
 renderer sets, unclean engine destructions and physical footprint at every
-ownership transition, and a Debug-only accessibility probe exposes the same
-counters to the UI regressions. Those counters, not the RAM figure, are the
-strong gate for AVFoundation objects: allocator caching can keep footprint
-flat or elevated long after the owning engine has gone away.
+ownership change. A Debug-only accessibility probe exposes the same counters
+to UI regressions. **The counters, not RAM, are the gate:** allocator caching
+can keep footprint flat or high long after an engine has gone.
 
-`testPlaybackDismissSettingsReplayLifecycleAndStallBenchmark`, run by
-`scripts/playback-lifecycle-bench.sh`, performs the hardware-shaped sequence —
-play, dismiss, enter Settings, replay — and requires every cleanup point to
-reach 0/0/0/0, cleanup-to-cleanup footprint growth under 48 MB, replay startup
-growth under 96 MB, and at most one new stall while media time advances at
-least 10 s in a 15 s CPU/memory/hitch window. It runs three replay/dismiss
-cycles by default (a `LAGOON_LIFECYCLE_REPLAYS` test-environment value
-overrides that, capped at ten) so a smaller per-cycle leak becomes a slope
-instead of hiding beneath one allocator-noise allowance.
-`testControlledFrameLossPlaybackPerformance` adds frame presentation to the
-same gate: one item, three runs from the same position, each leaving the
-simulator untouched for a 10-second warmup plus a 60-second media-time window,
-requiring more than 1,000 frames, no corrupted frames, at most one stall, at
-most 1% frame loss, zero enqueued audio gaps and no more than 0.5 percentage
-points of run-to-run spread. Those allowances sit deliberately above simulator
-allocator noise and below one retained decoded-video queue; set Xcode
-performance baselines from repeated hardware runs, and never read one
-simulator's absolute RAM number as an Apple TV jetsam threshold. For a live
-secondary check, attach Instruments' Leaks or run `leaks` during the second
-window.
+These run in a host's regression suite:
 
-A simulator run is sufficient for an H.264 control; VC-1, HEVC, HDR and
-TrueHD need a hardware bench against media that actually carries that codec.
-On a device with access to such a title, target it by name rather than
-relying on the simulator fallback:
+- `testPlaybackDismissSettingsReplayLifecycleAndStallBenchmark` (host script
+  `scripts/playback-lifecycle-bench.sh`): play, dismiss, enter Settings,
+  replay. Every cleanup point must reach 0/0/0/0, cleanup-to-cleanup footprint
+  growth stay under 48 MB, replay startup growth under 96 MB, and at most one
+  new stall while media time advances at least 10 s in a 15 s window. Three
+  cycles by default (`LAGOON_LIFECYCLE_REPLAYS` overrides, capped at ten), so
+  a small leak shows as a slope.
+- `testControlledFrameLossPlaybackPerformance`: one item, three runs from the
+  same position, each a 10 s warmup and a 60 s untouched media-time window.
+  More than 1,000 frames, no corrupted frames, at most one stall, at most 1%
+  loss, zero audio gaps, at most 0.5 percentage points run-to-run spread.
+
+These allowances sit above simulator allocator noise and below one retained
+decoded-video queue. Set Xcode performance baselines from hardware runs, and
+never read a simulator's RAM figure as an Apple TV jetsam threshold. For a
+live check, attach Instruments' Leaks or run `leaks` during the second window.
+
+A simulator run is enough for an H.264 control. VC-1, HEVC, HDR and TrueHD
+need a hardware bench against media that carries that codec:
 
 ```sh
 LAGOON_LIFECYCLE_VC1_SERIES='<series name>' \
   scripts/playback-lifecycle-bench.sh 'platform=tvOS,id=<Apple-TV-UDID>'
 ```
 
-The resolver walks that series' episodes and picks one whose reported
-playback info actually declares VC-1, so season or file naming changes
-cannot quietly turn the benchmark into an H.264 test.
+The resolver picks an episode whose playback info actually declares VC-1, so
+renamed files cannot quietly turn the bench into an H.264 test.
 `testVC1DirectPlayMaintainsContinuousAudioAndVideo` uses the same discovery
-for the dedicated legacy-codec gate, additionally requiring Direct Play, the
-sparse direct-file buffer and local LPCM audio before applying the same
-untouched 60-second presentation window and dismissal lifecycle assertions.
+and also requires Direct Play, the sparse buffer and local LPCM audio.
 
-Stall recovery is bounded as well. An empty Lagoon queue must stay empty for
-one second before the engine pauses Apple's shared clock; this prevents one
-100 ms scheduling tick from turning a healthy renderer-owned sample into a
-visible micro-stall. Normal refill resumes at the demuxer's 12-frame low-water
-cushion; if it cannot rebuild that cushion within 5 s, the engine re-primes
-audio, video, renderers and the clock at the current media position. The pure
-`StallRecoveryPolicy` unit test makes an accidental return to an infinite
-rate-zero polling loop a deterministic failure.
+Stall recovery bounds are in [Queue and renderer
+behavior](queues-and-renderers.md#stall-recovery).
