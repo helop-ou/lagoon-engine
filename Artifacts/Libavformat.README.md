@@ -31,9 +31,10 @@ python3 scripts/build-ffmpeg-format.py --work /private/tmp/lagoon-libavformat-bu
 python3 scripts/build-ffmpeg-format.py --verify-only Artifacts/Libavformat.xcframework
 ```
 
-The script downloads checksum-pinned sources, retains upstream's selected
-demuxers/muxers (including the `hls` demuxer — networking is compiled out at
-the protocol layer, not the demuxer layer), builds only libavformat, and
+The only thing the script downloads is FFmpeg's own checksum-pinned source
+tarball; everything else it needs is in this repository. It retains upstream's
+selected demuxers/muxers (including the `hls` demuxer — networking is compiled
+out at the protocol layer, not the demuxer layer), builds only libavformat, and
 packages iOS/tvOS arm64 devices, arm64/x86_64 simulators, and arm64/x86_64
 macOS. Actual deployment targets are iOS/tvOS 26 and macOS 14. Static
 framework metadata follows the repository's existing dav1d packaging
@@ -58,6 +59,35 @@ Source: https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2
 Source SHA-256: `9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7`.
 
 FFmpeg's license notices accompany the artifact.
+
+## The codec selection list
+
+`scripts/ffmpeg-format-selections.txt` holds the 131 `--enable-muxer=` /
+`--enable-demuxer=` / `--enable-encoder=` / `--enable-decoder=` flags, and the
+four `--disable-*s` lines that scope them, which decide what this libavformat
+supports. It is committed, not derived.
+
+It came from MPVKit 1.0.0's own libavformat build — the source of the
+`Libavcodec`, `Libavutil` and `Libswresample` pins — by parsing
+`FFMPEG_CONFIGURATION` out of its `config.h`. Matching that set is what keeps
+this build ABI-compatible with those three. The script used to download that
+framework on every run purely to re-read the list, which meant the one script
+able to rebuild libavformat without MPVKit could not itself run without it.
+Capturing the list once removed that. The two `libdav1d`/`libuavs3d` decoder
+flags in upstream's set are deliberately absent: dav1d is built here, and both
+decoders are wired up through `Package.swift`.
+
+The public headers the framework vends — `avformat.h`, `avio.h`,
+`os_support.h`, `version.h`, `version_major.h` — are now copied out of the
+extracted source tree rather than out of that download, so they cannot drift
+from the code they describe. They were verified byte-identical to the headers
+the previous artifact shipped, and the one patch this build applies touches
+only `hls.c`. `config.h` and `config_components.h` continue to come from the
+build itself.
+
+To regenerate the list after an FFmpeg bump, build once and read it back out
+of the artifact, which records every flag it was configured with. The exact
+snippet is in the comment at the top of the file.
 
 ## Patches
 
