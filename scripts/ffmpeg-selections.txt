@@ -1,17 +1,15 @@
-# Which muxers, demuxers, encoders and decoders libavformat is built with.
+# Which muxers, demuxers, encoders and decoders FFmpeg is built with.
 #
-# Read by scripts/build-ffmpeg-format.py and passed to configure verbatim,
-# after the --disable-* lines have switched the whole category off. Order is
+# Read by scripts/build-ffmpeg.py and passed to configure verbatim, after the
+# --disable-* lines have switched the whole category off. Order is
 # significant: a --disable-*s line must precede the --enable-* lines it scopes.
 #
 # Provenance: this is FFmpeg n8.1.2's set as selected by MPVKit 1.0.0, which is
-# where Libavcodec, Libavutil and Libswresample still come from. Matching it
-# keeps this build ABI-compatible with those three. It was captured by parsing
-# FFMPEG_CONFIGURATION out of MPVKit's own Libavformat build, which is what
-# this script used to download on every run; committing it is what lets the
-# build stand on its own. The two libdav1d/libuavs3d decoder flags in that set
-# are deliberately absent: this repository builds dav1d itself, and both are
-# wired up through Package.swift rather than through libavformat.
+# where Libavcodec, Libavutil and Libswresample used to come from, so building
+# all four libraries here changed nothing about what they decode. It was
+# captured by parsing FFMPEG_CONFIGURATION out of MPVKit's own build. The last
+# two decoders are the external ones, dav1d for AV1 and uavs3d for AVS3; the
+# script enables the libraries they wrap.
 #
 # To regenerate after an FFmpeg bump, build once and read the list back out of
 # the artifact, which records every flag it was configured with:
@@ -159,3 +157,5 @@
 --enable-decoder=subrip
 --enable-decoder=xsub
 --enable-decoder=webvtt
+--enable-decoder=libdav1d
+--enable-decoder=libuavs3d
