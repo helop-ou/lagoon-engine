@@ -48,6 +48,25 @@ struct READMEUsageTests {
                 headerValue: token
             )
         )
+
+        // Buffering ahead.
+        engine.prepare(
+            url: url,
+            itemID: "episode-412",
+            delivery: .stableFile,
+            expectedLength: 1_024,
+            startSeconds: 0,
+            initialAudioOrdinal: nil
+        )
+        _ = (engine.bufferState.bufferedFraction, engine.bufferState.bufferedRanges)
+        engine.suspendBufferFill()
+        engine.resumeBufferFill()
+        engine.stageSuccessor(
+            itemID: "episode-413",
+            url: url,
+            delivery: .stableFile,
+            warms: true
+        )
     }
 
     @Test func theReadmeExampleStillCompiles() {

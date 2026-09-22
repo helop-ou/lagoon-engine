@@ -82,6 +82,36 @@ queues. Everything else is what you would expect: `pause()`, `seek(to:)`,
 `shutdown()` when you are done. Read `audioTracks` and `subtitleTracks`
 once playback has started to see what the file offers.
 
+### Buffering ahead
+
+Give the media a name and say how it is delivered, and the engine puts a
+byte cache in front of it: a sparse file it fills ahead of the playhead
+once the picture is up, paced so foreground reads always get the link
+first. A stable file can be cached this way; a segmented manifest cannot,
+and asking for one costs nothing.
+
+```swift
+engine.prepare(
+    url: url,
+    itemID: "episode-412",      // yours; the engine only matches on it
+    delivery: .stableFile,
+    expectedLength: sizeInBytes, // optional, saves a probe request
+    startSeconds: 0,
+    initialAudioOrdinal: nil
+)
+```
+
+Read `bufferState` for what it is holding — the buffered fraction and the
+cached ranges, for a scrub bar. `suspendBufferFill()` and
+`resumeBufferFill()` stop and restart the filling without losing it, for
+an app going to the background.
+
+If you know what the viewer will play next, `stageSuccessor` opens and
+warms a second scope for it while the current one still plays. A later
+`prepare` with the same `itemID` and URL promotes what was warmed instead
+of starting over. There is one cache in the process: one active scope and
+at most one staged successor, whichever engine is playing.
+
 ### Fetching media that needs a credential
 
 Pass a `MediaRequestAuthorization` and the engine sends the header with

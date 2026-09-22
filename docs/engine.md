@@ -87,7 +87,17 @@ These have each regressed at least once.
   can hold old view values after a handoff, and a captured engine outlives the
   playback it belonged to.
 - **One active cache scope, at most one staged successor.** The cache is
-  transient playback storage, not a library.
+  transient playback storage, not a library. The coordinator that enforces
+  this is a single shared instance inside the package, not a per-engine
+  property: a successor scope is warmed while the outgoing engine still
+  plays, and an episode handoff shuts that engine down before the next one
+  opens, so ownership has to outlive any one engine.
+- **The engine decides whether to cache, and fills for itself.** A host
+  passes an item ID and a `MediaDelivery` to `prepare` and reads
+  `bufferState` back. It does not build sessions or run the fill loop:
+  every input the pacing reads — stall count, rate, duration, whether the
+  picture is buffering — is engine state, and a host running the loop can
+  only get at it by reaching back across the boundary.
 
 ## Memory
 

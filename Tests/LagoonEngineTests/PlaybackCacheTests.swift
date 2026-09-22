@@ -63,6 +63,37 @@ struct PlaybackCacheTests {
             playsFromCompleteFile: false, disc: true, delivery: .segmentedManifest, defaults: defaults))
     }
 
+    @Test func aHostIsToldWhetherBytesWillBeCachedBeforeAnEngineCanAnswer() {
+        // An incident report records how an attempt is delivered before the
+        // attempt opens, which is the whole reason this is answerable
+        // without an engine. A file on disk is already local — a finished
+        // cache file or a download — and counts as cached either way.
+        #expect(SampleBufferPlayerEngine.cachesPlayback(
+            url: URL(fileURLWithPath: "/tmp/episode.mkv"), delivery: .stableFile))
+        #expect(SampleBufferPlayerEngine.cachesPlayback(
+            url: URL(string: "https://media.test/episode.mkv")!, delivery: .stableFile))
+        // A manifest stays on the native transport under the release policy,
+        // so nothing is cached in front of it.
+        #expect(!SampleBufferPlayerEngine.cachesPlayback(
+            url: URL(string: "https://media.test/master.m3u8")!, delivery: .segmentedManifest))
+    }
+
+    @MainActor
+    @Test func unnamedMediaPlaysWithoutOpeningAScope() {
+        // No item ID is a host saying it has nothing to file these bytes
+        // under, so there is nothing to match a successor against either.
+        let engine = SampleBufferPlayerEngine()
+        defer { engine.shutdown() }
+        engine.prepare(
+            url: URL(string: "https://media.test/unnamed.mkv")!,
+            startSeconds: 0,
+            initialAudioOrdinal: nil
+        )
+        #expect(engine.bufferState == .empty)
+        #expect(!engine.bufferState.isActive)
+        #expect(engine.playbackCacheMetrics == nil)
+    }
+
     @Test func adaptiveCapacityPreservesFreeSpaceAndHonorsMaximum() {
         let mebibyte: Int64 = 1_024 * 1_024
 

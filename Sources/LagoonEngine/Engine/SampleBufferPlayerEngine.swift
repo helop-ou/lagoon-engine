@@ -322,12 +322,6 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// stall this engine recovers from on its own. Fired only on
     /// a change, from `setBuffering`.
     @ObservationIgnored public var onBufferingChanged: ((Bool) -> Void)?
-    /// A direct-file cache is an optimization. If its range transport cannot
-    /// open this server resource, the engine retries immediately through
-    /// libavformat's native HTTP path and asks the controller to retire the
-    /// unusable cache instead of failing playback.
-    @ObservationIgnored public var onPlaybackCacheFallback: (() -> Void)?
-
     // MARK: Cross-thread state
 
     @ObservationIgnored nonisolated private let demuxer = FFmpegDemuxer()
@@ -497,6 +491,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     ///   - url: Where the media is. A file URL plays straight from disk.
     ///   - itemID: The host's own identifier for this media, used to match a
     ///     successor staged earlier by `stageSuccessor`. Opaque here.
+    ///     Leaving it out plays without a cache: the engine has no name to
+    ///     file the bytes under, and nothing to match a successor against.
     ///   - delivery: Whether the bytes are a stable file or a manifest.
     ///   - expectedLength: The content length if the host already knows it,
     ///     which saves a probe request.
@@ -506,8 +502,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     ///   - authorization: A credential to send with every request.
     public func prepare(
         url: URL,
-        itemID: String,
-        delivery: MediaDelivery,
+        itemID: String = "",
+        delivery: MediaDelivery = .stableFile,
         expectedLength: Int64? = nil,
         disc: DiscPlaybackRequest? = nil,
         startSeconds: Double,
@@ -518,8 +514,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         externalSubtitles: [ExternalSubtitleTrack] = [],
         authorization: MediaRequestAuthorization? = nil
     ) {
-        // A local file needs nothing in front of it.
-        let session: PlaybackCacheSession? = url.isFileURL ? nil
+        // A local file needs nothing in front of it, and neither does
+        // media the host has not named.
+        let session: PlaybackCacheSession? = url.isFileURL || itemID.isEmpty ? nil
             : PlaybackCacheOwner.coordinator.activate(
                 itemID: itemID,
                 url: url,
@@ -538,18 +535,19 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         cacheSessionForFill = session
         publishBufferState(session?.metrics)
 
-        prepare(
-            url: playbackURL,
-            cacheSession: usesSession ? session : nil,
-            disc: disc,
-            startSeconds: startSeconds,
-            initialAudioOrdinal: initialAudioOrdinal,
-            initialSubtitleOrdinal: initialSubtitleOrdinal,
-            audioTrackMetadata: audioTrackMetadata,
-            embeddedSubtitleMetadata: embeddedSubtitleMetadata,
-            externalSubtitles: externalSubtitles,
-            authorization: authorization
-        )
+        pendingURL = playbackURL
+        pendingCacheSession = usesSession ? session : nil
+        pendingDisc = disc
+        pendingAuthorization = authorization
+        pendingStartSeconds = startSeconds
+        self.externalSubtitles = externalSubtitles
+        shared.withLock {
+            $0.initialAudioOrdinal = initialAudioOrdinal
+            $0.initialSubtitleOrdinal = initialSubtitleOrdinal
+            $0.audioTrackMetadata = audioTrackMetadata
+            $0.embeddedSubtitleMetadata = embeddedSubtitleMetadata
+            $0.externalSubtitles = externalSubtitles
+        }
     }
 
     /// Warms a cache scope for media the host expects to play next.
@@ -625,33 +623,6 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     public func resumeBufferFill() {
         guard bufferFillTask == nil, successorWarmTask == nil else { return }
         startBufferFill()
-    }
-
-    public func prepare(
-        url: URL,
-        cacheSession: PlaybackCacheSession? = nil,
-        disc: DiscPlaybackRequest? = nil,
-        startSeconds: Double,
-        initialAudioOrdinal: Int?,
-        initialSubtitleOrdinal: Int? = nil,
-        audioTrackMetadata: [PlayerTrackMetadata] = [],
-        embeddedSubtitleMetadata: [PlayerTrackMetadata] = [],
-        externalSubtitles: [ExternalSubtitleTrack] = [],
-        authorization: MediaRequestAuthorization? = nil
-    ) {
-        pendingURL = url
-        pendingCacheSession = cacheSession
-        pendingDisc = disc
-        pendingAuthorization = authorization
-        pendingStartSeconds = startSeconds
-        self.externalSubtitles = externalSubtitles
-        shared.withLock {
-            $0.initialAudioOrdinal = initialAudioOrdinal
-            $0.initialSubtitleOrdinal = initialSubtitleOrdinal
-            $0.audioTrackMetadata = audioTrackMetadata
-            $0.embeddedSubtitleMetadata = embeddedSubtitleMetadata
-            $0.externalSubtitles = externalSubtitles
-        }
     }
 
     public func attach(displayLayer: AVSampleBufferDisplayLayer) {
@@ -2414,13 +2385,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 demuxer.close()
                 deliveryIsCached = false
                 EngineDiagnostics.record(.playbackCacheFallback, ["recovery": .string("cacheFallback")])
+                // The scope this playback was reading through cannot serve
+                // it. Retire it, keeping any staged successor, which is a
+                // different resource. The demotion is already recorded above.
                 Task { @MainActor in
-                    // The scope this playback was reading through cannot
-                    // serve it. Retire it — keeping any staged successor,
-                    // which is a different resource — and tell the host, so
-                    // an incident report can record the demotion.
                     self.discardPlaybackCache(preservingStagedSuccessor: true)
-                    self.onPlaybackCacheFallback?()
                 }
                 try demuxer.open(
                     url: openTarget,
