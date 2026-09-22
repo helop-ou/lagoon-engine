@@ -14,13 +14,13 @@ nonisolated enum PlaybackBufferPolicy {
     static let backgroundBufferingEnabled = true
 
     static func customIOEnabled(
-        for method: PlayMethod,
+        for delivery: MediaDelivery,
         defaults: UserDefaults = .standard
     ) -> Bool {
-        switch method {
-        case .directPlay, .directStream:
+        switch delivery {
+        case .stableFile:
             true
-        case .transcode:
+        case .segmentedManifest:
             // Off by default, so a build nobody has touched behaves exactly
             // as before. It is readable in Release rather than DEBUG-only
             // because the only hardware that can answer whether this helps is
@@ -41,10 +41,10 @@ nonisolated enum PlaybackBufferPolicy {
     static func engineUsesCacheSession(
         playsFromCompleteFile: Bool,
         disc: Bool,
-        method: PlayMethod,
+        delivery: MediaDelivery,
         defaults: UserDefaults = .standard
     ) -> Bool {
-        guard customIOEnabled(for: method, defaults: defaults) else { return false }
+        guard customIOEnabled(for: delivery, defaults: defaults) else { return false }
         return disc || !playsFromCompleteFile
     }
 }
@@ -1838,7 +1838,7 @@ final class PlaybackCacheCoordinator {
         rootDirectory: URL? = nil,
         byteLimit: Int64? = nil,
         isEnabled: Bool,
-        allowsTranscodeCaching: Bool = PlaybackBufferPolicy.customIOEnabled(for: .transcode)
+        allowsTranscodeCaching: Bool = PlaybackBufferPolicy.customIOEnabled(for: .segmentedManifest)
     ) {
         let caches = rootDirectory
             ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
@@ -1861,7 +1861,7 @@ final class PlaybackCacheCoordinator {
     func activate(
         itemID: String,
         url: URL,
-        method: PlayMethod,
+        delivery: MediaDelivery,
         expectedLength: Int64?,
         authorization: MediaRequestAuthorization? = nil
     ) -> PlaybackCacheSession? {
@@ -1872,20 +1872,20 @@ final class PlaybackCacheCoordinator {
             return next
         }
         current?.cancelAndRemove()
-        current = makeScope(itemID: itemID, url: url, method: method, expectedLength: expectedLength, authorization: authorization)
+        current = makeScope(itemID: itemID, url: url, delivery: delivery, expectedLength: expectedLength, authorization: authorization)
         return current
     }
 
     func stageNext(
         itemID: String,
         url: URL,
-        method: PlayMethod,
+        delivery: MediaDelivery,
         expectedLength: Int64?,
         authorization: MediaRequestAuthorization? = nil
     ) -> PlaybackCacheSession? {
         if next?.itemID == itemID, next?.sourceURL == url { return next }
         next?.cancelAndRemove()
-        next = makeScope(itemID: itemID, url: url, method: method, expectedLength: expectedLength, authorization: authorization)
+        next = makeScope(itemID: itemID, url: url, delivery: delivery, expectedLength: expectedLength, authorization: authorization)
         return next
     }
 
@@ -1910,14 +1910,14 @@ final class PlaybackCacheCoordinator {
     private func makeScope(
         itemID: String,
         url: URL,
-        method: PlayMethod,
+        delivery: MediaDelivery,
         expectedLength: Int64?,
         authorization: MediaRequestAuthorization?
     ) -> PlaybackCacheSession? {
         guard isEnabled, byteLimit > 0 else { return nil }
         let directory = rootDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        switch method {
-        case .directPlay, .directStream:
+        switch delivery {
+        case .stableFile:
             let declaredLength = expectedLength.flatMap { $0 > 0 ? $0 : nil }
             let resourceLimit = min(declaredLength ?? byteLimit, byteLimit)
             guard let scope = try? PlaybackCacheScope(
@@ -1934,7 +1934,7 @@ final class PlaybackCacheCoordinator {
                 sourceURL: url,
                 storage: .direct(scope)
             )
-        case .transcode:
+        case .segmentedManifest:
             guard allowsTranscodeCaching else { return nil }
             guard let scope = try? HLSPlaybackCacheScope(
                 itemID: itemID,
