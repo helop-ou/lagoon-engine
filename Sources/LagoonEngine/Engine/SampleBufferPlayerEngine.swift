@@ -19,7 +19,7 @@ import OSLog
 /// Threading: state and transport on the main actor; demux on its own serial
 /// queue, feeding two thread-safe queues the renderers' pumps drain.
 @Observable
-public final class SampleBufferPlayerEngine: PlayerEngine {
+public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnostics {
     private(set) public var timePosition: Double = 0
     private(set) public var duration: Double = 0
     private(set) public var isPaused = false
