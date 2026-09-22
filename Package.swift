@@ -119,7 +119,7 @@ let package = Package(
         //
         // Vendored rather than fetched: there is nothing upstream to point
         // at, and a URL that has to outlive the library is a worse dependency
-        // than five megabytes in the repository.
+        // than eight megabytes in the repository.
         .binaryTarget(
             name: "Libdav1d",
             path: "Artifacts/Libdav1d.xcframework"
