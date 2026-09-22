@@ -98,7 +98,11 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
               let commandQueue = device.makeCommandQueue() else {
             throw ConverterError.noDevice
         }
-        guard let library = device.makeDefaultLibrary(),
+        // `makeDefaultLibrary()` looks in the main bundle, which is the
+        // host application. The shader ships with this package, so the
+        // library has to be loaded from the package's own bundle — the
+        // difference only shows at runtime, as a failed conversion.
+        guard let library = try? device.makeDefaultLibrary(bundle: .module),
               let function = library.makeFunction(name: "lagoonConvertPlanar10") else {
             throw ConverterError.noKernel
         }
