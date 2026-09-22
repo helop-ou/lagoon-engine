@@ -11,6 +11,49 @@ This file is the source of truth for release notes, and
 An entry is for somebody adopting or upgrading the package, not for a reader
 of the diff.
 
+## 1.0.2
+
+September 2026. No API change. Upgrading is a version bump, and resolving the
+package no longer downloads anything.
+
+### Every native library is built here
+
+`Libavcodec`, `Libavutil`, `Libswresample`, `lcms2` and `Libuavs3d` were
+binary targets fetched from MPVKit's GitHub releases. They are now built by
+this repository from checksum-pinned upstream source and committed beside the
+rest, so `Package.swift` has no `url:` target left and the package builds on a
+machine that cannot reach anyone's release page.
+
+The four FFmpeg libraries come from one configure in `scripts/build-ffmpeg.py`,
+which replaces `build-ffmpeg-format.py`; the selection list moved to
+`scripts/ffmpeg-selections.txt`. `scripts/build-lcms2.sh` and
+`scripts/build-uavs3d.sh` are new. `Artifacts/FFmpeg.README.md` replaces the
+libavformat build record.
+
+### The licence is LGPL-2.1-or-later throughout
+
+MPVKit's FFmpeg was configured with `--enable-version3` for its GnuTLS, which
+made libavcodec, libavutil and libswresample LGPL-3.0. Built here without
+GnuTLS, all four FFmpeg libraries are LGPL-2.1-or-later, and the build fails
+if that ever changes. If your app's notices listed FFmpeg under LGPL-3.0 for
+this package, they can say LGPL-2.1-or-later from this version on.
+
+### What you would notice
+
+Nothing in playback. The codec, format, parser and bitstream-filter set is
+unchanged, and fixtures across AV1, HEVC, VP9, H.264, MPEG-2, seven audio
+codecs and three subtitle formats decode bit-identically on the old and new
+libraries.
+Vulkan, libplacebo, libass and libswscale are no longer built, and the engine
+never used them. libavcodec now carries FFmpeg's aarch64 dotprod and i8mm
+kernels, selected at runtime on chips that have them. `av_version_info()`
+reads `8.1.2` rather than `n8.1.2`.
+
+A few FFmpeg-internal headers MPVKit shipped are no longer vended —
+`libavutil/internal.h` and its neighbours, `libavcodec/mathops.h` and
+`libavformat/os_support.h`. Nothing public depends on them, but a host that
+imported one directly will need to stop.
+
 ## 1.0.1
 
 September 2026. No API change. Upgrading is a version bump and nothing else.
