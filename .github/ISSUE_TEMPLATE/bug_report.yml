@@ -1,0 +1,97 @@
+name: Bug report
+description: Something in Lagoon Engine behaves wrong when opening, decoding or rendering media.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Playback problems are much easier to place when
+        the media details are included, so please fill those in. Do not paste
+        media source URLs, tokens or account names. Anything with security or
+        privacy impact goes to
+        [SECURITY.md](https://github.com/helop-ou/lagoon-engine/blob/main/SECURITY.md)
+        instead of an issue.
+
+  - type: input
+    id: library-version
+    attributes:
+      label: Library version
+      description: The tag, or the commit if you are on main.
+      placeholder: 1.4.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - tvOS (Apple TV)
+        - iOS (iPhone)
+        - iPadOS (iPad)
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: tvOS 26.2
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Device or simulator
+      description: The model, or which simulator you used.
+      placeholder: Apple TV 4K (3rd generation), 128 GB
+    validations:
+      required: true
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Media details
+      description: >
+        The container, video codec, HDR profile and audio codec of the file
+        that reproduces the problem. For example "Container: mkv", "Video:
+        HEVC Main 10, 3840x2160, Dolby Vision profile 7", "Audio: TrueHD with
+        Atmos, 7.1".
+      value: |
+        Container:
+        Video:
+        Audio:
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include how the engine was driven — open, seek, track selection, and so on.
+      placeholder: |
+        1. Open the file above
+        2. Seek to two minutes in
+        3. Select the second audio track
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: A screen recording, a captured frame, or a crash log helps, if you have one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: How often it happens, when it started, other players' behaviour with the same file.

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security or privacy report
+    url: https://github.com/helop-ou/lagoon-engine/blob/main/SECURITY.md
+    about: Report vulnerabilities privately by email instead of opening an issue.
+  - name: Contributing and build setup
+    url: https://github.com/helop-ou/lagoon-engine/blob/main/CONTRIBUTING.md
+    about: Prerequisites, build and test commands, conventions.
+  - name: Code of Conduct
+    url: https://github.com/helop-ou/lagoon-engine/blob/main/CODE_OF_CONDUCT.md
+    about: What is expected of everyone taking part, and how to report a problem.
