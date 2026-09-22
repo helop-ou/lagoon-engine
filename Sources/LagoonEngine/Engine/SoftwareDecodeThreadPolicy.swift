@@ -3,26 +3,16 @@ import Foundation
 
 /// How libavcodec is configured for software video decode.
 ///
-/// The worker-count baseline survived measurement on an Apple TV: it stays at
-/// the device's five active processors; controlled runs found dav1d auto and
-/// six no better, while eight improved median latency but made tail latency
-/// and dropped frames worse. The decode queue's scheduling band was never the
-/// constraint.
+/// Threads = active processors (five on Apple TV). dav1d auto and six were no
+/// better; eight improved median latency but worsened tail latency and drops.
 ///
-/// The thread count is not dav1d's frame-parallelism limit by default. A zero
-/// `max_frame_delay` resolves to only `ceil(sqrt(n_threads))`, which is three
-/// pictures for Lagoon's five-thread Apple TV configuration. Decode-only runs
-/// of two 4K 10-bit streams consistently cut wall time by roughly 25-30%
-/// (34-43% more throughput) when the limit matched the worker count. Movies
-/// can afford the two extra frames of latency, so AV1 uses all configured
-/// workers as its frame-delay ceiling.
+/// dav1d's default frame delay is only `ceil(sqrt(threads))`, three pictures
+/// at five threads. Matching it to the thread count cut 4K 10-bit decode time
+/// by ~25-30%, worth two extra frames of latency.
 nonisolated enum SoftwareDecodeThreadPolicy {
-    /// Threads for libavcodec. Production remains explicit so the HUD can
-    /// report the requested value; a launch argument can deliberately select
-    /// zero to exercise dav1d's own automatic thread selection on hardware.
-    ///
-    /// A configured zero remains zero after `avcodec_open2`; it proves auto
-    /// was requested, not how many worker threads dav1d ultimately created.
+    /// Threads for libavcodec. Explicit so the HUD can report it; a launch
+    /// argument can select zero (dav1d auto), which still reads as zero after
+    /// `avcodec_open2`.
     static func resolvedThreadCount(
         explicit: Int? = commandLineThreadCount(),
         activeProcessors: Int = ProcessInfo.processInfo.activeProcessorCount
@@ -33,31 +23,20 @@ nonisolated enum SoftwareDecodeThreadPolicy {
         return Int32(max(activeProcessors, 1))
     }
 
-    /// Diagnostic knob with no Settings UI, read from a launch argument:
-    /// `-debug.softwareDecodeThreadCount 8`.
-    ///
-    /// It lives here rather than on the Advanced page because it is for
-    /// sweeping from a Mac against a paired Apple TV, not for anyone to set.
-    /// It was once "measured" from the HUD and that answer was worthless:
-    /// decode cost on this content tracks scene complexity, so a cumulative
-    /// average read at a different playback position compares scenes rather
-    /// than settings.
+    /// Launch argument for controlled sweeps: `-debug.softwareDecodeThreadCount 8`.
+    /// Never compare settings from the HUD's cumulative average: decode cost
+    /// tracks the scene.
     static let threadCountDefaultsKey = "debug.softwareDecodeThreadCount"
 
-    /// Maximum pictures dav1d may keep in flight. Production matches the
-    /// explicit worker count instead of taking dav1d's lower square-root
-    /// default. A launch argument can still select zero (dav1d auto) or a
-    /// smaller value for controlled comparisons:
-    /// `-debug.softwareDecodeMaxFrameDelay 3`.
+    /// Maximum pictures dav1d keeps in flight: the thread count, unless a
+    /// launch argument overrides it (`-debug.softwareDecodeMaxFrameDelay 3`).
     static func resolvedMaxFrameDelay(
         explicit: Int? = commandLineMaxFrameDelay(),
         threadCount: Int32
     ) -> Int64 {
         if let explicit {
-            // dav1d clamps frame contexts to its worker count. Reflect that
-            // useful limit in our requested/reported value when the worker
-            // count is explicit; with thread_count=0, 256 is dav1d's public
-            // hard ceiling and the library resolves the actual core count.
+            // dav1d clamps to its worker count; with thread_count=0 its hard
+            // ceiling is 256.
             let upperBound = threadCount > 0 ? Int(threadCount) : 256
             return Int64(min(max(explicit, 0), upperBound))
         }
@@ -74,10 +53,8 @@ nonisolated enum SoftwareDecodeThreadPolicy {
         commandLineInteger(forKey: maxFrameDelayDefaultsKey)
     }
 
-    /// Reads NSArgumentDomain directly from the process arguments. Looking up
-    /// these keys in `UserDefaults.standard` is unsafe: older Lagoon builds
-    /// persisted the thread-count experiment, so an upgraded device can still
-    /// carry an obsolete value such as eight in its application domain.
+    /// Reads the process arguments, not `UserDefaults.standard`: a device can
+    /// still carry a stale persisted value for these keys.
     static func commandLineInteger(
         forKey key: String,
         arguments: [String] = ProcessInfo.processInfo.arguments

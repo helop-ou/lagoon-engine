@@ -7,14 +7,13 @@ import OSLog
 
 /// The Lagoon playback engine: libavformat demux into CMSampleBuffers rendered
 /// by AVSampleBufferDisplayLayer / AVSampleBufferAudioRenderer under an
-/// AVSampleBufferRenderSynchronizer. The app's only engine since 2026-08-16.
+/// AVSampleBufferRenderSynchronizer.
 ///
-/// Envelope: h264 passed through compressed; HEVC and hardware AV1 decoded
-/// ahead with VideoToolbox; AV1 otherwise, VP9 and the legacy codecs software
-/// decoded to NV12/P010; aac/mp3/ac3/eac3 passed through, other audio decoded
-/// to LPCM; subtitles as an overlay. `DeviceProfile.lagoon` advertises exactly
-/// this, so anything else arrives as an fMP4 HLS transcode that demuxes back
-/// into the same envelope.
+/// h264 passes through compressed; HEVC and hardware AV1 decode with
+/// VideoToolbox; other AV1, VP9 and legacy codecs software-decode to
+/// NV12/P010. aac/mp3/ac3/eac3 pass through, other audio decodes to LPCM.
+/// `DeviceProfile.lagoon` advertises exactly this, so anything else arrives
+/// as an fMP4 HLS transcode.
 ///
 /// Threading: state and transport on the main actor; demux on its own serial
 /// queue, feeding two thread-safe queues the renderers' pumps drain.
@@ -25,9 +24,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     private(set) public var isPaused = false
     private(set) public var isBuffering = true
     private(set) public var rate: Double = 1
-    /// Sync correction on top of `rate`. 1 outside a SyncPlay
-    /// group, which is every session today. `rate` stays the viewer's
-    /// choice; `effectiveRate` is what the synchronizer is ever given.
+    /// Sync correction on top of `rate`; 1 outside a SyncPlay group. The
+    /// synchronizer only ever gets `effectiveRate`.
     @ObservationIgnored private(set) var correctionRate: Double = 1
     private(set) public var videoSize: CGSize?
     private(set) public var audioTracks: [PlayerTrack] = []
@@ -37,70 +35,53 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     private(set) public var currentSubtitleText: String?
     private(set) public var currentSubtitleCues: [SubtitleTextCue] = []
     private(set) public var currentSubtitleImages: [SubtitleImage] = []
-    /// mpv convention (M6): positive delays the audio.
+    /// Positive delays the audio, as in mpv.
     private(set) public var audioDelay: Double = 0
-    /// Debug-HUD line: what the demuxer actually sees on the selected
-    /// audio stream (codec, channels, FFmpeg's Atmos/JOC verdict) —
-    /// readable without opening the track panel.
+    /// HUD line: the selected audio stream as the demuxer sees it (codec,
+    /// channels, FFmpeg's Atmos/JOC verdict).
     public private(set) var audioDiagnostic: String?
     private(set) public var audioOutputPathDiagnostic = "compressed"
     public private(set) var videoPerformance: VideoPerformanceSnapshot?
     private(set) public var stallCount = 0
-    /// Stalls confirmed as audio-caused, a subset of `stallCount`, which
-    /// keeps counting every confirmed stall regardless of cause.
+    /// Stalls confirmed as audio-caused; a subset of `stallCount`.
     private(set) public var audioStallCount = 0
-    /// Episodes where the renderer has no audio scheduled ahead of the
-    /// media clock. Counted regardless of
-    /// `buffersOnAudioStarvation`; the mode only decides whether an episode
-    /// also stops the clock, not whether it's counted.
+    /// Episodes with no audio scheduled ahead of the clock. Counted whether
+    /// or not `buffersOnAudioStarvation` also stops the clock.
     private(set) public var audioStarvationCount = 0
-    /// Off by default. While off, audio starvation is counted (`aDry`) and
-    /// never stops the clock. The floor `PlaybackStarvationPolicy.
-    /// audioFloorSeconds` was chosen in the simulator, and build 66 is why
-    /// this mode stays off until a hardware pass shows a healthy title's
-    /// lead sitting well above it.
+    /// Off by default: audio starvation is counted but never stops the
+    /// clock. Keep it off until hardware shows a healthy title's lead well
+    /// above `PlaybackStarvationPolicy.audioFloorSeconds`.
     public let buffersOnAudioStarvation = EngineTuning.current.buffersOnAudioStarvation
-    /// Bounded stall recovery should normally refill in place. Count the
-    /// five-second seek fallback separately so the regression can prove
-    /// whether it
-    /// really needed one rather than inferring that from the playhead.
+    /// Stall recovery should refill in place. This counts the five-second
+    /// seek fallback, so a regression run can prove whether it was needed.
     private(set) public var stallReprimeCount = 0
-    /// Route/output recovery counters are intentionally session-scoped. The
-    /// regression probe uses them to prove that an injected AVFoundation
-    /// event took the same path as a real notification.
+    /// Session-scoped, so the regression probe can prove an injected
+    /// AVFoundation event took the same path as a real notification.
     private(set) public var audioRendererRecoveryCount = 0
     private(set) public var mediaServicesResetRecoveryCount = 0
-    /// Frame-loss bench progress/result for the HUD; nil unless
-    /// Settings → Debug → Frame-loss bench is on.
+    /// Frame-loss bench progress for the HUD; nil unless the bench is on.
     public private(set) var benchStatus: String?
-    /// Flips true the moment a bench window freezes its result — the
-    /// harness's auto-exit hook (debug.benchAutoExit), so scripted runs
-    /// can leave the player through the clean teardown path instead of
-    /// being killed mid-playback.
+    /// True once a bench window freezes its result, so a scripted run can
+    /// leave through the clean teardown path instead of being killed.
     public private(set) var benchCompleted = false
-    /// The display-matching request for this video — published
-    /// once the demuxer knows the stream; the player view owns applying it.
+    /// Display-matching request, published once the stream is known. The
+    /// player view applies it.
     private(set) public var displayMatchRequest: DisplayMatchRequest?
     /// "grid 24000/1001" when video pts are snapped to the exact frame
     /// grid, nil when container stamps pass through.
     public private(set) var videoTimingDiagnostic: String?
 
     /// The media clock as the synchronizer reports it.
-    /// `timePosition` is optimistic — `seek(to:)` moves it before anything
-    /// has been demuxed — and the synchronizer is the opposite: while the
-    /// clock is stopped for a load or a seek it still sits at the anchor
-    /// being left behind. A group Buffering report has to carry the
-    /// position being headed for, so that window answers with the target.
+    /// While the clock is stopped for a load or seek, answers with the
+    /// position being headed for, which a group Buffering report needs.
     public var clockPosition: Double {
         if isBuffering { return bufferingTargetSeconds ?? timePosition }
         let seconds = synchronizer.currentTime().seconds
         return seconds.isFinite ? seconds : timePosition
     }
 
-    /// What the synchronizer is actually run at: the viewer's rate with any
-    /// sync correction folded in. Everything that scales a media-time
-    /// cushion by rate uses this, because this is the speed the clock
-    /// really drains at.
+    /// The viewer's rate with sync correction folded in: the speed the clock
+    /// really drains at. Scale every media-time cushion by this.
     private var effectiveRate: Double {
         PlaybackRatePolicy.effectiveRate(userRate: rate, correction: correctionRate)
     }
@@ -109,14 +90,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         (videoQueue.count, audioQueue.count)
     }
 
-    /// Seconds of audio still waiting on Lagoon's side of the renderer. This
-    /// is a demux-backpressure input only. Neither the count nor these seconds
-    /// can diagnose starvation because AVFoundation normally drains both to
-    /// zero while retaining its own presentation queue.
+    /// Seconds of audio queued on the engine's side. A demux-backpressure
+    /// input only: AVFoundation drains it to zero while keeping its own
+    /// queue, so it cannot show starvation.
     public var audioBufferedSeconds: Double { audioQueue.bufferedDuration }
-    /// Media time already handed to AVFoundation beyond the current clock.
-    /// This is the starvation signal: unlike `audioBufferedSeconds`, it stays
-    /// positive after the app-side queue has been drained into the renderer.
+    /// Media time handed to AVFoundation beyond the clock. The starvation
+    /// signal: it stays positive after the engine's queue drains.
     public var audioDeliveryLeadSeconds: Double {
         guard let deliveredThrough = shared.withLock({ $0.lastEnqueuedAudioEndSeconds }) else {
             return -1
@@ -129,9 +108,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     #if DEBUG
     private(set) public var audioDeliverySuspendedForDiagnostics = false
     private(set) public var demuxDeliverySuspendedForDiagnostics = false
-    /// `onPlaybackStarted` also runs after a seek. A diagnostic selected in
-    /// Settings is one bounded experiment for this engine, not a new outage
-    /// every time playback re-primes.
+    /// A simulated fault fires once per engine, not on every re-prime
+    /// (`onPlaybackStarted` also runs after a seek).
     @ObservationIgnored private var didSimulateAudioStarvation = false
     @ObservationIgnored private var didSimulateDeliveryStall = false
     #endif
@@ -153,50 +131,36 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// Media stamp of the last sample a renderer refused to decode.
     public var refusedSampleMsDiagnostic: Int? { shared.withLock { $0.lastRefusedSampleMs } }
     public var maximumVideoIntakeDiagnostic: Int { videoIntake.peakCount }
-    /// Whether the title has sound at all. A silent one cannot starve for
-    /// it, and must never be held in buffering waiting for a cushion that
-    /// is never going to arrive.
+    /// A silent title must never wait in buffering for an audio cushion.
     private var hasAudioTrack: Bool { !audioTracks.isEmpty }
     /// Edge tracking for `audioStarvationCount`, which counts episodes
     /// rather than the 10 Hz observer ticks inside one.
     @ObservationIgnored private var wasAudioStarved = false
-    /// The audio depth the demux loop is aiming for. Shown beside the queue
-    /// so the bigger uncached cushion is visible rather than inferred.
+    /// The audio depth the demux loop aims for.
     public var audioCushionTarget: Int {
         DemuxBackpressurePolicy.audioCushionTarget(
             deliveryIsCached: shared.withLock { $0.deliveryIsCached }
         )
     }
 
-    /// Timestamp discontinuities in the audio feed — the measurable form
-    /// of "the audio crackles". Should read 0 during untouched
-    /// playback; steady growth means the renderer is being handed a
-    /// misaligned timeline.
+    /// Timestamp gaps in the audio feed: measurable crackle. Should stay 0;
+    /// growth means the renderer is fed a misaligned timeline.
     public var audioTimingGapCount: Int {
         audioContinuity.gapCount
     }
 
-    /// Where the software decode path's time goes, separated into the three
-    /// costs it is made of: libavcodec, the conversion into Core
-    /// Video surfaces, and reading the container. Each is wall time on its own
-    /// queue, so the percentages read as the share of one core that stage
-    /// holds — they are independent and do not sum to 100%. Cumulative since
-    /// the last seek, which is also where the frame-loss bench re-arms, so a
-    /// bench result and this line describe the same stretch of playback.
-    ///
-    /// Nil unless libavcodec is decoding video, and until the first frame.
+    /// Software decode cost: libavcodec, surface conversion and container
+    /// reads, each as a share of one core (they do not sum to 100%).
+    /// Cumulative since the last seek. Nil unless libavcodec decodes video.
     public var softwareDecodeDiagnostic: String? {
         guard let stage = softwareDecodeStage else { return nil }
         let profile = stage.profile
         guard profile.elapsedSeconds > 0, profile.frames > 0 else { return nil }
         let io = demuxer.ioProfile
         let readFraction = io.elapsedSeconds > 0 ? io.readSeconds / io.elapsedSeconds : 0
-        // Cost per frame first, because it is the number that answers whether
-        // the device has the headroom: unlike a rate it does not fall when the
-        // decoder is deliberately throttled, and reading the rate instead is
-        // what left the measurement ambiguous for two builds. `budget` is it as
-        // a fraction of one frame period, so anything at or above 100% cannot
-        // hold frame rate however the queues are behaving.
+        // Cost per frame first: unlike a rate, it does not fall when the
+        // decoder is throttled. `budget` is it as a share of one frame
+        // period; at 100% or more the device cannot hold frame rate.
         let frameRate = demuxer.videoFrameRate > 0 ? demuxer.videoFrameRate : 24
         var line = String(
             format: "%.1f ms/frame · budget %.0f%% · decode %.1f · convert %.1f (surface %.1f) · %.1f fps now · read %.0f%% · pending %d",
@@ -245,9 +209,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             + " decoderDelay=\(stage.decoderDelay)"
     }
 
-    /// Proof the profile 7 rewrite engaged, for the HUD — nil until the
-    /// stream actually carries a Dolby Vision profile 7 track (formerly the
-    /// EL-strip experiment's info line).
+    /// Proof the Dolby Vision profile 7 rewrite engaged, for the HUD; nil
+    /// until a profile 7 track appears.
     public var dolbyVisionRewriteInfo: String? {
         guard let stats = demuxer.dolbyVisionRewriteStats else { return nil }
         let megabytes = Double(stats.bytesRemoved) / 1_000_000
@@ -276,11 +239,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// Passthrough audio the demuxer discarded before any renderer saw it.
-    /// Nil until something is actually dropped, so the HUD stays quiet on a
-    /// healthy stream. The multiple is the diagnostic: `aGaps` is blind to
-    /// this path by construction, so a silent gap with drops climbing here is
-    /// a different fault from one with `aGaps` climbing.
+    /// Passthrough audio the demuxer dropped before any renderer saw it; nil
+    /// until something drops. `aGaps` cannot see this path, so drops here
+    /// are a different fault from `aGaps` climbing.
     public var audioPacketDropInfo: String? {
         guard let stats = demuxer.audioPacketDropStats, stats.packetSeconds > 0 else { return nil }
         return String(
@@ -292,38 +253,27 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     @ObservationIgnored public var onFinished: (() -> Void)?
-    /// The clock moved: `timePosition` and `duration`, on the main actor at
-    /// the same 0.1 s cadence as the published position. The controller's
-    /// timed decisions hang off it rather than off a view body, so they
-    /// run with the screen locked.
+    /// The clock moved: `timePosition` and `duration`, on the main actor
+    /// every 0.1 s. Timed host decisions hang off this rather than a view
+    /// body, so they run with the screen locked.
     @ObservationIgnored public var onTimeAdvanced: ((Double, Double) -> Void)?
-    /// Playback could not continue. The failure carries whether a different
-    /// delivery of the same media might work, so the controller can drop to
-    /// the next rung of the fallback ladder instead of stranding the viewer.
+    /// Playback could not continue. The failure's cause says whether another
+    /// delivery of the same media might work.
     @ObservationIgnored public var onError: ((PlaybackEngineFailure) -> Void)?
 
-    /// Extra `key="value"` fragments a host wants on the bench result line.
-    ///
-    /// The engine used to read the app's display-mode matcher directly for
-    /// this. Matching a television's refresh rate is the host's job — it owns
-    /// the window and the display manager — so the host supplies the text.
+    /// Extra `key="value"` fragments a host wants on the bench result line,
+    /// such as display-match state, which the host owns.
     @ObservationIgnored var benchGatesSupplement: (() -> String)?
     @ObservationIgnored public var onTrackSelectionChanged: (() -> Void)?
-    /// Fires once the initial audio/video cushion is enqueued and the media
-    /// clock is anchored. Episode handoff metrics use this rather than stream
-    /// discovery so they measure user-visible readiness, not merely an open.
+    /// Fires once the first audio/video cushion is enqueued and the clock
+    /// anchored: user-visible readiness, not merely an open.
     @ObservationIgnored public var onPlaybackStarted: (() -> Void)?
-    /// The first frame after a load *or a seek* is anchored — unlike
-    /// `onPlaybackStarted`, which is one-shot per engine, this runs every
-    /// time the clock is re-anchored. SyncPlay reports Ready on it: the
-    /// server asks each member to confirm it has arrived at the position
-    /// before the group is started again.
+    /// Fires every time the clock is anchored after a load or a seek, unlike
+    /// one-shot `onPlaybackStarted`. SyncPlay reports Ready on it.
     @ObservationIgnored public var onSeekReady: (() -> Void)?
-    /// Buffering began or ended: a stall, a seek, the first prime. The one
-    /// signal a SyncPlay group's Buffering and Ready reports are made of —
-    /// the group waits for its slowest member, so it has to hear about a
-    /// stall this engine recovers from on its own. Fired only on
-    /// a change, from `setBuffering`.
+    /// Buffering began or ended (a stall, a seek, the first prime), fired
+    /// only on a change. A SyncPlay group waits for its slowest member, so
+    /// it must hear about stalls the engine recovers from on its own.
     @ObservationIgnored public var onBufferingChanged: ((Bool) -> Void)?
     // MARK: Cross-thread state
 
@@ -336,13 +286,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// Compressed video read past the decoded-frame limit while the demuxer
     /// reads on for audio. Demux queue, plus the resets.
     @ObservationIgnored nonisolated private let videoIntake = VideoIntakeQueue()
-    /// Serialises admission to and drain from the intake, because both the
-    /// demux loop and the video pump feed the decoders from it and decode
-    /// order must survive the two racing.
+    /// Serialises intake admission and drain: the demux loop and the video
+    /// pump both feed decoders from it, and decode order must survive that.
     @ObservationIgnored nonisolated private let videoFeedLock = NSLock()
-    /// How long a backpressure wait may sleep before the loop re-evaluates
-    /// the policy on its own. A full decoded queue under a stopped clock
-    /// never dequeues, and audio can run dry behind it.
+    /// Longest a backpressure wait sleeps before re-checking the policy. A
+    /// full decoded queue under a stopped clock never dequeues, and audio
+    /// can run dry behind it.
     nonisolated private static let demuxWaitTimeout: TimeInterval = 0.25
     #if DEBUG
     @ObservationIgnored nonisolated private let diagnosticFaultGate = PlaybackDiagnosticFaultGate()
@@ -351,10 +300,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// apart from attach and teardown, which run before and after any pump.
     @ObservationIgnored nonisolated(unsafe) private var videoRequestsArmed = false
     @ObservationIgnored nonisolated(unsafe) private var audioRequestsArmed = false
-    /// Request-block invocations that found nothing to give. The
-    /// pump stops requesting on each, so this stays near zero; the loop that
-    /// once cost half a core would count thousands a second. Read by the
-    /// regression probe, hence atomic.
+    /// Request-block calls that found nothing to give. The pump disarms on
+    /// each, so this stays near zero; a busy loop would count thousands a
+    /// second. Atomic because the regression probe reads it.
     @ObservationIgnored nonisolated private let idleRequestCounter = Atomic<Int>(0)
 
     nonisolated public var idleRequestCallbacks: Int {
@@ -401,43 +349,36 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     @ObservationIgnored private var finishObserver: Any?
     @ObservationIgnored private var didFinish = false
     @ObservationIgnored private var didNotifyPlaybackStarted = false
-    /// Where the clock is heading while it is stopped for a load or a seek,
-    /// which is what `clockPosition` answers with in that window.
-    /// Nil while running, and while a stall holds the clock in place — the
-    /// position is then the live `timePosition`.
+    /// Where the clock is heading while stopped for a load or seek. Nil while
+    /// running and during a stall, when `timePosition` is live.
     @ObservationIgnored private var bufferingTargetSeconds: Double?
-    /// A group start instant that arrived while the engine was still
-    /// buffering. `beginPlayback` anchors on it instead of its own
-    /// near-future host time, provided it has not already passed.
+    /// A group start instant that arrived while buffering. `beginPlayback`
+    /// anchors on it unless it has already passed.
     @ObservationIgnored private var scheduledStartHostTime: CMTime?
     @ObservationIgnored private var stallRecoveryTask: Task<Void, Never>?
     @ObservationIgnored private var stallConfirmationTask: Task<Void, Never>?
     @ObservationIgnored private var stallConfirmationID: UUID?
     @ObservationIgnored private var stallSignpostActive = false
     @ObservationIgnored private var shutdownRequested = false
-    /// Soak diagnostics: cost and cadence of the 10 Hz main-actor
-    /// tick (`observeTime`), accumulated only while `ProcessCPUTrace.enabled`
-    /// and drained into one DecodeTrace field every two seconds. Report-only.
+    /// Cost and cadence of the 10 Hz main-actor tick, gathered only while
+    /// `ProcessCPUTrace.enabled` and drained into DecodeTrace every 2 s.
     @ObservationIgnored private var mainTick = MainTickStatistics()
     @ObservationIgnored private var lastTickInstant: ContinuousClock.Instant?
     @ObservationIgnored private var rendererNotificationTokens: [NSObjectProtocol] = []
     @ObservationIgnored private var audioRendererNotificationTokens: [NSObjectProtocol] = []
     @ObservationIgnored private var rendererRecoveryInProgress = false
-    /// The playback generation whose one restart-point retry has been spent.
-    /// nil until a decode failure has earned one.
+    /// The playback generation that has spent its one restart-point retry.
     @ObservationIgnored private var restartPointRetryGeneration: Int?
     @ObservationIgnored private var audioRendererRecoveryInProgress = false
-    /// Non-nil while a fresh audio renderer is being swapped in. Both paths
-    /// that replace one share it, so a flush notification cannot start a
-    /// second swap on top of the first.
+    /// Non-nil while a fresh audio renderer is swapped in, so a flush
+    /// notification cannot start a second swap on top of the first.
     @ObservationIgnored private var audioRendererReplacementID: UUID?
     @ObservationIgnored private var audioStatusObservation: NSKeyValueObservation?
 
     @ObservationIgnored private var pendingURL: URL?
     @ObservationIgnored nonisolated(unsafe) private var pendingCacheSession: PlaybackCacheSession?
-    /// The session the fill loop works on. Distinct from the one handed to
-    /// the demuxer: a complete cache file plays straight from disk, but is
-    /// still worth finishing in the background.
+    /// The session the fill loop works on. Differs from the demuxer's: a
+    /// complete cache file plays from disk but is still worth finishing.
     @ObservationIgnored var cacheSessionForFill: PlaybackCacheSession?
     @ObservationIgnored var bufferFillTask: Task<Void, Never>?
     @ObservationIgnored var bufferFillGeneration: UUID?
@@ -468,41 +409,30 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     /// Whether a cache would sit in front of these bytes.
     ///
-    /// `prepare` decides this for itself and a host does not have to ask.
-    /// It is here because an incident report records how an attempt was
-    /// delivered *before* the attempt starts, and by the time the engine
-    /// could answer for itself the record is already open.
+    /// `prepare` decides this itself. It is exposed because an incident
+    /// report records the delivery before the attempt starts.
     public nonisolated static func cachesPlayback(url: URL, delivery: MediaDelivery) -> Bool {
-        // A file on disk is either a finished cache file or a download, and
-        // either way the bytes are already local.
+        // A file on disk is already local.
         url.isFileURL || PlaybackBufferPolicy.customIOEnabled(for: delivery)
     }
 
     /// Opens a media source and gets ready to play it.
     ///
-    /// Returns immediately; opening, probing and the first decode happen on
-    /// the engine's own queues. Watch `onPlaybackStarted` for the first
-    /// frame and `onError` for a failure it could not recover from.
+    /// Returns immediately; opening, probing and first decode run on the
+    /// engine's queues. Watch `onPlaybackStarted` and `onError`.
     ///
-    /// The engine decides for itself whether to put a cache in front of the
-    /// bytes, using `delivery`: a stable file can be cached and filled
-    /// ahead, a segmented manifest cannot. A host used to make that call and
-    /// hand a session in, which meant it also had to run the fill loop out
-    /// of engine state it was only relaying.
+    /// The engine decides from `delivery` whether to cache: a stable file
+    /// can be cached and filled ahead, a segmented manifest cannot.
     ///
     /// - Parameters:
     ///   - url: Where the media is. A file URL plays straight from disk.
-    ///   - itemID: The host's own identifier for this media, used to match a
-    ///     successor staged earlier by `stageSuccessor`. Opaque here.
-    ///     Leaving it out plays without a cache: the engine has no name to
-    ///     file the bytes under, and nothing to match a successor against.
+    ///   - itemID: The host's opaque ID, matched against a staged
+    ///     successor. Empty plays without a cache.
     ///   - delivery: Whether the bytes are a stable file or a manifest.
-    ///   - expectedLength: The content length if the host already knows it,
-    ///     which saves a probe request.
-    ///   - startSeconds: Where to begin.
-    ///   - initialAudioOrdinal: Which audio track to select, or nil to let
-    ///     the container decide.
-    ///   - authorization: A credential to send with every request.
+    ///   - expectedLength: The content length if known; saves a probe.
+    ///   - initialAudioOrdinal: Audio track to select, or nil for the
+    ///     container's default.
+    ///   - authorization: A credential sent with every request.
     public func prepare(
         url: URL,
         itemID: String = "",
@@ -555,19 +485,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     /// Warms a cache scope for media the host expects to play next.
     ///
-    /// At most one successor is staged at a time. When `prepare` is called
-    /// with the same `itemID` and URL, the warmed scope is promoted instead
-    /// of a fresh one being opened, so an episode handoff keeps what it
-    /// already fetched.
+    /// One successor at a time. A later `prepare` with the same `itemID` and
+    /// URL promotes the warmed scope, so a handoff keeps what it fetched.
+    /// Staging suspends this engine's own fill (one proactive download at a
+    /// time); the active file's cached bytes stay readable.
     ///
-    /// Staging suspends this engine's own fill: one proactive download at a
-    /// time, and near the end of an episode the bytes the viewer is about to
-    /// need are the next episode's. Cached bytes for the active file stay
-    /// readable throughout.
-    ///
-    /// - Parameter warms: Whether to fetch a bounded head start as well as
-    ///   opening the scope. False when the handoff is already happening and
-    ///   nothing should be between it and the link.
+    /// - Parameter warms: Whether to also fetch a bounded head start. False
+    ///   when the handoff is already under way.
     public func stageSuccessor(
         itemID: String,
         url: URL,
@@ -597,9 +521,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         stopSuccessorWarm()
     }
 
-    /// Throws away a staged successor, if there is one. A non-nil `itemID`
-    /// only discards a scope staged for that item, so a cancelled
-    /// preparation cannot remove its own replacement.
+    /// Throws away a staged successor. A non-nil `itemID` only discards that
+    /// item's scope, so a cancelled preparation cannot remove its replacement.
     public func discardStagedSuccessor(itemID: String? = nil) {
         stopSuccessorWarm()
         PlaybackCacheOwner.coordinator.discardNext(itemID: itemID)
@@ -629,18 +552,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     public func attach(displayLayer: AVSampleBufferDisplayLayer) {
-        // A shut-down engine must never come back to life.
-        // `finishRendererShutdown` nils `videoRenderer`, so the emptiness
-        // check alone lets a retired engine pass — and SwiftUI does re-mount
-        // the surface after a failed playback, which used to re-register a
-        // renderer set that could never detach again (`shutdown` early-returns
-        // on `shutdownRequested`) and start a second demux loop that reopened
-        // the stream, transcode session and all.
+        // Never revive a shut-down engine. `finishRendererShutdown` nils
+        // `videoRenderer`, so the nil check alone would let one pass when
+        // SwiftUI re-mounts the surface after a failure, starting a second
+        // demux loop whose renderers can never detach.
         guard !shutdownRequested, videoRenderer == nil, let url = pendingURL else { return }
 
-        // Debug switches, read once per playback like the HUD's: the strip
-        // experiment must not change mid-A/B, and the bench arms in
-        // beginPlayback.
+        // Read once per playback so a switch cannot change mid-A/B. The
+        // bench arms in beginPlayback.
         let tuning = EngineTuning.current
         demuxer.dolbyVisionProfile7Mode = tuning.stripsDolbyVisionEnhancementLayer
             ? .stripToHDR10 : .convert
@@ -708,9 +627,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let demuxLifecycleID = lifecycleID
         demuxQueue.async { [weak self] in
             guard let self else {
-                // An immediate dismissal can release an engine before this
-                // serial block begins. No demuxer was opened in that case,
-                // but the diagnostic start still needs an exact counterpart.
+                // Released before the block ran: no demuxer opened, but the
+                // diagnostic start still needs its matching end.
                 PlaybackLifecycleDiagnostics.demuxEnded(demuxLifecycleID)
                 return
             }
@@ -724,27 +642,17 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// Every audio renderer this engine owns, configured identically — a
-    /// replacement after a failure or a media-services reset has to sound
-    /// exactly like the one it replaces.
+    /// Every audio renderer this engine owns, so a replacement after a
+    /// failure or media-services reset sounds the same.
     ///
-    /// The spatialization default differs between Apple's two players, and
-    /// not in this one's favour: `AVPlayerItem` documents
-    /// `monoStereoAndMultichannel` for video content, while
-    /// `AVSampleBufferAudioRenderer` documents `multichannel` alone. Left at
-    /// its default, a stereo soundtrack that AVPlayer would spatialize on
-    /// AirPods plays flat here — which covers a great deal of television,
-    /// anime and older film.
-    ///
-    /// This grants permission rather than forcing an effect: the viewer's
-    /// Spatial Audio setting still decides, and over HDMI to a receiver it
-    /// changes nothing at all.
+    /// `AVSampleBufferAudioRenderer` defaults to spatializing `multichannel`
+    /// only, unlike `AVPlayerItem`, so stereo would play flat on AirPods.
+    /// This only permits spatialization; the viewer's setting still decides.
     static func makeAudioRenderer() -> AVSampleBufferAudioRenderer {
         let renderer = AVSampleBufferAudioRenderer()
         renderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
-        // The sample-buffer renderer otherwise changes pitch with rate.
-        // Time-domain processing keeps speech natural at 1.25x/1.5x and is
-        // applied here so media-service and failure replacements inherit it.
+        // Otherwise pitch changes with rate. Time-domain keeps speech natural
+        // at 1.25x/1.5x.
         renderer.audioTimePitchAlgorithm = .timeDomain
         return renderer
     }
@@ -763,10 +671,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         rearmBench(at: timePosition)
     }
 
-    /// Group start: reach `hostTime` on the host clock with the
-    /// current media position on screen, rather than starting whenever the
-    /// call happens to land. Anything already in the past, or a clock not
-    /// yet primed enough to be scheduled, falls through to `play()`.
+    /// Group start: present the current position at `hostTime` on the host
+    /// clock. A time already past falls through to `play()`.
     public func play(atHostTime hostTime: CMTime) {
         guard hostTime.isValid, hostTime.isNumeric else {
             play()
@@ -796,24 +702,20 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     /// The one writer of `isBuffering`, so the transition can be announced.
-    /// Every caller already only sets it when it means it; the
-    /// guard is for the observer, not for the flag.
     private func setBuffering(_ buffering: Bool) {
         guard isBuffering != buffering else { return }
         isBuffering = buffering
         onBufferingChanged?(buffering)
     }
 
-    /// Speed up or slow down a group member that has drifted, without
-    /// touching the rate the viewer chose — which is what the speed row and
-    /// Now Playing publish. 1 restores the viewer's rate exactly.
+    /// Nudges a drifted group member without touching the viewer's `rate`.
+    /// 1 restores the viewer's rate exactly.
     public func setCorrectionRate(_ multiplier: Double) {
         let resolved = multiplier.isFinite && multiplier > 0 ? multiplier : 1
         guard resolved != correctionRate else { return }
         correctionRate = resolved
         let effective = effectiveRate
-        // Demux watermarks hold a wall-clock cushion, so they scale by the
-        // speed the clock actually drains at, correction included.
+        // Demux watermarks scale by the effective rate, correction included.
         shared.withLock { $0.playbackRate = effective }
         if !isPaused, !isBuffering {
             synchronizer.rate = Float(effective)
@@ -826,10 +728,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // A group pause overrides a group start that has not arrived yet.
         scheduledStartHostTime = nil
         EngineDiagnostics.record(.playbackPause, ["position": .double(timePosition.rounded(toPlaces: 1))])
-        // Soak diagnostic: this is the one call in the pause path
-        // that reaches AVFoundation's own state; a pause that starts taking
-        // real wall time is what "pause takes a minute" looks like from the
-        // inside. Report-only.
+        // Soak diagnostic: the one pause call into AVFoundation's state, so
+        // a slow pause shows up here.
         if ProcessCPUTrace.enabled {
             let waitStart = ContinuousClock.now
             synchronizer.rate = 0
@@ -850,8 +750,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         } else {
             pause()
         }
-        // Touching the transport ends a controlled measurement window;
-        // the bench re-arms from wherever playback continues.
+        // play() and pause() re-arm the bench from here.
     }
 
     public func setRate(_ requestedRate: Double) {
@@ -891,8 +790,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             )
         }
         onTrackSelectionChanged?()
-        // Cleanest gapless-ish switch in M1: re-run the demux from the
-        // current position with the new stream selected.
+        // Re-demux from the current position with the new stream selected.
         seek(to: timePosition)
     }
 
@@ -901,9 +799,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         guard clamped != audioDelay else { return }
         audioDelay = clamped
         shared.withLock { $0.audioDelaySeconds = clamped }
-        // Compressed buffers carry their stamps from the demuxer — the
-        // cheapest correct live apply is the audio-switch trick: re-demux
-        // from here so every new buffer is stamped with the new offset.
+        // Compressed buffers carry demuxer stamps, so re-demux from here to
+        // stamp every new buffer with the new offset.
         seek(to: timePosition)
     }
 
@@ -940,11 +837,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             state.selectedSubtitleOrdinal = ordinal
             state.selectedSubtitleStreamIndex = ordinal > 0 && ordinal <= embeddedSubtitleCount
                 ? state.embeddedSubtitleStreamIndices[ordinal - 1] : -1
-            // The demux subtitle callback holds this same lock through its
-            // cue write, so an old embedded packet cannot append after the
-            // external replacement is committed. An embedded track (or off)
-            // starts an empty window that the demuxer fills and display
-            // refresh prunes.
+            // The demux subtitle callback holds this lock through its cue
+            // write, so an old embedded packet cannot land after an external
+            // track is committed.
             if ordinal > embeddedSubtitleCount {
                 subtitleStore.replaceExternalTrack(with: cues)
             } else {
@@ -968,9 +863,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
         onTrackSelectionChanged?()
         if ordinal >= 1, ordinal <= embeddedSubtitleCount {
-            // Re-demux from the previous keyframe so a line that is
-            // already on screen elsewhere appears immediately, not at the
-            // next cue.
+            // Re-demux from the previous keyframe so a line already due
+            // appears now, not at the next cue.
             seek(to: timePosition)
         } else {
             refreshSubtitles(at: timePosition)
@@ -985,9 +879,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let token = externalLoadToken
         let title = Self.externalTrackName(for: track)
         subtitleLoadState = .loading(id: ordinal, title: title)
-        // `pendingAuthorization` is set once by `prepare(...)` and held for
-        // the engine's whole lifetime, so it is still there for a track
-        // added later through `addExternalSubtitle` mid-playback.
+        // `pendingAuthorization` lives for the engine, so a track added
+        // mid-playback still has it.
         externalLoadTask = Task { [weak self, subtitleDownloader, pendingAuthorization] in
             do {
                 let cues = try await ExternalSubtitleLoader.load(track, using: subtitleDownloader, authorization: pendingAuthorization)
@@ -1062,14 +955,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         audioDeliverySuspendedForDiagnostics = false
         demuxDeliverySuspendedForDiagnostics = false
         #endif
-        // The demux loop may be asleep on queue backpressure while paused
-        // or while AVFoundation's internal queues are full. Wake it so it
-        // can observe cancellation and close immediately.
+        // Wake a demux loop asleep on backpressure so it sees cancellation.
         videoQueue.interruptWaits()
         audioQueue.interruptWaits()
-        // Aborts any av_* call blocked inside network I/O so the demux
-        // loop can exit and close — without this a wedged open froze
-        // teardown.
+        // Aborts any av_* call blocked in network I/O; a wedged open would
+        // otherwise freeze teardown.
         demuxer.interrupt()
         if let timeObserver {
             synchronizer.removeTimeObserver(timeObserver)
@@ -1089,19 +979,16 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             depths.audio
         )
 
-        // requestMediaDataWhenReady and every enqueue already run on this
-        // serial queue. Teardown belongs on the same queue: it removes a
-        // race with an in-flight pump and, critically, keeps
-        // renderer flushes and hundreds of CMSampleBuffer releases off the
-        // main actor while the presenting screen animates back in.
+        // Teardown runs on the pump queue: no race with an in-flight pump,
+        // and flushes and sample-buffer releases stay off the main actor
+        // while the UI animates back.
         pumpQueue.async { [self] in
             finishRendererShutdown()
         }
     }
 
-    /// Completes only after this engine has closed FFmpeg and AVFoundation
-    /// has acknowledged removal of both renderers. The controller keeps the
-    /// instance alive while awaiting this during an episode handoff.
+    /// Completes once FFmpeg is closed and AVFoundation has removed both
+    /// renderers. Keep the engine alive while awaiting this.
     nonisolated public func waitForMediaResourcesToRetire(
         timeout: Duration = .seconds(15)
     ) async -> Bool {
@@ -1160,24 +1047,20 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     // MARK: - soak diagnostics (report-only)
 
-    /// Drains the main-actor tick accumulator into one DecodeTrace field and
-    /// resets it for the next window.
+    /// Drains the main-actor tick statistics into one DecodeTrace field.
     public func drainMainTickDiagnostic() -> String { mainTick.drain() }
 
-    /// Cue count the subtitle overlay is currently scanning, so a leak
-    /// there over a long film shows up beside the other soak figures.
+    /// Cue count the subtitle overlay is scanning, to spot a leak.
     public var subtitleCueCountDiagnostic: Int { subtitleStore.count }
 
-    /// Renderer notification observers still registered. Should hold
-    /// steady across a film; growth means a recovery path is re-observing
-    /// without releasing what came before.
+    /// Renderer notification observers registered. Growth means a recovery
+    /// path re-observes without releasing.
     public var rendererObserverCountDiagnostic: Int {
         rendererNotificationTokens.count + audioRendererNotificationTokens.count
     }
 
-    /// A ping that measures how long anything handed to the pump queue
-    /// waits behind whatever is already running there. Touches no engine
-    /// state — the queue itself is the only thing being measured.
+    /// Measures how long work handed to the pump queue waits. Touches no
+    /// engine state.
     nonisolated public func measurePumpQueueLatency(_ completion: @escaping @Sendable (Duration) -> Void) {
         let start = ContinuousClock.now
         pumpQueue.async {
@@ -1185,8 +1068,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// Wall-clock milliseconds for a `Duration`, shared by every `SoakWait`
-    /// print below.
+    /// Milliseconds for a `Duration`, for the `SoakWait` prints.
     nonisolated private static func milliseconds(_ duration: Duration) -> Double {
         Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15
     }
@@ -1214,32 +1096,24 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
 
         #if DEBUG
-        // Hardware can spend several seconds retiring a 4K decoder and its
-        // queued surfaces. This launch-only hook reproduces that timing on
-        // CoreSimulator so autoplay must prove it never overlaps the old
-        // renderer with the successor.
+        // Hardware can take seconds to retire a 4K decoder. This hook
+        // reproduces that in the simulator, so autoplay must prove it never
+        // overlaps the old renderer with the successor.
         let regressionDelay = EngineTuning.current.rendererRetirementDelaySeconds
         if regressionDelay > 0 {
             Thread.sleep(forTimeInterval: regressionDelay)
         }
         #endif
 
-        // The synchronizer otherwise retains both renderers until the
-        // main-actor engine dies. Removing them asynchronously lets their
-        // decoder resources retire without hitching the returning UI.
-        //
-        // Soak diagnostic: `retirementStart` spans exactly this
-        // DispatchGroup, from the first `removeRenderer` call to the
-        // `notify` below firing — how long hardware actually takes to
-        // retire a decoder and its queued surfaces. Report-only.
+        // The synchronizer otherwise retains both renderers until the engine
+        // dies. Removing them asynchronously lets decoders retire without
+        // hitching the UI. `retirementStart` times the removal (soak only).
         let retirementStart = ProcessCPUTrace.enabled ? ContinuousClock.now : nil
         let removals = DispatchGroup()
         if let video {
             removals.enter()
-            // Apple's contract names invalid time as the explicit
-            // immediate-removal sentinel. Avoid manufacturing a negative
-            // timeline value and wait for the completion before declaring
-            // the renderer retired.
+            // `.invalid` is Apple's immediate-removal sentinel. Wait for the
+            // completion before declaring the renderer retired.
             synchronizer.removeRenderer(video, at: .invalid) { _ in
                 removals.leave()
             }
@@ -1269,18 +1143,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     // MARK: - Seeking
 
-    /// Empties the renderers and every queue in front of them, and forgets
-    /// the anchors taken from what was there. Runs on the pump queue so it
-    /// serializes with enqueues; `seek(to:)` calls it when the seek is
-    /// asked for, and the demux loop calls it again when it performs the
-    /// seek. The second call exists because the demux thread can be blocked
-    /// in a read at the moment of the first: the packet that read returns
-    /// belongs to the old position, lands in an emptied queue, and is pumped
-    /// into an emptied renderer before the loop notices the seek. Its PTS is
-    /// then the first enqueued one, which `PlaybackClockAnchor` prefers over
-    /// the target whenever it lies beyond it, so a backward scrub restarted
-    /// the clock at the old position and the picture caught up to it
-    /// instead of landing.
+    /// Empties the renderers and their queues, and forgets their anchors.
+    /// Pump queue only, to serialize with enqueues. `seek(to:)` calls it, and
+    /// the demux loop calls it again when it performs the seek: a read
+    /// blocked during the first call returns an old-position packet whose
+    /// PTS `PlaybackClockAnchor` would otherwise anchor a backward scrub on.
     nonisolated private func flushRenderersAndQueues() {
         videoRenderer?.flush()
         audioRenderer?.flush()
@@ -1299,17 +1166,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     public func seek(to target: Double) {
         let clamped = max(0, duration > 0 ? min(target, duration - 1) : target)
         EngineDiagnostics.record(.playbackSeek, ["position": .double(clamped.rounded(toPlaces: 1))])
-        // Optimistic: the playhead moves the instant the seek is asked
-        // for — the engine will resume from exactly here. The
-        // timed decisions hear about it too, so a paused scrub into an
-        // intro shows the pill.
+        // Optimistic: the playhead moves now; the engine resumes from here.
         timePosition = clamped
         didFinish = false
         removeFinishObserver()
         bufferingTargetSeconds = clamped
         setBuffering(true)
-        // The instant a group agreed to start from is about to be wrong;
-        // the driver schedules a new one after this seek reports Ready.
+        // A pending group start is now stale; a new one follows Ready.
         scheduledStartHostTime = nil
         synchronizer.rate = 0
         shared.withLock {
@@ -1317,13 +1180,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             $0.videoBufferedTo = clamped
             $0.playbackGeneration += 1
         }
-        // Enqueue, flush, and queue reset share the pump queue. This makes
-        // Apple's post-flush keyframe rule deterministic: an in-flight old
-        // sample cannot race in after the flush.
-        //
-        // Soak diagnostic: this is the pumpQueue.sync every seek
-        // (and every recovery path that re-seeks) blocks the caller on.
-        // Report-only.
+        // Enqueue, flush and reset share the pump queue, so no old sample
+        // can race in after the flush (Apple's post-flush keyframe rule).
+        // The soak branch times this sync wait.
         if ProcessCPUTrace.enabled {
             let waitStart = ContinuousClock.now
             pumpQueue.sync { self.flushRenderersAndQueues() }
@@ -1334,12 +1193,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         } else {
             pumpQueue.sync { self.flushRenderersAndQueues() }
         }
-        // The pts chain restarts at the target; the first buffer after a
-        // flush must not read as a discontinuity.
+        // The first buffer after a flush must not read as a discontinuity.
         audioContinuity.reset()
-        // Embedded cues re-arrive from the demuxer after the seek; leaving
-        // the old ones would duplicate them. External cue lists are
-        // complete and position-independent, so they stay.
+        // Embedded cues re-arrive after the seek, so drop them to avoid
+        // duplicates. External cue lists are complete and stay.
         let embeddedSubtitleActive = shared.withLock { state -> Bool in
             return state.selectedSubtitleStreamIndex >= 0
         }
@@ -1349,18 +1206,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         currentSubtitleText = nil
         currentSubtitleCues = []
         currentSubtitleImages = []
-        // Automation may synchronously skip from this position. Publish
-        // only after committing this seek, so a nested seek remains newest.
+        // Publish last: a host may seek again synchronously, and that nested
+        // seek must stay newest.
         onTimeAdvanced?(clamped, duration)
     }
 
-    /// Audio-only playback for a phone in the background. While
-    /// suspended the demuxer discards video, nothing is decoded, and the
-    /// renderer holds no pictures; audio, the clock, subtitles and the
-    /// finish boundary carry on. Resuming seeks to the current position so
-    /// the picture restarts on a keyframe with a fresh decoder session,
-    /// which is what a hardware decoder invalidated by the background
-    /// needs anyway.
+    /// Audio-only playback in the background: video is discarded and not
+    /// decoded; audio, the clock, subtitles and the finish boundary carry
+    /// on. Resuming seeks in place so the picture restarts on a keyframe
+    /// with a fresh decoder session.
     public func setVideoOutputSuspended(_ suspended: Bool) {
         let changed = shared.withLock { state -> Bool in
             guard state.videoOutputSuspended != suspended else { return false }
@@ -1371,15 +1225,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         if suspended {
             pumpQueue.sync { self.flushVideoPath() }
         } else if !didFinish, duration <= 0 || timePosition < duration - 1 {
-            // Inside the last second `seek` would clamp backwards; the
-            // finish boundary is about to fire anyway.
+            // In the last second `seek` would clamp backwards.
             seek(to: timePosition)
         }
     }
 
-    /// The video half of `flushRenderersAndQueues`: drop what is queued and
-    /// in the renderer, leave audio untouched. A queue the demuxer already
-    /// closed stays closed, or the loop would read the end of file twice.
+    /// The video half of `flushRenderersAndQueues`. A finished queue stays
+    /// finished, or the loop would read end of file twice.
     nonisolated private func flushVideoPath() {
         let wasFinished = videoQueue.isFinished
         videoRenderer?.flush()
@@ -1393,12 +1245,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// Demux primed after open/seek — start (or reposition, if paused) at
-    /// the target position.
+    /// Demux primed after open or seek: start, or reposition if paused.
     private func beginPlayback(at seconds: Double, firstVideoPTS: CMTime?) {
-        // High-precision anchor: at a display matched to the content rate
-        // every frame has one vsync of slack, and a coarse (600/s) anchor
-        // already spends up to 1.7 ms of it before playback begins.
+        // High-precision anchor: with a matched display rate each frame has
+        // one vsync of slack, and a 600/s anchor spends up to 1.7 ms of it.
         let time = PlaybackClockAnchor.mediaTime(
             targetSeconds: seconds,
             firstVideoPTS: firstVideoPTS
@@ -1410,18 +1260,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             synchronizer.setRate(0, time: time)
         } else {
             let now = CMClockGetTime(CMClockGetHostTimeClock())
-            // Apple's recommended custom-playback start: bind media time to
-            // a near-future host time so queued renderers reach the first
-            // presentation deadline together instead of starting late.
+            // Apple's recommended start: anchor to a near-future host time so
+            // the renderers meet the first deadline together.
             let defaultHostTime = CMTimeAdd(
                 now,
                 CMTime(seconds: 0.1, preferredTimescale: 1_000_000_000)
             )
-            // A group start names the one instant every member presents this
-            // position at. Priming took as long as it took, so
-            // honour it only while it is still ahead of us; a missed instant
-            // is the server's to reissue, and the default anchor is what a
-            // late member needs to get playing at all.
+            // Honour a group start only while it is still ahead; a missed
+            // one is the server's to reissue.
             let hostTime: CMTime
             if let scheduledStart, CMTimeCompare(scheduledStart, now) > 0 {
                 hostTime = scheduledStart
@@ -1430,30 +1276,21 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             synchronizer.setRate(Float(effectiveRate), time: time, atHostTime: hostTime)
         }
-        // Announced only now, with the clock already anchored. The end of
-        // buffering is what a SyncPlay group turns into its `Ready`, and
-        // that report carries `clockPosition` — which reads the
-        // synchronizer, and the synchronizer sits wherever it was last
-        // anchored until the lines above run: zero on a first open, the
-        // position left behind after a seek. Reporting Ready from there
-        // tells the server this member is somewhere it is not, and the
-        // server answers by dragging the whole group to that position.
-        // Until the flag clears, the same reader answers with
-        // `bufferingTargetSeconds`, so the window has one answer
-        // throughout: the position being anchored.
+        // Only after anchoring: SyncPlay's Ready carries `clockPosition`,
+        // which reads the synchronizer. Before the anchor it holds the old
+        // position, and the server would drag the whole group there.
         setBuffering(false)
         bufferingTargetSeconds = nil
         kickPumps()
         rearmBench(at: time.seconds)
         if !didNotifyPlaybackStarted {
             didNotifyPlaybackStarted = true
-            // Fill starts once the picture is up, never before: the
-            // foreground read has the link until then.
+            // Fill starts only once the picture is up; until then the
+            // foreground read has the link.
             startBufferFill()
             onPlaybackStarted?()
         }
-        // Every open and every seek: the position asked for is now anchored
-        // and the renderers are holding its first frame.
+        // Every open and seek.
         onSeekReady?()
         os_signpost(
             .event,
@@ -1465,9 +1302,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         )
     }
 
-    /// EOF is a renderer-timeline event, not a queue-depth heuristic. The
-    /// demuxer can finish while AVFoundation still owns buffered media; a
-    /// boundary observer lets those samples present before advancing.
+    /// EOF is a renderer-timeline event: the demuxer can finish while
+    /// AVFoundation still holds media, so a boundary observer waits for it.
     private func armFinishBoundary(at seconds: Double, generation: Int) {
         guard !shutdownRequested, !didFinish, seconds.isFinite else { return }
         let isCurrent = shared.withLock { !$0.cancelled && $0.playbackGeneration == generation }
@@ -1561,15 +1397,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 )
             }
         })
-        // The two notifications above are the renderer's recoverable events.
-        // Hard failure has no notification: Apple exposes it as `status`,
-        // documented key-value observable and "terminal status from which
-        // recovery is not always possible". Unobserved, a failed renderer
-        // left the film playing on in silence with nothing reported.
-        //
-        // KVO is delivered on whichever thread changed the property, which
-        // for a CoreMedia-owned renderer is not the main one — hence a hop
-        // rather than the `assumeIsolated` the notification blocks can use.
+        // Hard failure has no notification, only KVO on `status`; unobserved,
+        // a failed renderer plays on silently. KVO arrives off the main
+        // thread, hence the hop instead of `assumeIsolated`.
         audioStatusObservation = renderer.observe(\.status, options: [.new]) {
             [weak self, weak renderer] _, _ in
             Task { @MainActor [weak self, weak renderer] in
@@ -1595,10 +1425,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         audioStatusObservation = nil
     }
 
-    /// AVFoundation delivers automatic audio flushes on an arbitrary queue
-    /// and explicitly requires the follow-up flush to be serialized with
-    /// sample enqueueing. `seek` performs that flush and every queue reset on
-    /// `pumpQueue`, then asks the demux loop to refill from the playhead.
+    /// After an automatic flush AVFoundation requires our flush to be
+    /// serialized with enqueueing. `seek` does that on `pumpQueue` and
+    /// refills from the playhead.
     private func recoverAudioRenderer(
         _ renderer: AVSampleBufferAudioRenderer,
         from flushTime: CMTime?,
@@ -1629,22 +1458,16 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         seek(to: recoveryPosition)
     }
 
-    /// A media-services reset invalidates AVFoundation audio objects. Replace
-    /// the renderer rather than reusing it, retain the current synchronized
-    /// video surface, and deliberately stay paused until an explicit viewer
-    /// or remote-command action calls `play()`.
+    /// Replaces the audio renderer after a media-services reset, keeping the
+    /// video surface. Stays paused until something calls `play()`.
     public func recoverAfterMediaServicesReset() {
         guard let outgoingAudio = audioRenderer else { return }
         replaceAudioRenderer(outgoingAudio, for: .mediaServicesReset)
     }
 
     /// Swaps in a fresh audio renderer and refills it from the playhead.
-    ///
-    /// The only recovery AVFoundation offers for a renderer it has failed or
-    /// invalidated — neither state can be cleared on the object itself. The
-    /// synchronizer keeps the video renderer attached throughout, so what a
-    /// viewer loses is a few hundred milliseconds of audio rather than the
-    /// film.
+    /// A failed or invalidated renderer cannot be cleared in place. Video
+    /// stays attached, so the viewer loses only a moment of audio.
     private func replaceAudioRenderer(
         _ outgoingAudio: AVSampleBufferAudioRenderer,
         for replacement: AudioRendererReplacement
@@ -1659,8 +1482,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let recoveryPosition = timePosition
         let replacementID = UUID()
         audioRendererReplacementID = replacementID
-        // Invalidates this renderer's status observation too, so a failed
-        // renderer cannot re-report its terminal state while being retired.
+        // Also stops the status observation, so a failed renderer cannot
+        // re-report while being retired.
         removeAudioRendererObservers()
         let outgoingError = outgoingAudio.error?.localizedDescription
         let outgoingFailure = PlaybackFailureDetail(stage: .audioRenderer, error: outgoingAudio.error)
@@ -1725,9 +1548,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                             "position": .double(recoveryPosition.rounded(toPlaces: 1)),
                         ]) { _, new in new }
                     )
-                    // Refills both queues and re-anchors the clock. A paused
-                    // engine repositions without starting, which is what the
-                    // media-services case requires.
+                    // Refills and re-anchors; a paused engine stays paused.
                     self.seek(to: recoveryPosition)
                 }
             }
@@ -1735,12 +1556,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     #if DEBUG
-    /// Debug-only, off-by-default fault injection used by both the simulator
-    /// regression and the hardware calibration pass on the paired Apple TV,
-    /// run from a Debug build. It withholds samples from AVFoundation while
-    /// demuxing and video continue, which isolates audio starvation from
-    /// network and
-    /// codec behavior.
+    /// Debug fault injection: withholds audio from AVFoundation while demux
+    /// and video continue, isolating audio starvation.
     public func simulateAudioStarvationForDiagnostics(durationSeconds: Double = 3) {
         guard !shutdownRequested,
               !didSimulateAudioStarvation,
@@ -1760,10 +1577,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             guard let self, !self.shutdownRequested else { return }
             self.diagnosticFaultGate.setAudioDeliverySuspended(false)
             self.audioDeliverySuspendedForDiagnostics = false
-            // The clock ran while delivery was held, so the queue holds
-            // audio that ended before it; a real recovery never hands the
-            // renderer such samples, and they use up the acceptance budget
-            // the resume rule depends on.
+            // Drop audio the clock already passed; a real recovery never
+            // hands it over, and it uses up the resume rule's budget.
             let clock = self.timePosition
             self.audioQueue.dropLeading { Self.presentationEnd(of: $0).map { $0 < clock } ?? false }
             self.kickPumps()
@@ -1789,16 +1604,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     #endif
 
     #if DEBUG
-    /// Launch-gated UI regression hook. It invokes the exact notification
-    /// recovery path without pretending CoreSimulator changed hardware.
+    /// Regression hook: runs the automatic-flush recovery path.
     public func simulateAudioRendererFlushForRegression() {
         guard let audioRenderer else { return }
         recoverAudioRenderer(audioRenderer, from: nil, reason: "regression")
     }
 
-    /// The same for hard failure. A renderer cannot be made to report
-    /// `.failed` on demand, so the regression drives the replacement the
-    /// observation would have started.
+    /// Regression hook for hard failure, which cannot be induced on demand.
     public func simulateAudioRendererFailureForRegression() {
         guard let audioRenderer else { return }
         replaceAudioRenderer(audioRenderer, for: .rendererFailed)
@@ -1846,17 +1658,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let notificationError = notification.userInfo?[
             AVSampleBufferVideoRenderer.didFailToDecodeNotificationErrorKey
         ] as? Error
-        // Which sample was refused, before anything is decided about it: a
-        // restart-point failure and a verdict on the stream are otherwise
-        // indistinguishable in a report.
+        // Record the refused sample: it tells a restart-point failure from a
+        // verdict on the stream.
         if let milliseconds = Self.refusedSampleMilliseconds(notificationError ?? renderer.error) {
             shared.withLock { $0.lastRefusedSampleMs = milliseconds }
         }
-        // What the ladder is about to act on, for a hands-off device run.
-        // `AVErrorPresentationTimeStampKey` is the field that matters: it
-        // names which sample the decoder refused, which is how a restart
-        // point was
-        // told apart from the seek point itself.
+        // For hands-off device runs. `AVErrorPresentationTimeStampKey` names
+        // the refused sample.
         if ProcessCPUTrace.enabled {
             let underlying = (notificationError ?? renderer.error) as NSError?
             print(String(
@@ -1896,10 +1704,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             EngineDiagnostics.record(.playbackRendererRecovery, fields)
             EngineDiagnostics.report(.playbackRendererRecovery, level: .warning, variant: ["restartPoint"] + detail.fingerprint.dropFirst(), fields: fields)
             seek(to: recoveryPosition)
-            // Recorded *after* the seek, because `seek` bumps the
-            // generation: the retry is spent against the attempt it starts,
-            // so a second failure at the same position descends the ladder
-            // while a later seek by the viewer earns its own retry.
+            // After the seek, which bumps the generation: a second failure
+            // here descends the ladder, a later viewer seek earns a retry.
             restartPointRetryGeneration = shared.withLock { $0.playbackGeneration }
             return
         }
@@ -1916,10 +1722,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     /// The stamp of the sample a renderer refused, in media milliseconds.
-    ///
-    /// The only field of `userInfo` read anywhere: a number, never a name or
-    /// a URL, which is why `PlaybackFailureDetail` stays out of `userInfo`
-    /// altogether.
+    /// The only `userInfo` field read: a number, never a name or URL.
     nonisolated private static func refusedSampleMilliseconds(_ error: Error?) -> Int? {
         guard let value = (error as? NSError)?
             .userInfo[AVErrorPresentationTimeStampKey] as? NSValue else { return nil }
@@ -1929,10 +1732,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     private func observeTime(_ time: CMTime) {
-        // Soak diagnostic: cost and cadence of this 10 Hz
-        // main-actor tick, accumulated into `mainTick` and drained into one
-        // DecodeTrace field every two seconds. Guarded on the trace flag so
-        // the normal path pays nothing beyond the one Bool read.
+        // Soak diagnostic into `mainTick`; costs one Bool read when off.
         let tick: (start: ContinuousClock.Instant, interval: Duration?)?
         if ProcessCPUTrace.enabled {
             let start = ContinuousClock.now
@@ -1949,19 +1749,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
         let seconds = time.seconds
         guard seconds.isFinite else { return }
-        // 0.1 s granularity so the animated scrubber has fresh targets to
-        // glide toward.
+        // 0.1 s so the animated scrubber has fresh targets.
         if abs(seconds - timePosition) >= 0.1 {
             timePosition = seconds
             onTimeAdvanced?(seconds, duration)
         }
         refreshSubtitles(at: seconds)
-        // M6 stall detection: the clock has caught up to everything the
-        // demuxer delivered and the queue is dry, but the file isn't over
-        // — the network fell behind. Hold the clock instead of freezing
-        // frames while it runs.
-        // Video always reaches the recovery path. Audio is counted so a
-        // silence leaves a trace, and only reaches the recovery path when
+        // Stall detection: the clock caught up with the demuxer before the
+        // end. Hold the clock rather than freeze frames under it. Video
+        // always recovers; audio is counted, and recovers only when
         // `buffersOnAudioStarvation` is on.
         switch starvation(at: seconds) {
         case .video:
@@ -1979,18 +1775,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 audioStarvationCount += 1
             }
         case .none:
-            // Buffering answers `.none` because nothing is being judged, not
-            // because audio is healthy. An episode that became a stall is
-            // one episode until playback is running again; ending it here
-            // would count the dip right after resume, or a reprime's
-            // re-prime, as a second one.
+            // Buffering answers `.none` without judging audio. A starvation
+            // episode that became a stall ends only once playback runs, or
+            // the dip after resume would count twice.
             if !isBuffering {
                 wasAudioStarved = false
             }
             clearPendingStallConfirmation()
         }
-        // Bench sampling piggybacks on this observer at ~1 Hz — the same
-        // async metrics load the HUD uses, just driven while a window runs.
+        // Bench sampling rides this observer at ~1 Hz.
         if bench != nil {
             benchTickCount += 1
             if benchTickCount >= 10 {
@@ -2002,10 +1795,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     // MARK: - Frame-loss bench
 
-    /// (Re)start the controlled measurement window from `position` —
-    /// called at playback start and whenever the transport is touched,
-    /// because a window that survives a seek or pause is not a
-    /// controlled measurement.
+    /// Restarts the bench window from `position`. Called at start and on
+    /// every transport change: a window spanning a seek or pause is invalid.
     private func rearmBench(at position: Double) {
         guard benchEnabled else { return }
         if bench == nil {
@@ -2039,10 +1830,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         )
         if let result = bench!.record(sample) {
             benchStatus = result.regressionSummary
-            // Plain stdout beside the signpost: `devicectl ... --console`
-            // streams this from a real device, where the unified log is
-            // out of reach for a headless harness. Carries the
-            // gate states so a remote run is self-describing.
+            // Plain stdout so `devicectl ... --console` can capture it on a
+            // device. Carries the gate states so a run is self-describing.
             var gates = "vtime=\"\(videoTimingDiagnostic ?? "container")\""
             gates += " droppable=\"\(demuxer.markDroppableFrames ? "on" : "off")\""
             if let stats = demuxer.dolbyVisionRewriteStats {
@@ -2123,9 +1912,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// Pause the synchronizer, then poll until the demuxer has rebuilt a
-    /// safe cushion and restart. (The periodic observer stops firing at
-    /// rate 0, so recovery needs its own loop.)
+    /// Pauses the clock, polls until the cushion is rebuilt, then restarts.
+    /// Needs its own loop: the periodic observer stops at rate 0.
     private func beginStallRecovery(cause: PlaybackStarvation) {
         clearPendingStallConfirmation()
         setBuffering(true)
@@ -2222,9 +2010,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                         recoveryPosition,
                         self.stallCount
                     )
-                    // A bounded seek rebuilds both renderer queues and the
-                    // clock anchor. This prevents a slow or lost network
-                    // read from leaving rate=0 in an endless polling task.
+                    // A seek rebuilds queues and anchor, so a lost read
+                    // cannot leave rate 0 polling forever.
                     self.seek(to: recoveryPosition)
                     return
                 }
@@ -2232,9 +2019,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// A stall that ended, and a report when it was long enough to be seen:
-    /// a reprime means the clock sat at zero for `reprimeAfter`, and a
-    /// resume past `sustainedStallSeconds` was a visible freeze either way.
+    /// A stall is reported when it reprimed or lasted this long.
     static let sustainedStallSeconds: Double = 8
 
     private func recordStallEnd(outcome: String, since: ContinuousClock.Instant, cause: PlaybackStarvation) {
@@ -2256,10 +2041,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// A single 100 ms observer tick with no video scheduled beyond the
-    /// clock is not proof of starvation: the demux queue may refill on the
-    /// next scheduling turn. Confirm before pausing the shared clock, or
-    /// healthy VC-1 playback acquires visible micro-stalls from recovery.
+    /// One dry 100 ms tick is not starvation; the queue may refill next
+    /// turn. Confirm first, or healthy VC-1 playback micro-stalls.
     private func confirmStallIfPersistent() {
         guard stallConfirmationTask == nil else { return }
         let identifier = UUID()
@@ -2274,10 +2057,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                   self.stallConfirmationID == identifier else { return }
             self.stallConfirmationID = nil
             self.stallConfirmationTask = nil
-            // Re-read: a second is long enough for the dip to clear. Video
-            // always confirms; audio confirms only when
-            // `buffersOnAudioStarvation` is on, matching what armed the
-            // confirmation.
+            // Re-read: the dip may have cleared.
             let cause = self.starvation(at: self.timePosition)
             guard StallRecoveryPolicy.confirms(cause, buffersOnAudioStarvation: self.buffersOnAudioStarvation)
             else { return }
@@ -2339,8 +2119,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         audioTracks = tracks
         subtitleTracks = subtitles
         self.embeddedSubtitleCount = embeddedSubtitleCount
-        // An initially-selected external track (server default pointing at
-        // a sidecar file) starts its download once the counts are known.
+        // An initially selected external track downloads once the counts
+        // are known.
         if activeSubtitleOrdinal > embeddedSubtitleCount {
             commitSubtitleSelection(ordinal: 0)
             selectSubtitleTrack(id: activeSubtitleOrdinal)
@@ -2359,16 +2139,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         defer {
             PlaybackLifecycleDiagnostics.demuxEnded(lifecycleID)
         }
-        // Whether this stream ended up with a cache, which is what decides
-        // how much cushion the demux queues have to be. Keyed on
-        // the cache rather than on the play method so the two compose: a
-        // transcode with the experimental cache switched on is no longer
-        // uncached, and a direct play that fell back to the native
-        // transport is.
+        // Whether a cache ended up in front: this, not the delivery,
+        // decides the demux cushion.
         var deliveryIsCached = cacheSession != nil
-        // libavformat's file protocol takes a path, not a URL: it does not
-        // percent-decode, so "Application Support" in a file URL arrives as
-        // a directory that does not exist.
+        // libavformat's file protocol takes a path; it does not
+        // percent-decode a URL.
         let openTarget = url.isFileURL ? url.path(percentEncoded: false) : url.absoluteString
         do {
             do {
@@ -2379,17 +2154,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
                     authorization: authorization
                 )
-            // A disc has no native-transport retry to fall back on: without
-            // the cache there is nothing to read the filesystem through, and
-            // handing libavformat the raw image is the failure this whole
-            // path exists to avoid.
+            // No uncached retry for a disc: only the cache can read its
+            // filesystem.
             } catch where cacheSession != nil && disc == nil {
                 demuxer.close()
                 deliveryIsCached = false
                 EngineDiagnostics.record(.playbackCacheFallback, ["recovery": .string("cacheFallback")])
-                // The scope this playback was reading through cannot serve
-                // it. Retire it, keeping any staged successor, which is a
-                // different resource. The demotion is already recorded above.
+                // Retire the unusable scope, keeping any staged successor.
                 Task { @MainActor in
                     self.discardPlaybackCache(preservingStagedSuccessor: true)
                 }
@@ -2411,14 +2182,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             return
         }
         shared.withLock { $0.deliveryIsCached = deliveryIsCached }
-        // An Apple decoder that cannot be created is a reason to decode this
-        // stream some other way, not a reason to fail the title.
-        // AV1 always has libdav1d behind it, so a session refused here -
-        // whether because the system-decoder experiment asked for a decoder
-        // this platform does not have, or because hardware Apple says may be
-        // unavailable at any time actually was - reopens on the software path
-        // instead of stranding playback. Once only, and never for HEVC, which
-        // has no fallback and must still fail loudly.
+        // A refused VideoToolbox AV1 session reopens once on libdav1d rather
+        // than failing the title. Never for HEVC, which has no fallback and
+        // must fail loudly.
         if demuxer.videoStream?.codecName == "av1",
            !demuxer.outputsDecodedVideo,
            let description = demuxer.videoStream?.formatDescription,
@@ -2445,9 +2211,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 return
             }
         }
-        // The demuxer builds the software decoder (it has the codec
-        // parameters) but never drives it: decoding on the demux queue meant
-        // reading and decoding took turns, which 4K AV1 cannot afford.
+        // The demuxer builds the software decoder but a separate stage
+        // drives it, so reading and decoding overlap; 4K AV1 needs that.
         if demuxer.outputsDecodedVideo, let decoder = demuxer.takeSoftwareVideoDecoder() {
             softwareDecodeStage = SoftwareVideoDecodeStage(
                 decoder: decoder,
@@ -2458,8 +2223,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     self?.failVideoDecode(error)
                 },
                 packetCompletionHandler: { [weak self] in
-                    // Whoever is parked on the combined in-flight count has
-                    // to re-read it when a packet leaves the stage.
+                    // Waiters on the in-flight count must re-read it.
                     self?.videoQueue.signalWaiters()
                 }
             )
@@ -2469,10 +2233,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
            !demuxer.outputsDecodedVideo,
            let description = demuxer.videoStream?.formatDescription {
             do {
-                // AV1 only reaches here when the probe above found a
-                // decoder for it, which may be Apple's software one on a
-                // platform that has it. Requiring hardware would refuse that,
-                // so only the silicon case demands it.
+                // AV1 may have only Apple's software decoder here; demand
+                // hardware only where the silicon has it.
                 let requiresHardware = codecName != "av1"
                     || PlaybackCapabilities.current.hardwareAV1
                 videoDecoder = try VideoToolboxDecoder(
@@ -2488,19 +2250,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     }
                 )
             } catch {
-                // No loop yet to run a rebuild's seek — this runs before the
-                // demux loop and returns instead of entering it — so the
-                // ladder has to hear about it. A decoder the system
-                // will not hand out at open is what the transcode rung is
-                // for; the rungs below do not need one.
+                // No demux loop yet to run a rebuild's seek, so report it.
                 failVideoDecode(error, allowSessionRecovery: false)
                 demuxer.close()
                 return
             }
         }
-        // Ordinals are 1-based positions in the demuxed audio list — the
-        // same convention the server-default mapping uses. (Single lock
-        // acquisition: nesting withLock deadlocks the non-recursive lock.)
+        // Ordinals are 1-based positions in the demuxed audio list. One
+        // lock acquisition: nesting withLock deadlocks.
         let initialOrdinal = shared.withLock { state -> Int in
             if state.selectedAudioOrdinal == 0 {
                 state.selectedAudioOrdinal = state.initialAudioOrdinal ?? 1
@@ -2533,9 +2290,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             )
         })
 
-        // Subtitle ordinal space: embedded streams in demux order, then
-        // the external tracks — the same layout the controller used to map
-        // the server's DefaultSubtitleStreamIndex.
+        // Subtitle ordinals: embedded streams in demux order, then external
+        // tracks.
         let embeddedSubtitles = demuxer.subtitleStreams
         let (externals, subtitleMetadata, subtitleOrdinal) = shared.withLock { state -> ([ExternalSubtitleTrack], [PlayerTrackMetadata], Int) in
             state.embeddedSubtitleStreamIndices = embeddedSubtitles.map(\.streamIndex)
@@ -2578,13 +2334,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 displayMatch: displayMatch,
                 videoTiming: demuxer.videoGridDescription.map {
                     if demuxer.outputsDecodedVideo {
-                        // Name the codec rather than assuming VC-1 — the
-                        // software path also carries MPEG-4 Part 2.
                         "grid \($0) · libavcodec \(demuxer.videoStream?.codecName ?? "?") SW"
                     } else if let videoDecoder {
-                        // Which kind of VideoToolbox decoder answered is the
-                        // whole point of the AV1 experiment, so name it rather
-                        // than assuming hardware.
                         "grid \($0) · VideoToolbox \(videoDecoder.requiresHardware ? "HW" : "system")"
                             + " · reorder \(videoDecoder.reorderDepth)"
                     } else {
@@ -2598,18 +2349,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             )
         }
 
-        // The demuxer-side discard state the loop last applied; compared
-        // against the shared desired stream each pass so main-actor
-        // subtitle switches land without a queue hop.
+        // Last applied subtitle stream, compared each pass so main-actor
+        // switches land without a queue hop.
         var appliedSubtitleStreamIndex: Int32 = -1
-        // Same for the background's audio-only mode: the video
-        // stream is discarded at the demuxer and whatever the decoders
-        // still hold is dropped; the seek that resumes it restores both.
+        // Same for audio-only mode; the resume seek restores video.
         var appliedVideoOutputSuspended = false
-        // Opening at zero is already positioned correctly. Every later
-        // request—including a seek back to exactly zero—must reposition so
-        // the first compressed sample after Apple's renderer flush is a
-        // clean random-access point.
+        // Opening at zero needs no seek. Every later request, even to zero,
+        // must reposition so the first sample after a flush is a keyframe.
         var hasPrimedPlayback = false
 
         while !shared.withLock({ $0.cancelled }) {
@@ -2622,10 +2368,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             if desiredVideoSuspended != appliedVideoOutputSuspended {
                 demuxer.setVideoDiscarded(desiredVideoSuspended)
                 if desiredVideoSuspended {
-                    // The software stage gives its pictures back now; a
-                    // VideoToolbox session is left alone, because making a
-                    // new one in the background can be refused, and the
-                    // resume seek's reset makes one anyway.
+                    // Leave a VideoToolbox session alone: creating one in the
+                    // background can be refused.
                     softwareDecodeStage?.reset()
                     pumpQueue.sync { self.flushVideoPath() }
                 }
@@ -2661,13 +2405,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     }
                 }
                 guard prepareVideoDecoderForSeek() else { break }
-                // Before the queues, and synchronously: a frame still inside
-                // libavcodec belongs to the old position and must not land in
-                // a queue that has just been emptied.
+                // First and synchronously: a frame still in libavcodec is
+                // pre-seek and must not land in the emptied queues.
                 softwareDecodeStage?.reset()
-                // Again, on the pump queue: anything this thread enqueued
-                // between the request-time flush and now is pre-seek, and
-                // the renderer may already hold it (see the helper).
+                // Flush again: anything enqueued since the request-time
+                // flush is pre-seek (see the helper).
                 pumpQueue.sync { self.flushRenderersAndQueues() }
                 applyAudioSelection(ordinal: shared.withLock { $0.selectedAudioOrdinal })
                 hasPrimedPlayback = true
@@ -2680,20 +2422,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 Thread.sleep(forTimeInterval: 0.1)
                 continue
             }
-            // The streams are interleaved behind one demux cursor. Blocking
-            // solely because video is full also prevents later audio packets
-            // from being read. On three-second VC-1 transcode fragments that
-            // let the audio renderer run dry while video still held nearly
-            // two seconds. The policy keeps the useful batched hysteresis,
-            // but yields a soft limit when the other stream needs data. Hard
-            // limits still bound compressed packets and decoded 4K surfaces.
-            // Decoded frames plus the packets the stage still owes. Both
-            // are video already read and not yet shown, and counting only the
-            // first would let the loop read a decoder backlog ahead of itself
-            // the moment decode stopped happening on this queue.
-            //
-            // Parked video goes first: it is older than anything the next
-            // read would return, and it only waits for decoded-queue room.
+            // Streams share one demux cursor, so blocking on full video also
+            // starves audio; the policy handles that. Parked video goes
+            // first: it is older than the next read.
             drainVideoIntake()
             let decodedFrameBytes = softwareDecodeStage?.decodedFrameBytes ?? 0
             let videoIsDecoded = videoDecoder != nil || demuxer.outputsDecodedVideo
@@ -2735,9 +2466,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             case .read:
                 performDemuxStep()
             case .waitForVideo(let target):
-                // Bounded: with the clock stopped nothing dequeues, and the
-                // other queue's state can change underneath a wait on this
-                // one. The loop re-evaluates the policy on its own.
+                // Bounded: with the clock stopped nothing dequeues.
                 videoQueue.waitUntilBelow(target, timeout: Self.demuxWaitTimeout) {
                     self.softwareDecodeStage?.pendingCount ?? 0
                 }
@@ -2765,11 +2494,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     /// One av_read_frame worth of work; routes to the queues.
-    ///
-    /// The demux loop itself is one long-lived dispatch work item, so without
-    /// an inner pool any autoreleased Core Media/Objective-C temporaries live
-    /// until the player closes. Ready sample buffers escape through Lagoon's
-    /// queues under ARC; only per-packet framework scratch objects drain here.
+    /// The pool matters: the demux loop is one long-lived work item, so
+    /// autoreleased temporaries would otherwise live until close.
     nonisolated private func performDemuxStep() {
         #if DEBUG
         diagnosticFaultGate.waitBeforeDemuxStep()
@@ -2779,10 +2505,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// One number for both decoded frames ready to present and packets the
-    /// asynchronous software stage still owes. Recording it beside the
-    /// active bound lets a Release HUD prove the ceiling over an entire
-    /// injected outage, not only at whichever instant the viewer reads it.
+    /// Records the video backlog and its peak beside the active bound, so the
+    /// HUD can prove the ceiling held over a whole outage.
     @discardableResult
     nonisolated private func recordVideoBacklog(hardLimit: Int) -> Int {
         let backlog = videoQueue.count + (softwareDecodeStage?.pendingCount ?? 0)
@@ -2799,16 +2523,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         shared.withLock { $0.endOfFilePendingIntake = false }
         do {
             try videoDecoder?.finish()
-            // Frame threading always leaves pictures inside libavcodec;
-            // they are the end of the film, so they have to be out before
-            // the queue may call itself finished.
+            // Frame threading leaves pictures in libavcodec; drain them
+            // before the queue is marked finished.
             try softwareDecodeStage?.finish()
         } catch {
-            // At the end of the film a dead session costs the last frames it
-            // was still holding and nothing else: there is no more input to
-            // decode, and the boundary below still fires. Descending the
-            // ladder to re-fetch a film that just finished, or seeking to
-            // rebuild for it, would both be worse than those frames.
+            // A dead session at the end costs only its last frames, and the
+            // boundary still fires; rebuilding or descending would be worse.
             // Anything else is a real decode failure.
             if let status = (error as? VideoToolboxDecoder.DecoderError)?.status,
                VideoToolboxDecoder.isSessionFault(status) {
@@ -2832,20 +2552,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     /// Recreates the decode session this seek is about to feed.
+    /// A declined session says nothing about the samples, so it gets one
+    /// retry, which often succeeds once the old session is gone. Not via
+    /// `absorbVideoSessionFault`: the seek needs the loop running. Ignored
+    /// while video is suspended; the resume seek runs this again.
     ///
-    /// A session VideoToolbox declines says nothing about the samples, so it
-    /// gets one more attempt before the ladder hears about it — the first
-    /// attempt has already torn the old session down, which is often why the
-    /// second succeeds. `LAGOON-A` failed here: a seek 178 ms into a playing
-    /// stream, reported as `sessionCreation -12903`.
-    ///
-    /// Rebuilt in place rather than through `absorbVideoSessionFault`, whose
-    /// false return stops the demux loop — and the seek needs a running loop
-    /// to apply it. While video output is suspended a failure here is not one:
-    /// nothing is decoding, and the seek that resumes the picture runs this
-    /// again in the foreground.
-    ///
-    /// Returns false when the demux loop must stop; the ladder has been told.
+    /// Returns false when the demux loop must stop.
     nonisolated private func prepareVideoDecoderForSeek() -> Bool {
         guard let videoDecoder else { return true }
         do {
@@ -2858,8 +2570,6 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 return false
             }
             if shared.withLock({ $0.videoOutputSuspended }) {
-                // No session, and nothing that needs one until the resume
-                // seek makes another.
                 recordVideoSessionFault(status, recovery: "decodeSessionIgnored")
                 return true
             }
@@ -2868,17 +2578,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 recordVideoSessionFault(status, recovery: "decodeSessionRebuilt")
                 return true
             } catch {
-                // Two dead sessions at the same point: the decoder really
-                // cannot be rebuilt here, and the ladder is the right answer.
+                // Two failures at the same point: report it.
                 failVideoDecode(error, allowSessionRecovery: false)
                 return false
             }
         }
     }
 
-    /// Hands video to the next stage in order: straight through while the
-    /// decoded queue has room and nothing is parked ahead of it, otherwise
-    /// into the intake behind whatever is already waiting.
+    /// Hands video on in order: straight through while there is room and
+    /// nothing is parked, otherwise into the intake.
     nonisolated private func admitVideo(_ item: VideoIntakeItem) {
         videoFeedLock.lock()
         defer { videoFeedLock.unlock() }
@@ -2907,12 +2615,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// Moves parked video into the decoders while the decoded queue has
-    /// room. Called by the demux loop between reads and by the video pump
-    /// after every dequeue: the loop can sit in a network read for seconds
-    /// while it reads ahead, and the decoded queue must not run dry behind
-    /// a full intake in that time (measured on the Apple TV: `video=0/30/30
-    /// intake=151/151`, frames dropping, before the pump drained too).
+    /// Moves parked video into the decoders while there is room. The video
+    /// pump calls this too: the loop can sit in a network read for seconds,
+    /// and the decoded queue must not run dry behind a full intake.
     nonisolated private func drainVideoIntake() {
         guard !shared.withLock({ $0.cancelled }) else { return }
         videoFeedLock.lock()
@@ -2923,8 +2628,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// Decoded frames ready to present plus packets the software stage
-    /// still owes; the figure every video limit is measured against.
+    /// Decoded frames plus packets the software stage still owes; every
+    /// video limit is measured against this.
     nonisolated private func decodedVideoBacklog() -> Int {
         videoQueue.count + (softwareDecodeStage?.pendingCount ?? 0)
     }
@@ -2942,16 +2647,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         case .video(let buffer):
             recordMediaEnd(buffer)
             if let seconds = Self.presentationEnd(of: buffer) {
-                // Stall detection compares the clock against this. Parked
-                // video counts too: it is decoded the moment the decoded
-                // queue has room, like the software stage's pending packets.
+                // Stall detection reads this. Parked video counts too.
                 shared.withLock { $0.videoBufferedTo = max($0.videoBufferedTo, seconds) }
             }
             admitVideo(.sample(buffer))
         case .videoPacket(let packet):
-            // Stall detection and the finish boundary read the same media
-            // time they did when this queue held the decoded frame: the
-            // packet's, which is what the compressed path has always used.
+            // Stall detection and the finish boundary use the packet's time.
             if let seconds = packet.endSeconds {
                 shared.withLock {
                     $0.mediaEndSeconds = max($0.mediaEndSeconds, seconds)
@@ -2965,13 +2666,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             if streamIndex == selected {
                 for buffer in buffers {
-                    // Watched pre-delay: the delay shifts every stamp
-                    // uniformly, so continuity is the same either side.
+                    // Pre-delay is fine: the delay shifts every stamp alike.
                     audioContinuity.observe(buffer)
                     let output = delay == 0 ? buffer : Self.retimed(buffer, by: delay)
-                    // A seek into a coarse fragment reads that fragment's
-                    // audio from its keyframe; the part before the target
-                    // is never played and must not be counted.
+                    // Drop audio before the seek target; a coarse fragment
+                    // starts earlier and that part never plays.
                     if let end = Self.presentationEnd(of: output), end <= floor { continue }
                     recordMediaEnd(output)
                     audioQueue.enqueue(output)
@@ -2993,9 +2692,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         case .skipped:
             break
         case .endOfFile:
-            // Video still parked in the intake is the end of the film too.
-            // The demux loop drains it as the decoded queue makes room and
-            // finishes then.
+            // Parked video is the end of the film too; the loop finishes
+            // once it drains.
             guard videoIntake.isEmpty else {
                 shared.withLock { $0.endOfFilePendingIntake = true }
                 return
@@ -3004,8 +2702,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         case .failed(let message):
             videoQueue.markFinished()
             audioQueue.markFinished()
-            // A read that kept failing past libavformat's own reconnects:
-            // the transport, not the samples.
+            // Failing past libavformat's reconnects: transport, not samples.
             let failure = PlaybackEngineFailure(
                 cause: .delivery,
                 message: "Playback failed in the Lagoon engine (\(message)).",
@@ -3016,17 +2713,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// Frames from the software decode stage.
-    ///
-    /// Deliberately not `acceptDecodedVideo`: a seek requested and not yet
-    /// performed is no reason to throw these away. The stage discards its own
-    /// pre-seek work when the demux loop resets it, and `videoQueue.reset()`
-    /// clears anything in between.
-    ///
-    /// Dropping here starves the renderer exactly when stall recovery is
-    /// re-priming — and re-priming is a seek every couple of seconds, so the
-    /// drop keeps the queue empty and the stall going. Measured as 4 displayed
-    /// frames against 2133 on the same title and position.
+    /// Frames from the software decode stage. Unlike `acceptDecodedVideo`,
+    /// never drops on a pending seek (the stage discards pre-seek work on
+    /// reset); dropping here starved stall re-priming.
     nonisolated private func acceptSoftwareDecodedVideo(_ buffer: CMSampleBuffer) {
         guard !shared.withLock({ $0.cancelled }) else { return }
         videoQueue.enqueue(buffer)
@@ -3055,13 +2744,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         return end.isFinite ? end : nil
     }
 
-    /// - Parameter allowSessionRecovery: false where the caller is about to
-    ///   stop the demux loop regardless. A rebuild is a seek, and a seek needs
-    ///   a loop still running to apply it, so absorbing the fault there would
-    ///   trade a reported failure for a silent hang.
+    /// - Parameter allowSessionRecovery: false where the caller stops the
+    ///   demux loop anyway. A rebuild is a seek that needs a running loop, so
+    ///   absorbing the fault there would turn a failure into a silent hang.
     nonisolated private func failVideoDecode(_ error: Error, allowSessionRecovery: Bool = true) {
-        // A lost or refused VideoToolbox session is not a verdict on the
-        // bitstream, and the rung below is one-way.
+        // A lost or refused session is not a verdict on the bitstream.
         if allowSessionRecovery, absorbVideoSessionFault(error) { return }
         let wasAlreadyCancelled = shared.withLock { state -> Bool in
             let previous = state.cancelled
@@ -3079,10 +2766,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             let output = softwareDecodeStage?.outputModeName ?? "unknown"
             print("SoftwareVideoDecodeFailure output=\"\(output)\" detail=\"\(detail)\"")
         }
-        // What is left after the session faults have been taken out above is
-        // a decoder's verdict on the samples: VideoToolbox refusing a frame,
-        // or libavcodec refusing the stream. Redelivering the same bitstream
-        // cannot change that.
+        // What is left is a verdict on the samples. Redelivering the same
+        // bitstream cannot change it.
         let failure = PlaybackEngineFailure(
             cause: .undecodable,
             message: "Playback failed in the Lagoon engine (\(detail)).",
@@ -3093,13 +2778,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// A VideoToolbox session that is gone, rather than samples that cannot
-    /// be decoded. True when the fault has been dealt with here and
-    /// must not reach the delivery ladder.
-    ///
-    /// The renderer path has had both of these; the
-    /// decoder path had neither, so a session the system reclaimed read as
-    /// "this device cannot decode this file" and went straight to transcode.
+    /// Handles a lost VideoToolbox session, as opposed to undecodable
+    /// samples. True when handled here; it must not reach the ladder, or a
+    /// reclaimed session reads as "cannot decode this file".
     nonisolated private func absorbVideoSessionFault(_ error: Error) -> Bool {
         guard let status = (error as? VideoToolboxDecoder.DecoderError)?.status,
               VideoToolboxDecoder.isSessionFault(status) else { return false }
@@ -3111,8 +2792,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 playbackGeneration: state.playbackGeneration,
                 rebuiltGeneration: state.videoSessionRebuiltGeneration
             )
-            // Claimed under the same lock that read it, or the rest of the
-            // decoder's samples each start a rebuild of their own.
+            // Claim under the same lock, or every queued sample starts a
+            // rebuild.
             if resolution == .rebuild { state.videoSessionRecoveryInFlight = true }
             return resolution
         }
@@ -3120,44 +2801,32 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         case .descend:
             return false
         case .tooLate:
-            // `failVideoDecode` would return at its own cancelled check
-            // anyway; saying so here keeps the reason in one place.
             return true
         case .alreadyRecovering:
-            // Deliberately not recorded. A decoder can hold dozens of samples
-            // and every one of them reports the same dead session on the way
-            // out; a breadcrumb apiece would evict the history that explains
-            // the incident. The rebuild they are all waiting on is recorded.
+            // Not recorded: dozens of samples report the same dead session,
+            // and would evict the history that explains the incident.
             return true
         case .ignore:
             recordVideoSessionFault(status, recovery: "decodeSessionIgnored")
             return true
         case .rebuild:
-            // Recorded on the main actor, where which of the two it turned
-            // out to be is actually known.
+            // Recorded on the main actor, where the outcome is known.
             Task { @MainActor in self.rebuildVideoDecodeSession(after: status) }
             return true
         }
     }
 
-    /// The rebuild: a seek to where the playhead already is, which is how
-    /// a renderer is recovered and how the picture is restored on
-    /// resume. The demux loop's seek branch resets the decoder, so the new
-    /// session starts on a keyframe with a clean dependency chain.
+    /// Rebuilds by seeking in place: the seek resets the decoder, so the new
+    /// session starts on a keyframe.
     private func rebuildVideoDecodeSession(after status: OSStatus) {
-        // Inside the last second `seek` clamps backwards, and the finish
-        // boundary is about to fire anyway (the same guard the resume path
-        // uses to decide whether resuming is worth a seek). The frames the dead
-        // session was holding are the end of the film; losing them costs
-        // less than replaying the last second would.
+        // In the last second `seek` clamps backwards; losing the final
+        // frames costs less than replaying the last second.
         guard !shutdownRequested, !didFinish,
               duration <= 0 || timePosition < duration - 1 else {
             recordVideoSessionFault(status, recovery: "decodeSessionIgnored")
             shared.withLock {
-                // Spent even though nothing was rebuilt. Otherwise every
-                // remaining sample in the dead decoder resolves to `.rebuild`
-                // again and asks for another of these, once per sample, all
-                // the way to the end of the film.
+                // Mark spent anyway, or every remaining sample asks for
+                // another rebuild.
                 $0.videoSessionRebuiltGeneration = $0.playbackGeneration
                 $0.videoSessionRecoveryInFlight = false
             }
@@ -3174,21 +2843,16 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             position
         )
         seek(to: position)
-        // Recorded *after* the seek: `seek` bumps the
-        // generation, so the rebuild is spent against the attempt it starts.
-        // A second dead session at the same position descends the ladder,
-        // while a later seek by the viewer earns a rebuild of its own.
+        // After the seek, which bumps the generation: a second dead session
+        // here descends the ladder, a later viewer seek earns a rebuild.
         shared.withLock {
             $0.videoSessionRebuiltGeneration = $0.playbackGeneration
             $0.videoSessionRecoveryInFlight = false
         }
     }
 
-    /// A session fault that did not become a playback failure, on the same
-    /// channel as the renderer recoveries it mirrors. Recorded always, so it
-    /// lands in the history attached to any later incident; reported only
-    /// when it actually cost a reload, because the ignored ones are expected
-    /// and would be pure noise on the dashboard.
+    /// A session fault that did not fail playback. Always recorded; reported
+    /// only when it cost a rebuild, since ignored ones are expected noise.
     nonisolated private func recordVideoSessionFault(_ status: OSStatus, recovery: String) {
         let detail = PlaybackFailureDetail(
             stage: .decode,
@@ -3229,8 +2893,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         return PlaybackFailureDetail(stage: .decode, error: error)
     }
 
-    /// Fill the queues enough that playback can start cleanly, then hand
-    /// control back to the main actor to run the clock.
+    /// Fills the queues enough to start cleanly, then hands the clock to
+    /// the main actor.
     nonisolated private func primeAndStart(at target: Double) {
         let generation = shared.withLock { state -> Int in
             state.audioAdmissionFloorSeconds = target
@@ -3250,19 +2914,16 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             max(videoHardLimit - 1, 1)
         )
         let minimumAudioReserve = 1.25 * playbackRate
-        // Audio ahead of the start position wherever it sits: the pump may
-        // already have handed the renderer some of it, and that share is
-        // exactly what `audioQueue` no longer shows. Audio that ends before
-        // the target counts for nothing on either side; a seek into a
-        // coarse fragment primes on exactly that otherwise.
+        // Audio ahead of the target, in the renderer or the queue; the pump
+        // may already have moved some. Audio before the target counts for
+        // nothing, or a coarse fragment would prime on it.
         let audioAhead = { () -> Double in
             let delivered = self.shared.withLock { state in
                 state.lastEnqueuedAudioEndSeconds.map { max($0 - target, 0) } ?? 0
             }
             return delivered + self.audioQueue.bufferedDuration(after: target)
         }
-        // With video suspended the picture is not waited for, and the end
-        // of input is the audio queue's to declare.
+        // With video suspended, only audio decides end of input.
         let videoSuspended = shared.withLock { $0.videoOutputSuspended }
         let inputOpen = { videoSuspended ? !self.audioQueue.isFinished : !self.videoQueue.isFinished }
         while ((!videoSuspended && videoQueue.count < minimumVideoReserve)
@@ -3276,10 +2937,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 performDemuxStep()
                 continue
             }
-            // The decoded queue is full and audio is still short. On an HLS
-            // fragment the audio block sits behind the rest of the video
-            // block, so keep reading and park the video compressed, up to the
-            // intake's own bounds.
+            // Decoded queue full, audio still short: in an HLS fragment the
+            // audio sits behind the video, so read on and park video
+            // compressed, within the intake's bounds.
             if hasAudio, audioAhead() < minimumAudioReserve,
                videoIntake.count < DemuxBackpressurePolicy.videoIntakeHardLimit,
                videoIntake.byteCount < DemuxBackpressurePolicy.videoIntakeByteBudget,
@@ -3287,19 +2947,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 performDemuxStep()
                 continue
             }
-            // Everything the memory limit allows has been read. When frames
-            // are still inside the decoder the cushion is on its way, and
-            // waiting for it is the difference between starting playback on a
-            // full renderer and starting it on an empty one — with decode off
-            // this queue, "read enough" and "decoded enough" are no longer the
-            // same moment.
+            // Read all the memory limit allows. Wait for frames still in the
+            // decoder, or playback starts on an empty renderer.
             guard let stage = softwareDecodeStage, pendingDecode > 0 else { break }
             stage.waitUntilPendingBelow(pendingDecode)
         }
         recordVideoBacklog(hardLimit: videoHardLimit)
-        // Run after any already-scheduled pump blocks. If the renderer can
-        // accept data, this records the real first enqueued video PTS for the
-        // host-clock anchor; otherwise the target remains the safe fallback.
+        // After any scheduled pumps, so the first enqueued video PTS can
+        // anchor the clock; otherwise the target is the fallback.
         pumpQueue.async { [weak self] in
             guard let self else { return }
             let isCurrentGeneration = self.shared.withLock {
@@ -3348,8 +3003,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// Copy with all timestamps shifted — how the audio-delay option
-    /// lands on compressed passthrough and LPCM buffers alike.
+    /// Copy with all timestamps shifted by the audio delay.
     nonisolated private static func retimed(_ buffer: CMSampleBuffer, by delay: Double) -> CMSampleBuffer {
         var entryCount = 0
         guard CMSampleBufferGetSampleTimingInfoArray(
@@ -3381,10 +3035,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     nonisolated private func videoDimensions() -> CGSize {
         guard let description = demuxer.videoStream?.formatDescription else { return .zero }
-        // Presentation, not coded, dimensions. This size positions the
-        // subtitle overlay (`displayedVideoRect`), so an anamorphic stream —
-        // a 720x576 PAL rip displaying 4:3 — would otherwise have its cues
-        // laid out against the wrong box.
+        // Presentation, not coded, dimensions: the subtitle overlay is laid
+        // out against this, and anamorphic streams differ.
         return CMVideoFormatDescriptionGetPresentationDimensions(
             description,
             usePixelAspectRatio: true,
@@ -3405,18 +3057,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             detail = facts
         }
         var name = [language, detail].compactMap(\.self).joined(separator: " · ")
-        // Whether a track carries Atmos is invisible from most mux titles —
-        // and it's the fact that decides which track lights the badge.
+        // Most mux titles do not mention Atmos.
         if stream.isAtmos, !name.localizedCaseInsensitiveContains("atmos") {
             name += " · Atmos"
         }
         return name.isEmpty ? "Track \(stream.streamIndex)" : name
     }
 
-    /// Four rows all reading "DTS 5.1" are four coin flips. A release that
-    /// tags none of its tracks leaves position as the only thing telling
-    /// them apart, so where a name is not unique the position joins it —
-    /// both to pick with and to recognise afterwards.
+    /// Appends the track number to any display name that is not unique.
     nonisolated public static func disambiguated(_ tracks: [PlayerTrack]) -> [PlayerTrack] {
         var counts: [String: Int] = [:]
         for track in tracks {
@@ -3479,16 +3127,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
-    /// AVFoundation calls a renderer's request block whenever it wants more,
-    /// and keeps calling for as long as the block gives it nothing. With the
-    /// software decoder starving the video queue that loop measured 0.4 of a
-    /// core at the highest priority, enqueueing nothing, on a device whose
-    /// decoder was short exactly that much CPU. The audio queue is almost
-    /// always empty, so its block spun the same way on every title.
-    ///
-    /// So a request is armed only while there is something to give: a pump
-    /// that finds its queue empty stops it, and `kickPumps()` arms it again
-    /// when a queue receives a buffer.
+    /// Arm a request block only while there is something to give: a block
+    /// that returns empty-handed is called again at once, a busy loop that
+    /// cost 0.4 of a core. A pump that finds its queue empty disarms, and
+    /// `kickPumps()` re-arms when a buffer arrives.
     nonisolated private func armVideoRequests(_ renderer: AVSampleBufferVideoRenderer) {
         guard !videoRequestsArmed else { return }
         videoRequestsArmed = true
@@ -3510,11 +3152,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             armVideoRequests(renderer)
         }
         #if DEBUG
-        // A request block must be armed only while the pump has something to
-        // give it. During an injected hold, the queue keeps filling from the
-        // demuxer, so every `kickPumps` cycle re-armed this block, the
-        // callback fired once and disarmed it again, dozens of times a
-        // second (the armVideoRequests lesson, applied here too).
+        // Not during an injected hold: the queue keeps filling, and each
+        // cycle would re-arm a block that only disarms again.
         if let renderer = audioRenderer, audioQueue.count > 0, !diagnosticFaultGate.audioDeliverySuspended {
             armAudioRequests(renderer)
         }
@@ -3525,11 +3164,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         #endif
     }
 
-    /// Apple's post-flush rule, enforced at the one place it applies.
-    ///
-    /// Only the first sample after a flush is asked, so every other one pays
-    /// a lock read and never touches its attachments. A drop leaves the
-    /// counter at zero, so the next sample is asked the same question.
+    /// Apple's post-flush keyframe rule. Only the first sample after a flush
+    /// is checked; a drop leaves the counter at zero so the next is too.
     nonisolated private func admitsAsRendererStart(_ buffer: CMSampleBuffer) -> Bool {
         let (samples, dropped) = shared.withLock {
             ($0.videoSamplesSinceFlush, $0.videoStartPointDropsSinceFlush)
@@ -3568,8 +3204,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 return
             }
             guard admitsAsRendererStart(buffer) else {
-                // A refused sample left the queue exactly as an enqueued
-                // one would, so the intake still gets its chance to refill.
+                // A refused sample still made room for the intake.
                 drainVideoIntake()
                 continue
             }
@@ -3586,8 +3221,6 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 from: enqueueStarted,
                 to: ProcessInfo.processInfo.systemUptime
             )
-            // A frame left the decoded queue; the intake may have its
-            // replacement.
             drainVideoIntake()
         }
     }
@@ -3634,16 +3267,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
 // MARK: - Support types
 
-/// Why an audio renderer is being replaced. The two cases differ in what
-/// the viewer is owed afterwards, which is the only reason they are not one.
+/// Why an audio renderer is being replaced; the cases differ only in
+/// whether playback resumes.
 nonisolated enum AudioRendererReplacement: Equatable {
-    /// The media server restarted and invalidated every AVFoundation audio
-    /// object. Apple requires an app to wait for an explicit viewer or
-    /// remote-command action before resuming, so this one stays paused.
+    /// Media services restarted. Apple requires waiting for an explicit
+    /// user action before resuming, so this stays paused.
     case mediaServicesReset
-    /// The renderer reported `.failed`, which Apple documents as terminal.
-    /// Nothing the viewer did caused it and nothing they can do fixes it, so
-    /// playback resumes on its own once the replacement is fed.
+    /// The renderer reported terminal `.failed`; playback resumes on its own
+    /// once the replacement is fed.
     case rendererFailed
 
     var staysPaused: Bool {
@@ -3660,9 +3291,8 @@ nonisolated enum AudioRendererReplacement: Equatable {
         }
     }
 
-    /// Only reached when the replacement itself fails, which leaves playback
-    /// with no audio path at all. `detail` is the renderer's own error where
-    /// it had one — the server's reason beats ours.
+    /// Used when the replacement itself fails. `detail` is the renderer's
+    /// own error, preferred where there is one.
     func failureMessage(detail: String?) -> String {
         switch self {
         case .mediaServicesReset:
@@ -3683,10 +3313,6 @@ nonisolated enum StallRecoveryDecision: Equatable {
     case reprime
 }
 
-/// Pure policy behind the asynchronous recovery loop so an infinite stall is
-/// a deterministic unit-test failure. Twelve decoded frames matches the
-/// demuxer's low-water cushion; five seconds is long enough for the normal
-/// network refill path but bounded well below a visibly frozen player.
 /// Which half of the pipeline has run dry, if either.
 nonisolated enum PlaybackStarvation: String, Equatable {
     case none
@@ -3694,24 +3320,17 @@ nonisolated enum PlaybackStarvation: String, Equatable {
     case audio
 }
 
-    /// Video starvation stops the clock. Audio starvation is only counted.
-    ///
-    /// **`audioQueue` depth does not measure audio starvation.** `pumpAudio`
-    /// drains it while the renderer says `isReadyForMoreMediaData`, so the
-    /// buffered seconds sit inside the renderer and this queue reads near zero
-    /// on a healthy title. Treating that as a stall fires constantly and turns
-    /// playback into a buffer/play cycle — it broke every title with audio
-    /// (Ted 2, GTA VI). Buffered seconds is the same queue in other units.
-    ///
-    /// A real signal has to come from the renderer; finding one is open. Pure,
-    /// so tests pin it instead of hardware.
+/// Video starvation stops the clock. Audio starvation is only counted.
+///
+/// **`audioQueue` depth does not measure audio starvation.** The renderer
+/// drains it, so it reads near zero on a healthy title; treating that as a
+/// stall broke every title with audio. Audio uses renderer delivery lead.
 nonisolated enum PlaybackStarvationPolicy {
     /// How little lead the clock may have over delivered video before the
     /// picture is called starved.
     static let videoLeadSeconds = 0.2
-    /// Renderer delivery lead, not Lagoon queue depth. Build 66 proved that
-    /// both packet count and buffered duration on the app side normally sit
-    /// near zero because AVFoundation takes the samples immediately.
+    /// Renderer delivery lead, not engine queue depth, which AVFoundation
+    /// normally drains to zero.
     static let audioFloorSeconds = 0.25
 
     struct Snapshot {
@@ -3726,8 +3345,8 @@ nonisolated enum PlaybackStarvationPolicy {
         var videoBufferedTo: Double = 0
         var hasAudio = false
         var audioQueueFinished = false
-        /// nil until the first audio sample has actually reached the
-        /// renderer. Startup/seek cannot be called starved before that.
+        /// Nil until the first audio sample reaches the renderer; nothing is
+        /// starved before that.
         var audioDeliveryLeadSeconds: Double?
     }
 
@@ -3737,12 +3356,8 @@ nonisolated enum PlaybackStarvationPolicy {
               !snapshot.didFinish,
               snapshot.duration <= 0 || snapshot.position < snapshot.duration - 1
         else { return .none }
-        // Video first. It is the half that freezes the picture, and where
-        // both are dry the recovery wanted is the same either way.
-        //
-        // The margins are media time, which drains `rate` times faster than
-        // real time, so both scale with it to keep the same wall-clock
-        // cushion above 1x.
+        // Video first: it freezes the picture. Margins are media time, so
+        // they scale with rate to keep the same wall-clock cushion.
         if !snapshot.videoQueueFinished,
            snapshot.videoQueueCount == 0,
            snapshot.videoBufferedTo - snapshot.position < videoLeadSeconds * snapshot.rate {
@@ -3759,9 +3374,8 @@ nonisolated enum PlaybackStarvationPolicy {
 }
 
 #if DEBUG
-/// Two off-by-default, bounded playback fault gates shared by the Debug-only
-/// diagnostics toggle and the simulator regression suite. The demux side
-/// uses a condition so the injected outage consumes no CPU and teardown can
+/// Debug fault gates for diagnostics and the regression suite. The demux
+/// side waits on a condition, so an outage costs no CPU and teardown can
 /// always wake it.
 nonisolated final class PlaybackDiagnosticFaultGate: @unchecked Sendable {
     private let condition = NSCondition()
@@ -3807,21 +3421,21 @@ nonisolated final class PlaybackDiagnosticFaultGate: @unchecked Sendable {
 }
 #endif
 
+/// Pure, so an endless stall is a deterministic test failure. Twelve frames
+/// matches the demuxer's low-water cushion; five seconds allows a normal
+/// network refill but stays well below a visibly frozen player.
 nonisolated enum StallRecoveryPolicy {
     static let confirmationDelay: Duration = .seconds(1)
     static let resumeVideoCount = 12
     static let reprimeAfter: Duration = .seconds(5)
-    /// Renderer delivery lead required before an audio-gated resume,
-    /// scaled by the same clamped playback rate as `resumeVideoCount`.
+    /// Renderer delivery lead required before an audio-gated resume, scaled
+    /// by rate.
     static let resumeAudioLeadSeconds = 1.0
-    /// When the renderer reports sufficient data for a reliable start, the
-    /// delivery lead must still be at least this clear of the starvation
-    /// floor (`PlaybackStarvationPolicy.audioFloorSeconds`, 0.25 s) so the
-    /// first observer tick after a resume cannot re-arm a stall.
+    /// Lead still required when the renderer reports it is ready: clear of
+    /// the 0.25 s starvation floor, so the first tick cannot re-arm a stall.
     static let resumeAudioLeadFloorSeconds = 0.5
 
-    /// `.video` always confirms a pending stall. `.audio` confirms only
-    /// when `buffersOnAudioStarvation` is on. `.none` never confirms one.
+    /// `.audio` confirms a stall only when `buffersOnAudioStarvation` is on.
     static func confirms(_ starvation: PlaybackStarvation, buffersOnAudioStarvation: Bool) -> Bool {
         switch starvation {
         case .video: return true
@@ -3830,20 +3444,10 @@ nonisolated enum StallRecoveryPolicy {
         }
     }
 
-    /// Video-only originally: `audioQueue` drains into the renderer as fast as
-    /// it fills, so requiring a cushion there hung every video stall to
-    /// `reprimeAfter` (build 66). This reads renderer delivery lead and the
-    /// renderer's readiness flag instead. Audio waiting in Lagoon's queue is
-    /// not counted — audio behind a renderer that is not taking it will not
-    /// play, and counting it resumed into silence three times in four seconds.
-    ///
-    /// Readiness decides normally: with the clock stopped the renderer takes
-    /// about a second then stops asking, parking the lead just under the
-    /// one-second threshold (0.996 s in the simulator), which is the fallback.
-    ///
-    /// Only when `audioRequired`, so a video stall is unchanged while the mode
-    /// is off. When on it applies to video-caused stalls too — resuming on
-    /// video alone with the renderer dry re-starves within a second.
+    /// Audio readiness reads renderer lead and readiness, never `audioQueue`,
+    /// which the renderer drains as fast as it fills. Readiness normally
+    /// decides: with the clock stopped the lead parks just under 1 s.
+    /// Checked only when `audioRequired`, then for video stalls too.
     static func decision(
         elapsed: Duration,
         videoQueueCount: Int,
@@ -3872,8 +3476,7 @@ nonisolated enum StallRecoveryPolicy {
     }
 }
 
-/// Mutable state crossed between the main actor, demux loop, and pumps —
-/// tiny value types behind one lock.
+/// State shared by the main actor, demux loop and pumps, behind one lock.
 nonisolated private final class SharedState: @unchecked Sendable {
     struct State {
         var cancelled = false
@@ -3883,8 +3486,8 @@ nonisolated private final class SharedState: @unchecked Sendable {
         var selectedAudioOrdinal = 0
         var selectedAudioStreamIndex: Int32 = -1
         var initialAudioOrdinal: Int?
-        /// -1 = not yet initialized (the demux loop applies the server
-        /// default on open); 0 = subtitles off.
+        /// -1 = not yet set (the demux loop applies the initial choice on
+        /// open); 0 = subtitles off.
         var selectedSubtitleOrdinal = -1
         var selectedSubtitleStreamIndex: Int32 = -1
         var initialSubtitleOrdinal: Int?
@@ -3892,61 +3495,49 @@ nonisolated private final class SharedState: @unchecked Sendable {
         var embeddedSubtitleMetadata: [PlayerTrackMetadata] = []
         var embeddedSubtitleStreamIndices: [Int32] = []
         var externalSubtitles: [ExternalSubtitleTrack] = []
-        /// Highest video pts the demuxer has delivered (M6 stall detection).
+        /// Highest video pts the demuxer has delivered, for stall detection.
         var videoBufferedTo: Double = 0
-        /// Audio-only playback while the app is in the background.
-        /// The demux loop discards video at the demuxer, and
-        /// every decision that would wait for video treats it as finished.
+        /// Audio-only background playback: video is discarded, and anything
+        /// that would wait for video treats it as finished.
         var videoOutputSuspended = false
-        /// Whether the stream got a playback cache. Read on the main actor
-        /// so the HUD can show which demux cushion is in force.
+        /// Whether the stream got a playback cache; decides the demux cushion.
         var deliveryIsCached = true
-        /// Furthest presentation end observed across audio and video. EOF
-        /// uses this as the renderer boundary even without container duration.
+        /// Furthest presentation end across audio and video; the EOF
+        /// boundary, even without a container duration.
         var mediaEndSeconds: Double = 0
         var audioDelaySeconds: Double = 0
-        /// Media seconds consumed per wall-clock second. Demux watermarks
-        /// use it to retain the same real-time cushion above 1x.
+        /// Media seconds per wall-clock second; scales demux watermarks.
         var playbackRate: Double = 1
         /// First sample actually accepted by the renderer after attach/flush.
         var firstEnqueuedVideoPTS: CMTime?
-        /// How many video samples the renderer has taken since the last
-        /// flush. A decode failure inside the first few of them is a
-        /// restart-point failure rather than a verdict on the stream, and
-        /// earns one in-place retry before the ladder descends.
+        /// Video samples enqueued since the last flush. A failure within the
+        /// first few is about the restart point, not the stream, and earns
+        /// one in-place retry.
         var videoSamplesSinceFlush = 0
-        /// Samples the pump refused to start a flushed renderer on: since
-        /// the last flush, and for the whole attempt. The second is
-        /// reported, because a count that climbs says the race is live.
+        /// Samples refused as a flushed renderer's first: since the flush,
+        /// and for the whole attempt (reported; a climbing count means a race).
         var videoStartPointDropsSinceFlush = 0
         var videoStartPointDrops = 0
         /// Presentation stamp of the last sample a renderer refused, in
         /// media milliseconds.
         var lastRefusedSampleMs: Int?
-        /// One rebuild of the VideoToolbox session per playback generation:
-        /// which generation has spent its rebuild, and whether one
-        /// is in flight right now. Both are needed — every sample already
-        /// inside a decoder reports the same dead session on the way out, and
-        /// they are one fault, not a dozen.
+        /// One VideoToolbox session rebuild per generation, and whether one
+        /// is in flight: every sample in a dead decoder reports the same
+        /// fault.
         var videoSessionRebuiltGeneration: Int?
         var videoSessionRecoveryInFlight = false
-        /// Furthest audio presentation end actually handed to AVFoundation.
-        /// Compared with the synchronizer clock; unlike the app
-        /// queue it includes samples AVFoundation already owns.
+        /// Furthest audio presentation end handed to AVFoundation, compared
+        /// with the clock for starvation.
         var lastEnqueuedAudioEndSeconds: Double?
-        /// Captured from the active decode path so the hardware/simulator
-        /// probe can assert it never exceeds its real memory bound.
+        /// The active bound, so the probe can assert it is never exceeded.
         var videoQueueHardLimit = 0
-        /// Peak decoded-frame-plus-pending backlog observed under that
-        /// bound, retained for the whole engine session and Release HUD.
+        /// Peak video backlog under that bound, for the engine's lifetime.
         var maximumVideoBacklog = 0
-        /// End of file was read while the intake still held video. The
-        /// demux loop finishes the queues once that has drained.
+        /// EOF read while the intake still held video; the loop finishes the
+        /// queues once it drains.
         var endOfFilePendingIntake = false
-        /// The position playback last started from. Audio that ends at or
-        /// before it is audio the renderer discards; queued, it would count
-        /// toward the audio high water and throttle the read-ahead exactly
-        /// when the renderer holds least.
+        /// Where playback last started. Earlier audio is never played, and
+        /// queued it would throttle read-ahead when the renderer holds least.
         var audioAdmissionFloorSeconds: Double = -.infinity
     }
 
@@ -3960,9 +3551,8 @@ nonisolated private final class SharedState: @unchecked Sendable {
     }
 }
 
-/// Chooses the media-time side of Apple's host-clock playback anchor. A seek
-/// may enqueue pre-target reference frames, so only advance to the first
-/// enqueued PTS when it is at or beyond the requested position.
+/// Media time for the clock anchor. A seek may enqueue pre-target reference
+/// frames, so use the first enqueued PTS only when it is at or past the target.
 nonisolated enum PlaybackClockAnchor {
     static func mediaTime(targetSeconds: Double, firstVideoPTS: CMTime?) -> CMTime {
         let target = CMTime(seconds: max(targetSeconds, 0), preferredTimescale: 240_000)
@@ -3974,9 +3564,8 @@ nonisolated enum PlaybackClockAnchor {
     }
 }
 
-/// Resolves EOF against media actually observed. A container duration is a
-/// fallback only: it can be absent for a finite stream or outlive a truncated
-/// input, while the last sample end is the renderer's real timeline boundary.
+/// Resolves EOF from the last sample end. The container duration is only a
+/// fallback: it can be missing, or outlast a truncated input.
 nonisolated enum PlaybackEndBoundary {
     static func endTime(sampledEnd: Double, declaredDuration: Double) -> Double? {
         if sampledEnd.isFinite, sampledEnd > 0 {
@@ -3996,72 +3585,47 @@ nonisolated enum DemuxBackpressureDecision: Equatable {
 }
 
 /// Balances two streams read through one interleaved demux cursor. Soft
-/// limits drain queues in batches when both streams are healthy. If one side
-/// is short, the fuller side may grow only to a hard limit and is then paced
-/// one dequeue at a time so the cursor can still reach packets for the side
-/// that needs them.
+/// limits drain in batches while both are healthy. If one side is short, the
+/// fuller side grows only to a hard limit, then paces one dequeue at a time
+/// so the cursor can reach the other side's packets.
 nonisolated enum DemuxBackpressurePolicy {
     private static let audioHighWater = 180
     private static let audioLowWater = 144
     private static let audioHardWater = 270
     private static let audioSafetySeconds = 1.25
 
-    // A stream arriving without a playback cache has nothing between the
-    // network and the renderers: no sparse cache, no proactive range fill,
-    // no playhead prefetch. The demux queues are the entire cushion, so
-    // they are asked to be a bigger one.
-    //
-    // **Only audio grows.** Video's queue holds decoded frames — 24.9 MB each
-    // at 4K 10-bit, hence a hard limit of 30 — while audio holds compressed
-    // packets at ~80 KB/s. Doubling the audio cushion costs ~1.5 MB against a
-    // video queue already permitted 746 MB; the worst case, 8-channel float
-    // LPCM, is ~26 MB.
-    //
-    // Audio is also the half with no cushion of its own: the video renderer
-    // coasts on frames it holds, which is why a starved transcode reaches the
-    // viewer as silence over a moving picture rather than a freeze.
+    // Without a cache the demux queues are the whole cushion, so they grow.
+    // **Only audio grows.** A 4K 10-bit decoded frame is 24.9 MB; compressed
+    // audio is ~80 KB/s, so doubling it costs ~1.5 MB (~26 MB worst case,
+    // 8-channel float LPCM). Audio also has no cushion of its own, while the
+    // video renderer coasts on frames it holds.
     private static let uncachedAudioHighWater = 360
     private static let uncachedAudioLowWater = 288
     private static let uncachedAudioHardWater = 540
-    /// The margin video must leave audio covered for before it may park on
-    /// its own high water. Larger without a cache, because the drain it has
-    /// to survive is however long the network takes to deliver the next
-    /// segment rather than a cache read.
+    /// Audio cover video must leave before parking on its high water.
+    /// Larger without a cache: it must outlast a network segment fetch.
     private static let uncachedAudioSafetySeconds = 3.0
-    /// Bounds on the compressed video the demux loop may park past the
-    /// decoded limit while it reads on for audio. Both have to
-    /// hold a whole fragment, because the audio block sits behind the
-    /// video block and the read-ahead only helps if it reaches it: 600
-    /// access units is 25 s at 24 fps or 10 s at 60 fps, and 128 MB is
-    /// 10 s at 100 Mbps. A lead-triggered read-ahead was tried first and
-    /// starved a 4K remux anyway, because reading a 60 MB video block over
-    /// the network takes longer than any cushion the renderer holds; the
-    /// read has to start the moment the decoded queue is full, and the
-    /// audio high water below is what bounds it.
+    /// Bounds on compressed video parked past the decoded limit while the
+    /// loop reads on for audio. Each must hold a whole fragment, since the
+    /// audio sits behind the video: 600 units is 25 s at 24 fps or 10 s at
+    /// 60 fps; 128 MB is 10 s at 100 Mbps. The read-ahead starts as soon as
+    /// the decoded queue is full (waiting for low lead starved a 4K remux);
+    /// the audio high water bounds it.
     static let videoIntakeHardLimit = 600
     static let videoIntakeByteBudget = 128 * 1_048_576
 
-    /// The audio depth being aimed for, so the HUD can show which profile
-    /// is in force rather than leaving its absence to be inferred.
+    /// The audio depth aimed for, so the HUD can show which profile applies.
     static func audioCushionTarget(deliveryIsCached: Bool) -> Int {
         deliveryIsCached ? audioHighWater : uncachedAudioHighWater
     }
 
-    /// The most decoded frames Lagoon's own queue may hold, bounded by count
-    /// and — once a frame is expensive enough for the count to stop meaning
-    /// anything — by bytes.
-    ///
-    /// 42 frames was chosen when the software path carried SD and HD: at
-    /// 1080p 10-bit that is 250 MB. Software AV1 reaching 4K made the same
-    /// 42 frames 1.05 GB of P010 surfaces, in a process jetsam has already
-    /// killed once at 2.1 GB. The budget below is the ceiling the
-    /// hardware-decoded path was already allowed — 30 frames of 4K P010 —
-    /// so every configuration measured before this keeps the limit it was
-    /// measured with, and only 4K software decode comes back under it.
+    /// Byte ceiling for the decoded queue, which is also bounded by count.
+    /// 42 frames is 250 MB at 1080p 10-bit but 1.05 GB at 4K, in a process
+    /// jetsam has killed at 2.1 GB. This is 30 frames of 4K P010, the
+    /// hardware path's ceiling, so only 4K software decode is affected.
     static let decodedQueueByteBudget: Int64 = 30 * 24_883_200
 
-    /// Never below this however large a frame gets: a queue has to hold the
-    /// codec's reorder depth plus a cushion or it stops being a queue.
+    /// Floor however large a frame is: reorder depth plus a cushion.
     private static let decodedQueueFrameFloor = 8
 
     static func videoHardLimit(
@@ -4075,8 +3639,6 @@ nonisolated enum DemuxBackpressurePolicy {
         return max(min(byCount, byBytes), decodedQueueFrameFloor)
     }
 
-    /// `deliveryIsCached` defaults true, which is the shape every caller had
-    /// before the uncached profile existed.
     static func decision(
         videoCount: Int,
         audioCount: Int,
@@ -4105,13 +3667,10 @@ nonisolated enum DemuxBackpressurePolicy {
         let safePlaybackRate = PlaybackRatePolicy.clamped(playbackRate)
         let baseVideoHighWater = videoIsSoftwareDecoded ? 30 : (videoIsDecoded ? 18 : 90)
         let baseVideoLowWater = videoIsSoftwareDecoded ? 24 : (videoIsDecoded ? 12 : 72)
-        // Scale both watermarks with the rate, then clamp them as a pair.
-        // Clamping the low water against the *already clamped* high water
-        // collapses the drain batch to a single frame once the scaled high
-        // water saturates: 41/40 for software decode and 119/118 for
-        // compressed h264 at 2x. The batched drain below then degenerates
-        // into a read-one/wait-one handshake and the decoded queue parks one
-        // frame under the hard limit — ~254 MB of 1080p P010 surfaces.
+        // Scale both watermarks with rate, then clamp them as a pair.
+        // Clamping low water against the already clamped high water shrinks
+        // the drain batch to one frame at 2x, parking the decoded queue one
+        // frame under the hard limit (~254 MB of 1080p P010).
         let drainBatch = max(baseVideoHighWater - baseVideoLowWater, 1)
         let videoHighWater = min(
             Int(ceil(Double(baseVideoHighWater) * safePlaybackRate)),
@@ -4130,25 +3689,16 @@ nonisolated enum DemuxBackpressurePolicy {
             let drainSeconds = Double(max(videoCount - videoLowWater, 0)) / safeFrameRate
             let audioCanCoverDrain = !hasAudio
                 || audioBufferedSeconds >= audioSafetySeconds * safePlaybackRate + drainSeconds
-            // Residual: `audioBufferedSeconds` is the app-side queue,
-            // which sits near zero on any title with audio because the
-            // renderer takes samples as fast as they are demuxed, so this
-            // batch-drain branch is effectively unreachable there and the
-            // loop instead parks at the hard limit below in one-slot pacing.
-            // The read-ahead rule above is what keeps audio fed when the
-            // interleave is coarser than the cushion; this branch stays.
+            // With audio this is rarely true: the engine's audio queue
+            // sits near zero, so the loop usually paces at the hard limit.
             if audioCanCoverDrain {
                 return .waitForVideo(below: videoLowWater)
             }
             if videoCount >= videoHardWater {
-                // The decoded queue is full. With audio in the stream the
-                // demuxer may not sit here: on an HLS fragment the audio
-                // block is behind the video block, so reaching it means
-                // reading video the decoded queue has no room for, which
-                // parks compressed in the intake. The audio high
-                // water is what stops the read-ahead on a finely interleaved
-                // stream, and the intake's own bounds stop it on a coarse
-                // one. Without audio, one slot at a time as before.
+                // Decoded queue full. With audio, read on and park video
+                // in the intake to reach the audio behind it; the audio high
+                // water and intake bounds stop it. Without audio, pace one
+                // slot at a time.
                 if hasAudio,
                    audioCount < audioHighWater,
                    videoIntakeCount < videoIntakeHardLimit,
@@ -4178,12 +3728,8 @@ nonisolated enum DemuxBackpressurePolicy {
     }
 }
 
-/// Counts timestamp discontinuities in the audio buffers handed to the
-/// renderer — the measurable form of "the audio crackles". Each
-/// buffer is expected to start exactly where the previous one ended; a
-/// mismatch beyond 1 ms is the renderer being told to leave a gap or
-/// overlap in the decoded stream. Written on the demux queue, read from
-/// the main actor for the HUD and bench.
+/// Counts audio timestamp gaps or overlaps over 1 ms: measurable crackle.
+/// Written on the demux queue, read on the main actor.
 nonisolated private final class AudioContinuityMonitor: @unchecked Sendable {
     private let lock = NSLock()
     private var expectedNext: CMTime?
@@ -4232,9 +3778,8 @@ nonisolated private final class AudioContinuityMonitor: @unchecked Sendable {
 /// Thread-safe FIFO of ready-to-enqueue sample buffers.
 nonisolated final class SampleBufferQueue: @unchecked Sendable {
     private let condition = NSCondition()
-    // A head-indexed buffer avoids Array.removeFirst() shifting every
-    // retained sample on every renderer dequeue. Consumed slots are nilled
-    // immediately, then compacted in batches to keep memory bounded.
+    // Head-indexed so a dequeue does not shift the array; consumed slots
+    // are nilled at once and compacted in batches.
     private var buffers: [CMSampleBuffer?] = []
     private var head = 0
     private var finished = false
@@ -4252,13 +3797,8 @@ nonisolated final class SampleBufferQueue: @unchecked Sendable {
         return finished
     }
 
-    /// Presentation time covered by buffers that have not yet reached the
-    /// renderer. Audio uses monotonic PTS, so the first and last entries give
-    /// a codec-independent safety reserve (AAC and AC-3 packet counts differ).
-    /// Seconds of queued audio that end after `seconds`. Priming after a
-    /// seek lands inside a fragment whose audio block starts at the
-    /// keyframe, and audio that ends before the target is audio the
-    /// renderer will discard, not a cushion.
+    /// Seconds of queued audio that end after `seconds`; earlier audio is
+    /// discarded by the renderer, not a cushion.
     func bufferedDuration(after seconds: Double) -> Double {
         condition.lock()
         defer { condition.unlock() }
@@ -4275,6 +3815,8 @@ nonisolated final class SampleBufferQueue: @unchecked Sendable {
         return max(end - max(firstPTS.seconds, seconds), 0)
     }
 
+    /// Presentation time the queue covers, from its first and last PTS:
+    /// codec-independent, unlike packet counts.
     var bufferedDuration: Double {
         condition.lock()
         defer { condition.unlock() }
@@ -4345,15 +3887,12 @@ nonisolated final class SampleBufferQueue: @unchecked Sendable {
         condition.unlock()
     }
 
-    /// Blocks the producer without polling until the consumer has drained
-    /// a useful amount of work, EOF/reset occurs, or shutdown interrupts it.
+    /// Blocks the producer until the count drops below target, the queue
+    /// finishes, or waits are interrupted.
     ///
-    /// `alsoCounting` adds work already spoken for but not yet in this queue —
-    /// video sitting in the software decode stage. It is evaluated
-    /// under the lock on every wake, so the stage settles this wait by
-    /// signalling here rather than needing a condition of its own.
-    /// With a `timeout`, returns after at most that long even if the queue
-    /// is still full, so the caller can re-evaluate something the queue
+    /// `alsoCounting` adds work not yet in the queue (the software decode
+    /// stage), re-read on every wake; the stage wakes it via
+    /// `signalWaiters()`. `timeout` lets the caller re-check what the queue
     /// cannot see.
     func waitUntilBelow(
         _ targetCount: Int,
@@ -4372,8 +3911,7 @@ nonisolated final class SampleBufferQueue: @unchecked Sendable {
         condition.unlock()
     }
 
-    /// Re-evaluate the waits without the queue itself having changed — what
-    /// the decode stage calls when a packet leaves it.
+    /// Wakes waiters to re-check; the decode stage calls it per packet.
     func signalWaiters() {
         condition.lock()
         condition.broadcast()
@@ -4388,9 +3926,8 @@ nonisolated final class SampleBufferQueue: @unchecked Sendable {
     }
 }
 
-/// Coalesces the per-packet wakeups sent to the serial renderer queue.
-/// Without it a fast demux pass can enqueue hundreds of pump blocks that
-/// mostly discover an already-full AVFoundation renderer.
+/// Coalesces per-packet pump wakeups, so a fast demux pass does not queue
+/// hundreds of pump blocks.
 nonisolated private final class PumpKickState: @unchecked Sendable {
     private let lock = NSLock()
     private var scheduled = false

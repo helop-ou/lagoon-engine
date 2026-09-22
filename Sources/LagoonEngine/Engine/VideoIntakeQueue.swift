@@ -2,19 +2,16 @@ import CoreMedia
 import Foundation
 import Libavcodec
 
-/// One compressed video access unit read from the container but not yet
-/// handed to whatever decodes or renders it. The engine keeps
-/// reading through a fragment's video block to reach its audio block, and
-/// what it reads past the decoded-frame limit waits here, compressed, until
-/// the decoded queue has room.
+/// A compressed video access unit read ahead of the decoded-frame limit.
+/// The demuxer reads through a fragment's video to reach its audio, and the
+/// surplus waits here until the decoded queue has room.
 nonisolated enum VideoIntakeItem {
-    /// A compressed sample for `VideoToolboxDecoder` or the compressed
-    /// renderer path.
+    /// For `VideoToolboxDecoder` or the compressed renderer path.
     case sample(CMSampleBuffer)
     /// A packet for `SoftwareVideoDecodeStage`.
     case packet(SoftwareVideoPacket)
 
-    /// Payload size, so the intake can be bounded in bytes as well as count.
+    /// Lets the intake be bounded in bytes as well as count.
     var byteCount: Int {
         switch self {
         case .sample(let buffer): return CMSampleBufferGetTotalSampleSize(buffer)
@@ -23,14 +20,11 @@ nonisolated enum VideoIntakeItem {
     }
 }
 
-/// FIFO of compressed video the demux loop has read past the decoded-frame
-/// limit. Touched from the demux queue and, on seek and teardown, from
-/// whichever queue resets the engine, so it locks.
+/// FIFO of read-ahead compressed video. Locked: the demux queue and whichever
+/// queue resets the engine (seek, teardown) both touch it.
 nonisolated final class VideoIntakeQueue: @unchecked Sendable {
     private let lock = NSLock()
-    // Head-indexed like `SampleBufferQueue`: avoids Array.removeFirst()
-    // shifting every retained item on every pop, compacted in batches once
-    // consumed slots are a majority of the storage.
+    // Head-indexed so a pop does not shift the array; compacted in batches.
     private var items: [VideoIntakeItem?] = []
     private var head = 0
     private var storedByteCount = 0
@@ -54,9 +48,8 @@ nonisolated final class VideoIntakeQueue: @unchecked Sendable {
         return items.count - head == 0
     }
 
-    /// Highest `count` seen since the last `removeAll(resetPeak: true)`;
-    /// the HUD and the regression probe use it to prove the bound held over
-    /// a whole session rather than at one instant.
+    /// Highest `count` since the last `removeAll(resetPeak: true)`. Proves
+    /// the bound held over a whole session.
     var peakCount: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -85,8 +78,7 @@ nonisolated final class VideoIntakeQueue: @unchecked Sendable {
         return item
     }
 
-    /// Drops everything (seek, flush, teardown). The peak survives unless
-    /// `resetPeak` is true, because a seek should not erase the evidence.
+    /// Drops everything. The peak survives a seek unless `resetPeak` is true.
     func removeAll(resetPeak: Bool = false) {
         lock.lock()
         items.removeAll()

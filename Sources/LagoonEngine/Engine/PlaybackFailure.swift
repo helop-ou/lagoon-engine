@@ -2,10 +2,8 @@ import Foundation
 
 /// Where a playback attempt failed, in codes rather than prose.
 ///
-/// Deliberately carries no message and nothing out of an error's `userInfo`,
-/// which is where URLs, file names and query strings live. A host that
-/// reports failures onward gets a stage, a domain token and a code, and
-/// nothing that could identify a viewer or a title.
+/// Carries no message and nothing from `userInfo`, where URLs and file names
+/// live, so nothing in it can identify a viewer or a title.
 public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
     public enum Stage: String, Sendable {
         case negotiate, open, seek, read, decode, videoRenderer, audioRenderer, subtitle, cache, start, handoff, unknown
@@ -23,8 +21,7 @@ public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
         self.code = code
     }
 
-    /// Domain and code from any error, and nothing else from it: not the
-    /// description, not `userInfo`, which is where URLs and file names live.
+    /// Takes only the domain and code from `error`.
     public init(stage: Stage, error: Error?) {
         guard let error else {
             self.init(stage: stage)
@@ -34,8 +31,7 @@ public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
         self.init(stage: stage, domain: nsError.domain, code: nsError.code)
     }
 
-    /// The failure as diagnostic fields: stage always, domain only if it
-    /// passes the token rule, code if there was one.
+    /// Stage always, domain only if it passes the token rule, code if any.
     public var fields: [String: DiagnosticValue] {
         var fields: [String: DiagnosticValue] = ["stage": .string(stage.rawValue)]
         if let domain = DiagnosticToken.token(domain) {
@@ -61,20 +57,18 @@ public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
     }
 }
 
-/// A failure the engine could not recover from on its own, handed to whoever
-/// owns the decision about what to try next.
+/// A failure the engine could not recover from, handed to the host to decide
+/// what to try next.
 ///
-/// The `cause` is the engine's verdict about the samples, and it is the whole
-/// of what a host needs to decide whether asking for the media a different
-/// way could help. The engine does not know what other ways exist.
+/// `cause` is the engine's verdict about the samples: all a host needs to
+/// decide whether asking for the media another way could help.
 public nonisolated struct PlaybackEngineFailure: Equatable, Sendable {
     public enum Cause: Equatable, Sendable {
-        /// The samples themselves cannot be decoded here — a codec outside
-        /// the envelope, a decoder session the hardware declined, a decode
-        /// that failed. Only a re-encode changes what the decoder is given.
+        /// The samples cannot be decoded here (unsupported codec, session
+        /// declined, decode failed). Only a re-encode can help.
         case undecodable
-        /// The container, the transport, or an AVFoundation object failed.
-        /// The same media may well play when it arrives another way.
+        /// The container, transport or an AVFoundation object failed. The
+        /// same media may play when delivered another way.
         case delivery
     }
 

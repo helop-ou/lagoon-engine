@@ -5,17 +5,12 @@ import Metal
 /// Turns a decoded 10-bit planar frame into a renderer-ready Core Video buffer
 /// on the GPU.
 ///
-/// On an Apple TV every core is spoken for by dav1d. The two CPU passes that
-/// used to follow it — planar-to-P010 repack and VideoToolbox's PQ-to-SDR
-/// transfer — measured ~0.5 of a core in-process and more outside it, which is
-/// exactly the CPU the decoder was missing. One compute kernel does both in
-/// about a millisecond of GPU time and no CPU time.
+/// dav1d needs every Apple TV core. The P010 repack and PQ-to-SDR transfer
+/// cost ~0.5 of a core on the CPU; this kernel does both in ~1 ms of GPU time.
 ///
-/// The source is read in place: FFmpeg's pool hands dav1d page-aligned
-/// allocations whose three planes are one block, wrapped in a no-copy
-/// `MTLBuffer` for one dispatch. Anything not page-aligned, or with separate
-/// plane allocations, is copied into a staging buffer — slower, still cheaper
-/// than either CPU pass.
+/// The source is read in place when its planes are one page-aligned block
+/// (dav1d's pool), via a no-copy `MTLBuffer`. Otherwise it is copied into a
+/// staging buffer.
 nonisolated final class MetalFrameConverter: @unchecked Sendable {
     /// Mirrors `LagoonPlanarConvertParameters` in the shader, field for field.
     private struct Parameters {
@@ -41,7 +36,7 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         let toneMap: Bool
         /// Peak of the source grade, from its mastering metadata.
         let sourcePeakNits: Float
-        /// What maps to SDR white. 203 nits is BT.2408's reference white.
+        /// What maps to SDR white (BT.2408 reference white is 203 nits).
         let targetPeakNits: Float
         /// 10 writes P010 texels, 8 writes NV12 texels.
         let outputBitDepth: Int
@@ -80,8 +75,7 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
     private let pipeline: MTLComputePipelineState
     private let textureCache: CVMetalTextureCache
     private let pageSize = Int(getpagesize())
-    /// Staging buffers for the copy path, one per frame in flight: a frame
-    /// is copied while the previous one's kernel may still be reading.
+    /// Staging buffers for the copy path, one per frame in flight.
     private let stagingLock = NSLock()
     private var freeStaging: [MTLBuffer] = []
     /// How many frames took the no-copy path, for the diagnostics line.
@@ -98,10 +92,8 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
               let commandQueue = device.makeCommandQueue() else {
             throw ConverterError.noDevice
         }
-        // `makeDefaultLibrary()` looks in the main bundle, which is the
-        // host application. The shader ships with this package, so the
-        // library has to be loaded from the package's own bundle — the
-        // difference only shows at runtime, as a failed conversion.
+        // The shader is in this package's bundle, not the host's main bundle.
+        // Getting it wrong only shows at runtime.
         guard let library = try? device.makeDefaultLibrary(bundle: .module),
               let function = library.makeFunction(name: "lagoonConvertPlanar10") else {
             throw ConverterError.noKernel
@@ -118,20 +110,18 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         textureCache = cache
     }
 
-    /// Probes whether Metal can write to the pool's buffers, which is what
-    /// decides between lossless-compressed and linear destinations at setup.
+    /// Whether Metal can write the pool's buffers; picks lossless-compressed
+    /// or linear destinations at setup.
     func canWrite(_ pixelBuffer: CVPixelBuffer) -> Bool {
         (try? destinationTextures(for: pixelBuffer)) != nil
     }
 
-    /// Runs the kernel and blocks until the GPU has finished, so the caller
-    /// may release the source frame the moment this returns.
+    /// Runs the kernel and blocks until the GPU is done, so the caller may
+    /// release the source frame on return.
     func convert(luma: Plane, cb: Plane, cr: Plane, into destination: CVPixelBuffer) throws {
         let done = DispatchSemaphore(value: 0)
-        // The semaphore is the ownership boundary: this thread owns `outcome`
-        // until `convertAsync` returns, the completion thread owns it until it
-        // signals, and this thread owns it again after `wait()`. The two
-        // accesses can never overlap, which is what the compiler cannot see.
+        // The semaphore hands `outcome` to the completion thread and back;
+        // accesses never overlap, which the compiler cannot see.
         nonisolated(unsafe) var outcome: Result<Void, Error> = .success(())
         try convertAsync(luma: luma, cb: cb, cr: cr, into: destination) { result in
             outcome = result
@@ -141,13 +131,9 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         try outcome.get()
     }
 
-    /// Submits the kernel and returns at once. `completion` runs on a Metal
-    /// completion thread once the destination is fully written; the source
-    /// planes must stay valid until then. One command queue does execute its
-    /// command buffers in commit order, but Metal picks the thread each
-    /// completed handler runs on and promises neither the order those calls
-    /// are made in nor that one returns before the next begins — a caller that
-    /// needs decode order imposes it itself (`GPUDeliverySequencer`).
+    /// Submits the kernel and returns. `completion` runs on a Metal thread
+    /// once the destination is written; the source planes must stay valid
+    /// until then. Completions are not ordered: use `GPUDeliverySequencer`.
     func convertAsync(
         luma: Plane,
         cb: Plane,
@@ -158,10 +144,7 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         let started = ProcessInfo.processInfo.systemUptime
         let source = try sourceBuffer(luma: luma, cb: cb, cr: cr)
         let mapped = ProcessInfo.processInfo.systemUptime
-        // Both wrappers are made here and handed to the command buffer's
-        // completion handler, which is the only other code that touches them
-        // and only after the GPU is done. Neither Core Video type is Sendable
-        // and neither needs to be: this is a hand-off, not sharing.
+        // Handed off to the completion handler, not shared.
         nonisolated(unsafe) let (lumaTexture, chromaTexture) = try destinationTextures(for: destination)
         let elementSize = MemoryLayout<UInt16>.stride
         var parameters = Parameters(
@@ -195,15 +178,10 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
             threadsPerThreadgroup: MTLSize(width: threadWidth, height: threadHeight, depth: 1)
         )
         encoder.endEncoding()
-        // The same hand-off for the source: the buffer is this dispatch's
-        // alone — either a wrapper around the frame's pages or a staging
-        // buffer taken out of the free list — and the completion handler is
-        // where it is released or returned.
+        // Also handed off: the completion handler releases or returns it.
         nonisolated(unsafe) let sourceBufferHold = source.buffer
         commandBuffer.addCompletedHandler { [self] finished in
-            // The texture wrappers hold the IOSurface and the no-copy buffer
-            // holds the frame's pages; both must outlive the GPU's reads
-            // and writes, and neither may outlive them by much.
+            // Keep the IOSurface and frame pages alive until the GPU is done.
             withExtendedLifetime((lumaTexture, chromaTexture, sourceBufferHold)) {}
             CVMetalTextureCacheFlush(textureCache, 0)
             if source.staged {
@@ -269,22 +247,16 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         let staged: Bool
     }
 
-    /// FFmpeg lays a dav1d picture out for a height rounded up to this many
-    /// rows, so each plane's region is that much taller than the rows the
-    /// frame exposes (a 4K picture is allocated 3840x2176).
+    /// FFmpeg pads a dav1d picture's height to this many rows (4K is
+    /// allocated 3840x2176).
     private static let allocationRowAlignment = 128
 
-    /// Whether the planes plausibly come from one allocation, which the
-    /// no-copy path assumes: it wraps every byte from the first plane's page to
-    /// the last plane's end, so an unmapped hole between them is a GPU fault.
+    /// Whether the planes plausibly share one allocation. The no-copy path
+    /// wraps everything from the first plane to the last, so a hole between
+    /// them is a GPU fault.
     ///
-    /// libdav1d's pooled pictures are one block but not a tight one — padding
-    /// rows add ~150 KB to a 4K frame's span, so a bound of a page or two would
-    /// reject every frame this stage exists for. VP9 Profile 2 reaches the same
-    /// kernel through `avcodec_default_get_buffer2`, which pools one buffer per
-    /// plane and spans heap this frame does not own. Allowing the padding rows
-    /// plus a page per plane sits an order of magnitude above the first and far
-    /// below the second.
+    /// The bound allows dav1d's padding rows (~150 KB at 4K) plus a page per
+    /// plane, and rejects VP9 Profile 2's separate per-plane buffers.
     static func planesShareOneAllocation(_ planes: [Plane], pageSize: Int) -> Bool {
         guard let lowest = planes.map({ Int(bitPattern: $0.base) }).min(),
               let highest = planes.map({ Int(bitPattern: $0.base) + $0.stride * $0.rows }).max() else {
@@ -295,15 +267,12 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         return highest - lowest <= occupied + padding
     }
 
-    /// Wraps the frame's planes without copying when they are one page-aligned
-    /// allocation, which FFmpeg's pooled large allocations are on Darwin;
-    /// otherwise copies them into a staging buffer.
+    /// Wraps the planes without copying when they are one page-aligned
+    /// allocation; otherwise copies them into a staging buffer.
     private func sourceBuffer(luma: Plane, cb: Plane, cr: Plane) throws -> SourceBuffer {
         let planes = [luma, cb, cr]
-        // The simulator's Metal driver backs no-copy buffers with XPC shared
-        // memory and traps on ordinary malloc pages; only devices wrap, so the
-        // whole branch is compiled out there instead of left unreachable
-        // behind a constant `false`.
+        // The simulator's Metal driver traps on no-copy buffers over malloc
+        // pages, so only devices wrap.
         #if !targetEnvironment(simulator)
         let lowest = planes.map { Int(bitPattern: $0.base) }.min()!
         let highest = planes.map { Int(bitPattern: $0.base) + $0.stride * $0.rows }.max()!
@@ -326,8 +295,7 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
             )
         }
         #endif
-        // Fallback: pack the three planes, keeping their strides, into a
-        // staging buffer of this frame's own.
+        // Fallback: copy the planes, strides kept, into a staging buffer.
         let required = planes.reduce(0) { $0 + $1.stride * $1.rows }
         let reusable = stagingLock.withLock { () -> MTLBuffer? in
             guard let index = freeStaging.firstIndex(where: { $0.length >= required }) else { return nil }

@@ -1,32 +1,22 @@
 import Foundation
 
-/// Bitstreams that delimit NAL units with start codes instead of length
-/// prefixes.
+/// Bitstreams that delimit NAL units with start codes (Annex B), such as
+/// MPEG-TS from a Blu-ray's m2ts.
 ///
-/// Every source the engine had before disc images was length-prefixed: MP4
-/// and Matroska direct play, and Jellyfin's fMP4 remux and transcode alike.
-/// A Blu-ray's m2ts is MPEG-TS, which is not, so reading a disc introduced
-/// the engine's first Annex-B source.
-///
-/// Two consequences, and both are fatal on their own. libavformat synthesises
-/// extradata for MPEG-TS out of the in-band parameter sets and hands it over
-/// still in Annex-B, so a format description built by treating it as an
-/// `hvcC` describes nothing a decoder can use: `VTDecompressionSessionCreate`
-/// refuses it, which reads as "no hardware decoder" and is really a framing
-/// mismatch. And VideoToolbox cannot decode samples carrying start codes
-/// whatever the description says.
+/// Both must be converted. libavformat hands MPEG-TS extradata over in Annex B;
+/// read as an `hvcC`, `VTDecompressionSessionCreate` refuses it, which looks
+/// like "no hardware decoder" but is a framing mismatch. And VideoToolbox
+/// cannot decode samples carrying start codes.
 nonisolated enum AnnexBStream {
-    /// What replaces each start code. Four bytes because a 4K frame's slice
-    /// NAL comfortably exceeds what three can address.
+    /// Length-prefix size. Four bytes: a 4K slice NAL outgrows three.
     static let nalUnitHeaderLength: Int32 = 4
 
-    /// The two codecs that arrive this way, which read their NAL type out of
-    /// different bits of the same header byte.
+    /// Codecs that arrive this way; each reads its NAL type from different bits.
     enum Codec {
         case hevc
         case h264
 
-        /// Parameter sets in the order a decoder expects to be handed them.
+        /// Parameter sets in decoder order.
         var parameterSetTypes: [UInt8] {
             switch self {
             case .hevc: [32, 33, 34]    // VPS, SPS, PPS
@@ -42,11 +32,8 @@ nonisolated enum AnnexBStream {
         }
     }
 
-    /// Whether these bytes are start-code delimited.
-    ///
-    /// Asked of a container's extradata, where the alternative is an `hvcC`
-    /// or `avcC` record. Neither can begin with a start code: both open with
-    /// a configuration version byte of 1.
+    /// Whether extradata is start-code delimited. An `hvcC` or `avcC` record
+    /// cannot be: both open with a version byte of 1.
     static func usesStartCodes(_ data: Data) -> Bool {
         let base = data.startIndex
         guard data.count >= 4 else { return false }
@@ -57,11 +44,8 @@ nonisolated enum AnnexBStream {
             && data[base + 3] == 1
     }
 
-    /// The NAL units in a payload, as ranges that exclude their start codes.
-    ///
-    /// Emulation prevention needs no special handling here: the three-byte
-    /// sequence a start code begins with cannot appear inside a NAL, which is
-    /// the entire purpose of the escaping.
+    /// NAL unit ranges, excluding start codes. Emulation prevention means a
+    /// start code cannot appear inside a NAL.
     static func nalUnits(in bytes: UnsafeRawBufferPointer) -> [Range<Int>] {
         var units: [Range<Int>] = []
         var start: Int?
@@ -93,11 +77,8 @@ nonisolated enum AnnexBStream {
         return units
     }
 
-    /// The same NAL units, each prefixed with its length, which is the only
-    /// framing VideoToolbox accepts.
-    ///
-    /// nil when the payload holds no NAL units at all, so a caller can tell
-    /// "nothing to convert" from "converted to nothing".
+    /// The NAL units length-prefixed, the only framing VideoToolbox accepts.
+    /// nil when there are no NAL units.
     static func lengthPrefixed(_ bytes: UnsafeRawBufferPointer) -> Data? {
         let units = nalUnits(in: bytes)
         guard !units.isEmpty, let base = bytes.baseAddress else { return nil }
@@ -115,12 +96,9 @@ nonisolated enum AnnexBStream {
         return converted
     }
 
-    /// The parameter sets a format description has to be built from, in
-    /// decoder order.
-    ///
-    /// nil unless every one of them is present: a description missing any is
-    /// the failure this exists to prevent, and falling back to the container's
-    /// record leaves the ladder to do its job.
+    /// The parameter sets for a format description, in decoder order. nil
+    /// unless all are present; the caller then falls back to the container's
+    /// record.
     static func parameterSets(inAnnexB data: Data, codec: Codec) -> [Data]? {
         var found: [UInt8: Data] = [:]
         data.withUnsafeBytes { bytes in
@@ -128,10 +106,7 @@ nonisolated enum AnnexBStream {
             for unit in nalUnits(in: bytes) where unit.count > 1 {
                 let type = codec.nalType(bytes[unit.lowerBound])
                 guard codec.parameterSetTypes.contains(type), found[type] == nil else { continue }
-                // Trailing zero bytes are legal after a parameter set and
-                // routinely present in a stream, but they are padding rather
-                // than payload and every muxer trims them before handing the
-                // set to a decoder.
+                // Trim trailing zero padding, as muxers do.
                 var length = unit.count
                 while length > 1, bytes[unit.lowerBound + length - 1] == 0 {
                     length -= 1

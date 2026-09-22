@@ -1,42 +1,28 @@
 import CoreMedia
 
-/// Rewrites container timestamps on compressed passthrough audio onto a
-/// sample-exact timeline.
+/// Snaps passthrough audio timestamps onto a sample-exact timeline.
 ///
-/// Matroska stamps at 1 ms, but an AAC frame is 1024 samples — 21.33 ms at
-/// 48 kHz, which whole milliseconds cannot represent. Trusting each pts hands
-/// the renderer a discontinuity on nearly every buffer (measured: 21/22/23 ms
-/// deltas, up to 1.67 ms off, ~47 packets/s), and each one is a dropped or
-/// doubled sliver of samples — audible as steady crackle.
+/// Matroska stamps at 1 ms, but an AAC frame is 21.33 ms at 48 kHz. Trusting
+/// each pts gives the renderer a discontinuity on nearly every buffer, heard
+/// as steady crackle.
 ///
-/// Anchors to the container once, then advances by exactly `framesPerPacket`
-/// per packet. Forward discontinuities re-anchor, packets overlapping queued
-/// audio are rejected, seek and flush reset. Codecs already on whole
-/// milliseconds (ac3/eac3 at 48 kHz) are unaffected by construction.
+/// Anchors once, then advances exactly `framesPerPacket` per packet. Forward
+/// gaps re-anchor, overlapping packets are rejected, seek and flush reset.
 nonisolated struct PassthroughAudioTimeline {
     let sampleRate: Int32
     let framesPerPacket: Int64
-    /// Half a packet: quantization error (≤ ~2 ms measured) sits far
-    /// below it, while a genuinely missing packet — one full duration —
-    /// sits far above and must re-anchor, or every later buffer would be
-    /// early by a packet and audio would hold a permanent desync the
-    /// renderer can't hear its way out of. (The LPCM path's fixed 50 ms
-    /// would swallow exactly that case for every passthrough codec.)
+    /// Half a packet: above quantization error (≤ ~2 ms), below a missing
+    /// packet, which must re-anchor or audio stays a packet out of sync.
+    /// (The LPCM path's fixed 50 ms would swallow a missing packet.)
     private let gapTolerance: Double
-    /// Position of the next packet in samples at `sampleRate`; nil before
-    /// the first packet and after `reset()`.
+    /// Next packet's position in samples; nil before the first packet.
     private var nextSampleTime: Int64?
-    /// Lets the demuxer distinguish an intentionally rejected overlapping
-    /// packet from the ordinary nil result before the first timestamp.
+    /// Tells a rejected overlap apart from the nil before the first timestamp.
     private(set) var lastPacketWasOverlapping = false
     /// How far behind the chain the last rejected packet sat, in seconds.
-    /// The guard exists for boundary repeats a fraction of a packet wide, so
-    /// this is what separates that from a real backward discontinuity the
-    /// guard is muting instead of re-anchoring.
+    /// Separates a boundary repeat from a real backward jump being muted.
     private(set) var lastOverlapSeconds: Double = 0
 
-    /// One packet's duration — the unit both the tolerance and any reported
-    /// overlap are worth reading in.
     var packetSeconds: Double { Double(framesPerPacket) / Double(sampleRate) }
 
     public init(sampleRate: Int32, framesPerPacket: Int) {
@@ -45,17 +31,14 @@ nonisolated struct PassthroughAudioTimeline {
         gapTolerance = Double(self.framesPerPacket) / Double(self.sampleRate) / 2
     }
 
-    /// Forget the chain (seek/flush) — the next packet re-anchors to its
-    /// container pts.
+    /// Seek or flush: the next packet re-anchors.
     mutating func reset() {
         nextSampleTime = nil
         lastPacketWasOverlapping = false
     }
 
-    /// Sample-exact timing for the next packet, whose container pts is
-    /// `containerSeconds` (nil when the packet carries no timestamp:
-    /// mid-chain those continue the chain; before any anchor exists they
-    /// return nil and the caller keeps its container-derived fallback).
+    /// Sample-exact timing for the next packet. A packet without a pts
+    /// continues the chain, or returns nil before any anchor.
     mutating func timing(containerSeconds: Double?) -> CMSampleTimingInfo? {
         lastPacketWasOverlapping = false
         var sampleTime: Int64
@@ -64,12 +47,9 @@ nonisolated struct PassthroughAudioTimeline {
             if let containerSeconds {
                 let delta = containerSeconds - Double(expected) / Double(sampleRate)
                 if delta < -gapTolerance {
-                    // Some segmented AAC sources repeat boundary/preroll
-                    // packets with timestamps that sit inside the packet
-                    // already queued. Re-anchoring backward enqueues the
-                    // overlap and produces an audible cut on tvOS. Keep the
-                    // expected position fixed until a non-overlapping packet
-                    // arrives; a real seek has already called reset().
+                    // Segmented AAC can repeat boundary packets inside audio
+                    // already queued. Re-anchoring back causes an audible cut
+                    // on tvOS, so reject it; a real seek has called reset().
                     lastPacketWasOverlapping = true
                     lastOverlapSeconds = -delta
                     return nil

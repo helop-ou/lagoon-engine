@@ -3,13 +3,10 @@ import Foundation
 /// Keeps GPU-converted frames in decode order and bounds how many are in
 /// flight.
 ///
-/// The decode queue reserves a slot per frame before submitting the kernel and
-/// moves on; Metal's completions arrive on any thread, in no order. `complete`
-/// runs a frame's delivery only once every earlier frame has been delivered,
-/// so the renderer sees libavcodec's order and only one delivery runs at a
-/// time. `reserve` blocks once `capacity` frames are outstanding — the only
-/// backpressure this stage needs, so a slow GPU stalls the decode queue rather
-/// than piling up pictures.
+/// Metal completions arrive on any thread, in any order. `complete` runs a
+/// frame's delivery only after every earlier one, one at a time. `reserve`
+/// blocks at `capacity`, so a slow GPU stalls decode instead of piling up
+/// pictures.
 nonisolated final class GPUDeliverySequencer: @unchecked Sendable {
     private let condition = NSCondition()
     private let capacity: Int
@@ -17,22 +14,19 @@ nonisolated final class GPUDeliverySequencer: @unchecked Sendable {
     private var nextToReserve: UInt64 = 0
     private var nextToDeliver: UInt64 = 0
     private var held: [UInt64: () -> Void] = [:]
-    /// True while one thread is running deliveries. Every other thread hands
-    /// its frame over and returns, so no two bodies ever overlap and none of
-    /// them runs under the lock.
+    /// True while one thread is running deliveries. Others hand their frame
+    /// over and return, so bodies never overlap or run under the lock.
     private var delivering = false
 
     public init(capacity: Int) {
         self.capacity = max(capacity, 1)
     }
 
-    /// Frames reserved and not yet delivered.
     var pendingCount: Int {
         condition.withLock { inFlight }
     }
 
-    /// Blocks while `capacity` frames are outstanding, then returns the
-    /// sequence number the caller must complete.
+    /// Blocks at `capacity`, then returns the sequence number to complete.
     func reserve() -> UInt64 {
         condition.lock()
         defer { condition.unlock() }
@@ -45,17 +39,11 @@ nonisolated final class GPUDeliverySequencer: @unchecked Sendable {
         return sequence
     }
 
-    /// Delivers `sequence` in order: runs `body` now if every earlier frame
-    /// has been delivered, otherwise holds it until they have. A reservation
-    /// that never reached the GPU completes with an empty body, so a failed
-    /// submission cannot hold every later frame hostage.
+    /// Runs `body` in sequence order. A reservation that never reached the
+    /// GPU must still complete (with an empty body), or every later frame waits.
     ///
-    /// The caller may return before its own body has run: whichever thread is
-    /// already delivering picks the frame up in turn. That is what makes the
-    /// ordering a guarantee of this class rather than of the queue its callers
-    /// happen to use — two completion threads calling this at once cannot run
-    /// two frames' bodies side by side, and a body that calls back in only
-    /// leaves its frame for the drain to reach.
+    /// May return before `body` runs: the thread already delivering picks it
+    /// up. A body that calls back in only queues its frame.
     func complete(_ sequence: UInt64, _ body: @escaping () -> Void) {
         condition.lock()
         held[sequence] = body
@@ -68,9 +56,7 @@ nonisolated final class GPUDeliverySequencer: @unchecked Sendable {
             delivering = false
             condition.unlock()
         }
-        // The lock is held at the top of every iteration and given up around
-        // the body, which must never run under it, and reclaimed to account
-        // for the slot the body just freed.
+        // The body never runs under the lock.
         while let next = held.removeValue(forKey: nextToDeliver) {
             nextToDeliver += 1
             condition.unlock()
@@ -81,9 +67,8 @@ nonisolated final class GPUDeliverySequencer: @unchecked Sendable {
         }
     }
 
-    /// Waits until nothing is outstanding. Bounded, because a GPU that never
-    /// answers must not wedge a seek or a teardown; returns whether it did
-    /// drain.
+    /// Waits until nothing is outstanding; returns whether it drained. Bounded
+    /// so a GPU that never answers cannot wedge a seek or teardown.
     @discardableResult
     func waitUntilDrained(timeout: TimeInterval) -> Bool {
         condition.lock()

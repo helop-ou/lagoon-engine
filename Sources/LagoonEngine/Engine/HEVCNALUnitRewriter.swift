@@ -1,42 +1,33 @@
 import Foundation
 
-/// Walks a length-prefixed HEVC access unit, NAL by NAL, applying a per-unit
-/// transform.
+/// Walks a length-prefixed HEVC access unit, applying a per-NAL transform.
 ///
-/// P7 remuxes interleave the Dolby Vision enhancement layer and RPU into the
-/// base layer's track as unspecified types 63 and 62, which tvOS cannot use —
-/// it reconstructs no dual-layer DoVi. `DolbyVisionProfileConverter` rewrites
-/// every RPU to profile 8.1 with libdovi; `strippingEnhancementLayer` drops
-/// both types wholesale and is the debug fallback that plays the base layer as
-/// HDR10.
+/// Dolby Vision profile 7 carries its enhancement layer and RPU as NAL types
+/// 63 and 62, which tvOS cannot use. `DolbyVisionProfileConverter` rewrites
+/// the RPU to profile 8.1; `strippingEnhancementLayer` drops both types and
+/// plays the base layer as HDR10.
 nonisolated enum HEVCNALUnitRewriter {
     /// What `rewrite` does with one NAL unit.
     enum Action {
         case keep
         case drop
-        /// Writes `Data` in the unit's place with a fresh length prefix.
-        /// Treated as `.drop` when the replacement doesn't fit the prefix
-        /// width it was given.
+        /// Writes `Data` in the unit's place with a fresh length prefix, or
+        /// drops the unit if it does not fit the prefix width.
         case replace(Data)
     }
 
-    /// NAL length-prefix size from the hvcC box (lengthSizeMinusOne, byte
-    /// 21) — mp4-style payloads prefix every NAL with this many bytes.
+    /// NAL length-prefix size from the hvcC box (lengthSizeMinusOne, byte 21).
     static func nalLengthSize(hvcc: Data) -> Int? {
         guard hvcc.count > 22 else { return nil }
         return Int(hvcc[hvcc.startIndex + 21] & 0x3) + 1
     }
 
-    /// Walks length-prefixed NAL units, handing each one (header byte
-    /// first, no length prefix) to `transform` and rebuilding the payload
-    /// from the result.
+    /// Hands each NAL unit (without its length prefix) to `transform` and
+    /// rebuilds the payload.
     ///
-    /// Returns nil when nothing was dropped or replaced — so the zero-copy
-    /// packet path stays in use — and nil when the payload doesn't parse as
-    /// length-prefixed units, so a malformed packet passes through
-    /// untouched rather than mangled. Kept byte ranges are coalesced so
-    /// consecutive surviving NALs copy in one memmove, same as the original
-    /// strip-only implementation.
+    /// Returns nil when nothing changed, so the zero-copy path stays in use,
+    /// and nil when the payload does not parse, so a malformed packet passes
+    /// through untouched.
     static func rewrite(
         payload: UnsafeRawBufferPointer,
         lengthSize: Int,
@@ -76,7 +67,7 @@ nonisolated enum HEVCNALUnitRewriter {
                 if let prefixed = lengthPrefixed(newUnit, lengthSize: lengthSize) {
                     segments.append(.bytes(prefixed))
                 }
-                // Doesn't fit the prefix width: dropped, same as `.drop`.
+                // Too long for the prefix width: dropped.
             }
             offset = unitEnd
         }
@@ -93,9 +84,8 @@ nonisolated enum HEVCNALUnitRewriter {
         return result
     }
 
-    /// The payload with unspec-62/63 NALs removed — the strip
-    /// experiment, now Settings → Advanced → Playback Diagnostics → "Dolby
-    /// Vision Compatibility Mode"'s HDR10 fallback for profile 7.
+    /// The payload with NAL types 62 and 63 removed: the HDR10 fallback for
+    /// profile 7.
     static func strippingEnhancementLayer(
         from payload: UnsafeRawBufferPointer,
         lengthSize: Int
@@ -105,8 +95,7 @@ nonisolated enum HEVCNALUnitRewriter {
         }
     }
 
-    /// `unit`, big-endian length-prefixed with `lengthSize` bytes, or nil
-    /// when its byte count can't be expressed in that width.
+    /// `unit` with a big-endian length prefix, or nil if it does not fit.
     private static func lengthPrefixed(_ unit: Data, lengthSize: Int) -> Data? {
         let maxLength = (1 << (8 * lengthSize)) - 1
         guard unit.count <= maxLength else { return nil }

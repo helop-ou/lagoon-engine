@@ -4,20 +4,15 @@ import Observation
 
 /// What a host is allowed to know about a playback engine.
 ///
-/// A host's transport and track UI talks to this and never to a concrete
-/// engine, which is what keeps FFmpeg's types out of its build and leaves
-/// room for a second implementation.
+/// Host UI talks only to this, never to a concrete engine, which keeps
+/// FFmpeg's types out of the host's build.
 @MainActor
 public protocol PlayerEngine: AnyObject, Observable {
-    /// Where playback is, in seconds. Moves the instant a scrub commits,
-    /// before anything has been demuxed — use `clockPosition` if you need the
-    /// position actually being presented.
+    /// Playback position in seconds. Jumps as soon as a seek is asked for; use
+    /// `clockPosition` for what is actually presented.
     var timePosition: Double { get }
-    /// The media clock as the synchronizer actually reports it. Unlike
-    /// `timePosition`, which `seek(to:)` moves optimistically the instant a
-    /// scrub commits, this only advances once the clock is anchored — so a
-    /// group transport reports where playback *is* rather than where the
-    /// viewer just asked it to go.
+    /// The synchronizer's clock. Unlike `timePosition`, it moves only once the
+    /// clock is anchored, so it is where playback *is*.
     var clockPosition: Double { get }
     /// How long the media is, in seconds. Zero until the container says.
     var duration: Double { get }
@@ -25,50 +20,40 @@ public protocol PlayerEngine: AnyObject, Observable {
     var isPaused: Bool { get }
     /// Whether playback is stopped waiting for data rather than for the viewer.
     var isBuffering: Bool { get }
-    /// Requested media-time rate. Pausing stops the clock without discarding
-    /// this value, so Play resumes at the viewer's selected speed.
+    /// Requested rate. Survives a pause, so Play resumes at the chosen speed.
     var rate: Double { get }
-    /// Number of renderer underruns recovered during this playback session.
-    /// Exposed for the debug regression probe and component preview only.
+    /// Renderer underruns recovered this session. Diagnostic.
     var stallCount: Int { get }
-    /// AVFoundation audio lifecycle recoveries, exposed to the launch-gated
-    /// integration probe so route and media-service events are measurable.
+    /// Audio renderer recoveries after route or media-service events.
     var audioRendererRecoveryCount: Int { get }
-    /// How many times the engine has rebuilt itself after the system reset
-    /// its media services. A rising count on one playback means trouble.
+    /// Rebuilds after the system reset its media services.
     var mediaServicesResetRecoveryCount: Int { get }
     /// The picture's size in pixels, or nil before the first frame is decoded.
     var videoSize: CGSize? { get }
     /// Every audio track the container offers, in the order it lists them.
     var audioTracks: [PlayerTrack] { get }
-    /// Debug/regression label for the renderer input, not a user-facing
-    /// codec name. Implementations without a distinct path may use unknown.
+    /// Diagnostic label for the audio renderer input; not a codec name.
     var audioOutputPathDiagnostic: String { get }
-    /// Debug/regression label for how decoded video reaches the renderer:
-    /// "compressed", "videotoolbox", or a software output mode such as
-    /// "gpu-sdr-linear".
+    /// Diagnostic label for the video path: "compressed", "videotoolbox",
+    /// or a software mode such as "gpu-sdr-linear".
     var videoOutputPathDiagnostic: String { get }
-    /// Times a renderer's media-data request block ran and found nothing to
-    /// give. The engine stops requesting when that happens, so this stays
-    /// near zero; a runaway count is the half-core loop.
+    /// Request-block callbacks that found nothing to give. Should stay near
+    /// zero; a runaway count is a busy loop burning half a core.
     var idleRequestCallbacks: Int { get }
-    /// Renderer-side audio delivery diagnostics. The app
-    /// queue is normally empty because AVFoundation takes samples promptly,
-    /// so starvation is measured from the last sample actually enqueued to
-    /// the renderer instead.
+    /// Audio starvations, measured from the last sample enqueued to the
+    /// renderer (the engine's own queue is normally empty).
     var audioStarvationCount: Int { get }
     /// Stalls confirmed as audio-caused, a subset of `stallCount`.
     var audioStallCount: Int { get }
-    /// Off by default (Settings → Advanced → Playback Diagnostics →
-    /// Buffer on Audio Starvation). Read once when the engine is created.
+    /// Whether audio starvation triggers buffering. Off by default; read once
+    /// at creation.
     var buffersOnAudioStarvation: Bool { get }
-    /// How far ahead of the clock the audio renderer is holding samples.
-    /// Falling toward zero is the early sign of a starving audio path.
+    /// Audio buffered ahead of the clock. Near zero means audio is starving.
     var audioDeliveryLeadSeconds: Double { get }
     /// Whether the audio renderer has enough to start without stuttering.
     var audioRendererReadyForPlayback: Bool { get }
     #if DEBUG
-    /// Off-by-default fault-injection state exposed to the regression probe.
+    /// Fault injection for tests; false in normal use.
     var audioDeliverySuspendedForDiagnostics: Bool { get }
     /// Whether delivery to the demuxer is held. Test hook; false in normal use.
     var demuxDeliverySuspendedForDiagnostics: Bool { get }
@@ -77,11 +62,9 @@ public protocol PlayerEngine: AnyObject, Observable {
     var videoQueueCountDiagnostic: Int { get }
     /// The largest that backlog has been during this playback.
     var maximumVideoBacklogDiagnostic: Int { get }
-    /// Where the backlog is capped. Reaching it means the demuxer is told
-    /// to wait.
+    /// The backlog cap; at it, the demuxer waits.
     var videoQueueHardLimitDiagnostic: Int { get }
-    /// Compressed video parked past the decoded limit while the demuxer
-    /// reads on for audio: current count and the session peak.
+    /// Compressed video read ahead of the decoded limit to reach audio.
     var videoIntakeCountDiagnostic: Int { get }
     /// The largest that intake has been during this playback.
     var maximumVideoIntakeDiagnostic: Int { get }
@@ -92,58 +75,45 @@ public protocol PlayerEngine: AnyObject, Observable {
     var subtitleLoadState: SubtitleLoadState { get }
     /// Changes on every selection intent, even while a sidecar is loading.
     var subtitleSelectionRevision: Int { get }
-    /// The subtitle content on screen right now (M5): joined text lines
-    /// and/or decoded bitmap rects, rendered by the player UI as an
-    /// overlay. Empty/nil when no cue is active.
+    /// The subtitle text on screen now, or nil when no cue is active.
     var currentSubtitleText: String? { get }
-    /// Individually authored text compositions. Plain subtitles use the
-    /// default bottom-centre cue; ASS/SSA can carry independent placement
-    /// and inline formatting for simultaneous speakers and signs.
+    /// Positioned text cues. Plain subtitles use one bottom-centre cue;
+    /// ASS/SSA can place several with inline formatting.
     var currentSubtitleCues: [SubtitleTextCue] { get }
     var currentSubtitleImages: [SubtitleImage] { get }
-    /// mpv convention (M6): positive delays the audio relative to video.
+    /// Seconds; positive delays audio relative to video.
     var audioDelay: Double { get }
     /// What the byte cache is holding, for a scrub bar's buffered ranges.
     /// `.empty` for an engine that caches nothing, and for a local file.
     var bufferState: PlaybackBufferState { get }
-    /// What the display should be asked to match (tvOS Match Content,
-    /// the video's fully tagged format description — colorimetry,
-    /// HDR10 metadata, DoVi atoms — plus its frame rate. nil until the
-    /// demuxer knows, and when the frame rate is unknowable.
+    /// What the display should match (tvOS Match Content). nil until the
+    /// demuxer knows, or when the frame rate is unknown.
     var displayMatchRequest: DisplayMatchRequest? { get }
 
-    /// Idempotent transport controls are required by system integrations:
-    /// interruption, PiP, and Remote Command Center callbacks describe the
-    /// desired state rather than asking the app to invert its current one.
+    /// Idempotent: system callbacks (interruption, PiP, Remote Command
+    /// Center) state the desired state, not a toggle.
     func play()
     func pause()
     func togglePause()
     func setRate(_ rate: Double)
     func seek(by seconds: Double)
-    /// Absolute seek, clamped by the engine. Both seeks are optimistic:
-    /// `timePosition` lands on the target the instant they're called, so
-    /// the transport can commit a scrub without waiting for the demuxer.
+    /// Absolute seek, clamped. Both seeks move `timePosition` at once.
     func seek(to seconds: Double)
     /// nil turns the stream off (subtitles); audio pickers shouldn't pass nil.
     func selectAudioTrack(id: Int?)
     func selectSubtitleTrack(id: Int?)
     func retrySubtitleLoad()
-    /// Adds a server-downloaded sidecar to the live item and selects it
-    /// without rebuilding the renderers or restarting playback.
+    /// Adds and selects a sidecar subtitle without restarting playback.
     func addExternalSubtitle(_ track: ExternalSubtitleTrack)
     func setAudioDelay(_ seconds: Double)
     /// Audio-only playback while the app is in the background.
     func setVideoOutputSuspended(_ suspended: Bool)
-    /// Start — or, when already primed and paused, resume — so that the
-    /// current media position is presented exactly at `hostTime` on
-    /// `CMClockGetHostTimeClock()`. A host time already in the past starts
-    /// now. A SyncPlay group start is one host-clock instant every member
-    /// agreed on after time sync, so "play, roughly now" is not enough.
+    /// Starts or resumes so the current position is presented exactly at
+    /// `hostTime` on `CMClockGetHostTimeClock()`; a past time starts now.
+    /// For group playback, where members agree on one instant.
     func play(atHostTime hostTime: CMTime)
-    /// A sync-correction multiplier applied on top of the viewer's chosen
-    /// `rate`. Nudging a member that has drifted from its group must not
-    /// change what the speed row and Now Playing say the viewer picked, so
-    /// `rate` itself is untouched.
+    /// A sync-correction multiplier on top of `rate`, which it leaves
+    /// untouched so the UI still shows the viewer's choice.
     func setCorrectionRate(_ multiplier: Double)
 }
 
@@ -181,9 +151,8 @@ public extension PlayerEngine {
     }
 }
 
-/// The rates Lagoon exposes to its own controls and to Remote Command
-/// Center. The engine accepts any finite value inside the same envelope so
-/// system integrations do not have to round a supported event twice.
+/// Playback rates offered to controls. The engine accepts any finite value
+/// inside the same envelope.
 public nonisolated enum PlaybackRatePolicy {
     static public let supported: [Double] = [0.5, 0.75, 1, 1.25, 1.5, 2]
     static public let minimum = 0.5
@@ -194,21 +163,15 @@ public nonisolated enum PlaybackRatePolicy {
         return min(max(rate, minimum), maximum)
     }
 
-    /// What the media clock actually runs at: the viewer's rate with a sync
-    /// correction on top of it. The correction is a nudge for a
-    /// group member that has drifted, not a second speed control, so the
-    /// product stays inside the one envelope the rest of the engine scales
-    /// its cushions and watermarks by. A correction of 1 — the only value
-    /// outside a group — returns the viewer's rate unchanged.
+    /// The clock's real rate: the viewer's rate times the sync correction,
+    /// clamped to the envelope the engine's cushions are scaled by.
     static public func effectiveRate(userRate: Double, correction: Double) -> Double {
         let user = clamped(userRate)
         guard correction.isFinite, correction > 0 else { return user }
         return clamped(user * correction)
     }
 
-    /// How a rate is written for the viewer: no trailing zeros, always a
-    /// multiplication sign. Lives here so the panel's rows and the readout
-    /// beside the player's title cannot drift apart.
+    /// A rate for display, e.g. "1.5×". One place, so every readout agrees.
     static public func title(_ rate: Double) -> String {
         String(format: "%g×", clamped(rate))
     }
@@ -218,13 +181,8 @@ public nonisolated enum PlaybackRatePolicy {
         String(format: "%g", clamped(rate)).replacingOccurrences(of: ".", with: "_")
     }
 
-    /// The adjacent supported rate in `direction`, clamped at both ends.
-    ///
-    /// Clamped rather than wrapped: the control is a pair of +/- buttons, and
-    /// a plus that jumps from 2× to 0.5× would read as a bug rather than as a
-    /// wrap. `nearest` first, because the engine accepts anything inside the
-    /// envelope — Remote Command Center can hand it 1.1 — so stepping has to
-    /// start from a value that may not be in the set.
+    /// The adjacent supported rate in `direction`, clamped, not wrapped.
+    /// `rate` may be off the list (e.g. 1.1 from Remote Command Center).
     static public func stepped(from rate: Double, by direction: Int) -> Double {
         let current = clamped(rate)
         guard direction != 0 else { return current }
@@ -235,13 +193,9 @@ public nonisolated enum PlaybackRatePolicy {
     }
 }
 
-/// What the physical display should be switched to for the current video:
-/// tvOS Match Content wants the tagged format description (it
-/// derives dynamic range and resolution from it) and the frame rate.
-/// Without this request the display stays at its idle mode — typically
-/// 60 Hz in whatever range it happens to be in — and the compositor
-/// cadence-converts and tone-maps every full-4K HDR frame forever, which
-/// is the standing suspect for the 2160p-only frame drops on hardware.
+/// The display mode to request for the current video (tvOS Match Content):
+/// the tagged format description and the frame rate. Without it the display
+/// stays in its idle mode and the compositor converts every frame.
 public nonisolated struct DisplayMatchRequest: Equatable {
     public init(
         formatDescription: CMFormatDescription,
@@ -260,28 +214,24 @@ public nonisolated struct DisplayMatchRequest: Equatable {
     }
 }
 
-/// One selectable track as the engine reports it. `engineID` is the
-/// engine's own identifier (mpv aid/sid today), unique per kind only.
+/// One selectable track as the engine reports it.
 public nonisolated struct PlayerTrack: Identifiable, Equatable {
     public enum Kind: String {
         case audio
         case subtitle
     }
 
-    /// The engine's own handle for this track. Pass it back to select the
-    /// track; it means nothing outside this playback.
+    /// Pass back to select the track. Unique per kind, this playback only.
     public let engineID: Int
     /// Whether this is audio or subtitles.
     public let kind: Kind
-    /// What to show a viewer. Already disambiguated, so two tracks in the
-    /// same language read differently.
+    /// What to show a viewer; already disambiguated.
     public let displayName: String
     /// Whether this track is the one currently playing.
     public let isSelected: Bool
     /// The track's language, or nil when the container does not say.
     public let languageTag: String?
-    /// Whether the track is marked as forced — signs and songs rather than
-    /// dialogue.
+    /// Forced: signs and songs rather than dialogue.
     public let isForced: Bool
     /// Whether the track is marked for viewers who are deaf or hard of hearing.
     public let isHearingImpaired: Bool
@@ -317,9 +267,8 @@ public nonisolated struct PlayerTrack: Identifiable, Equatable {
     public var id: String { "\(kind.rawValue)-\(engineID)" }
 }
 
-/// Server-authored attributes for an embedded demux track. FFmpeg exposes
-/// language/title, but Jellyfin is the authority for accessibility flags;
-/// keeping this separate lets the engine merge both sources by ordinal.
+/// Host-supplied attributes for an embedded track, merged by ordinal with
+/// what FFmpeg reads. The host is the authority on accessibility flags.
 public nonisolated struct PlayerTrackMetadata: Equatable, Sendable {
     public init(
         languageTag: String? = nil,
@@ -333,24 +282,17 @@ public nonisolated struct PlayerTrackMetadata: Equatable, Sendable {
 
     /// The track's language, or nil when the container does not say.
     public let languageTag: String?
-    /// Whether the track is marked as forced — signs and songs rather than
-    /// dialogue.
+    /// Forced: signs and songs rather than dialogue.
     public let isForced: Bool
     /// Whether the track is marked for viewers who are deaf or hard of hearing.
     public let isHearingImpaired: Bool
 }
 
-/// A stretch of the item the server has classified — intro, recap, credits.
-/// Jellyfin 10.10+ serves these natively from `MediaSegments`,
-/// populated by whatever plugin the admin runs.
+/// A classified stretch of the item: intro, recap, credits.
 public nonisolated struct MediaSegment: Identifiable, Equatable {
-    /// What a server calls the segment; the raw values follow the common
-    /// convention. Only `intro` and `recap` are ever
-    /// offered as a skip: `preview` and `commercial` exist in real
-    /// libraries — a sampled film carries two `commercial` segments — and
-    /// acting on them would raise a skip prompt in the middle of a movie.
-    /// `outro` is deliberately not skippable either; the end of an episode
-    /// is a hand-off to the next one, not something to jump over.
+    /// The segment type. Only `intro` and `recap` are skippable: real films
+    /// carry `commercial` segments mid-movie, and an `outro` hands off to the
+    /// next episode instead.
     public enum Kind: String {
         case intro = "Intro"
         case outro = "Outro"
@@ -361,8 +303,7 @@ public nonisolated struct MediaSegment: Identifiable, Equatable {
 
         public var isSkippable: Bool { self == .intro || self == .recap }
 
-        /// What the button says. Recap gets its own word — being told
-        /// "Skip Intro" over a previously-on montage reads as a bug.
+        /// The skip button's title.
         public var skipTitle: String {
             self == .recap ? String(localized: "Skip Recap") : String(localized: "Skip Intro")
         }
@@ -405,9 +346,8 @@ public nonisolated struct PlayerChapter: Identifiable, Equatable {
     public let start: Double
 }
 
-/// Everything the transport needs to pull trickplay preview frames: the
-/// sheet URLs already resolved (tokens included), plus the grid inside each
-/// sheet. Positions map to tiles through `tile(at:)`.
+/// Trickplay preview sheets: resolved URLs plus each sheet's grid.
+/// `tile(at:)` maps a position to a tile.
 public nonisolated struct TrickplaySource: Equatable {
     public let sheetURLs: [URL]
     /// One thumbnail's pixel size as the server declared it.
@@ -417,9 +357,8 @@ public nonisolated struct TrickplaySource: Equatable {
     /// Seconds between thumbnails (the wire value is milliseconds).
     public let interval: Double
     public let thumbnailCount: Int
-    /// The trickplay route 401s without credentials and `sheetURLs` carry no
-    /// query token, so the header credential rides with
-    /// the source for `TrickplayLoader` to apply per fetch.
+    /// Header credential `TrickplayLoader` applies per fetch; the URLs carry
+    /// no token and the route refuses requests without one.
     public var authorization: MediaRequestAuthorization? = nil
 
     public init(
@@ -460,8 +399,7 @@ public nonisolated struct TrickplayTile: Equatable {
     public let row: Int
 }
 
-/// Everything the player's Info tab and transport show about the item —
-/// assembled by the playback controller, engine-independent.
+/// What the player's Info tab and transport show about the item.
 public nonisolated struct PlayerItemInfo: Equatable {
     public init(
         title: String,
@@ -491,27 +429,21 @@ public nonisolated struct PlayerItemInfo: Equatable {
     public let subtitle: String?
     /// A synopsis to show while the picture is loading, if there is one.
     public let overview: String?
-    /// Infuse-style spaced tokens: runtime, year, size, "HEVC (4K DV)",
-    /// "Dolby Digital+ 5.1", bitrate, fps, genres, rating.
+    /// Short tokens: runtime, year, "HEVC (4K DV)", "Dolby Digital+ 5.1", …
     public let facts: [String]
-    /// The Video tab's single read-only line, e.g.
-    /// "HEVC · 4K DV · 3840×1600 · 23.976 fps".
+    /// One line, e.g. "HEVC · 4K DV · 3840×1600 · 23.976 fps".
     public let videoSummary: String?
     /// Artwork for the system's Now Playing panel, if there is any.
     public let posterURL: URL?
-    /// Empty whenever the server has no chapters for the item — the ticks
-    /// and chapter jumps simply don't appear.
+    /// Empty when the item has no chapters.
     public var chapters: [PlayerChapter] = []
-    /// nil when the server hasn't generated trickplay tiles; the scrub chip
-    /// then shows the timestamp alone.
+    /// nil when there are no trickplay tiles.
     public var trickplay: TrickplaySource?
     /// Empty when the server has no segments for the item.
     public var segments: [MediaSegment] = []
 }
 
-/// The episode queued behind the one playing, as the Up Next card shows it.
-/// Resolved by the host so the player view stays free of the
-/// Jellyfin client, exactly as `PlayerItemInfo` is.
+/// The episode queued next, as the Up Next card shows it.
 public nonisolated struct NextUpEpisode: Equatable {
     public init(
         title: String,
@@ -523,30 +455,27 @@ public nonisolated struct NextUpEpisode: Equatable {
         self.imageURL = imageURL
     }
 
-    /// The episode's own name — never the series, which is the one thing
-    /// the viewer already knows at this point.
+    /// The episode's name, never the series.
     public let title: String
     /// "S1 E4", when the server numbered it.
     public let subtitle: String?
     public let imageURL: URL?
 }
 
-/// A subtitle that lives outside the media file (Jellyfin external stream)
-/// for the engine to side-load at start.
+/// A subtitle outside the media file, side-loaded at start.
 public nonisolated struct ExternalSubtitleTrack {
     /// Where to fetch the subtitle file.
     public let url: URL
-    /// Provider downloads can be played even while Jellyfin's asynchronous
-    /// library refresh has not produced a persistent DeliveryUrl yet.
+    /// The file's bytes, when the host already has them and `url` may not
+    /// serve them yet.
     public let preloadedData: Data?
     /// What to call it in a track list.
     public let title: String?
     /// Its language, if known.
     public let language: String?
-    /// Jellyfin's default-subtitle choice pointed at this external stream.
+    /// Whether to select it at start.
     public let select: Bool
-    /// Whether the track is marked as forced — signs and songs rather than
-    /// dialogue.
+    /// Forced: signs and songs rather than dialogue.
     public let isForced: Bool
     /// Whether the track is marked for viewers who are deaf or hard of hearing.
     public let isHearingImpaired: Bool

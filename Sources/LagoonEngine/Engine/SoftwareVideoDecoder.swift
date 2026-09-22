@@ -6,32 +6,24 @@ import Libavcodec
 import Libavutil
 import LagoonPixelOps
 
-/// Software video fallback for codecs Apple does not expose through
-/// VideoToolbox — VC-1/WMV3, MPEG-4 Part 2 (the Xvid/DivX envelope AVI
-/// rips carry), progressive MPEG-2, VP9, and AV1 on devices without an AV1
-/// hardware decoder. Each is decoded by Lagoon's pinned libavcodec, copied into
-/// renderer-recommended Core Video buffers, and wrapped as ready image sample
-/// buffers. AVFoundation still owns presentation, color conversion, A/V sync,
-/// display matching, and output.
+/// libavcodec decode for codecs VideoToolbox does not offer here (VC-1/WMV3,
+/// MPEG-4 Part 2, MPEG-2, VP9, AV1 without hardware, interlaced H.264).
+/// Frames become Core Video buffers; AVFoundation still owns presentation.
 ///
-/// The accepted output is deliberately narrow: 8-bit planar/NV12 becomes
-/// NV12, while little-endian 10-bit planar/P010 becomes Core Video P010.
-/// Anything else fails closed instead of silently presenting incorrect color.
+/// Output is narrow on purpose: 8-bit becomes NV12, 10-bit becomes P010.
+/// Anything else fails rather than show wrong colour.
 nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
-    /// Concrete controls for the output matrix. "Source" preserves
-    /// the decoded color signalling (PQ/BT.2020 for the HDR test title), while
-    /// "SDR" asks VTPixelTransfer to convert to BT.709. Lossless modes use
-    /// Apple's tiled lossless pixel formats; direct/linear modes remain
-    /// ordinary bi-planar Core Video buffers.
+    /// Output modes. "Source" keeps the decoded colour; "SDR" converts to
+    /// BT.709. Lossless modes use Apple's tiled lossless formats; direct and
+    /// linear modes use ordinary bi-planar buffers.
     enum OutputMode: String, CaseIterable, Sendable {
         case directSource = "direct-source"
         case losslessSource = "lossless-source"
         case linearSDR = "linear-sdr"
         case losslessSDR = "lossless-sdr"
-        /// The Metal kernel repacks (and, for `gpuSDR`, tone-maps) straight
-        /// into the renderer's buffer: no CPU conversion, no VideoToolbox.
-        /// Where Metal cannot serve the stream these fall back to
-        /// their pixel-transfer equivalents.
+        /// The Metal kernel repacks (and for `gpuSDR` tone-maps) into the
+        /// renderer's buffer. Falls back to the pixel-transfer equivalent
+        /// where Metal cannot serve the stream.
         case gpuSource = "gpu-source"
         case gpuSDR = "gpu-sdr"
 
@@ -100,10 +92,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         let transfer: CFString?
         let matrix: CFString?
         let chromaLocation: CFString?
-        /// HDR10 static metadata. The compressed path puts these straight
-        /// into the format description; here they have to travel as buffer
-        /// attachments, because the description is derived from a pixel
-        /// buffer rather than built by hand.
+        /// HDR10 static metadata. Travels as buffer attachments, because the
+        /// format description is derived from a pixel buffer.
         let masteringDisplay: Data?
         let contentLightLevel: Data?
         let ambientViewingEnvironment: Data?
@@ -113,8 +103,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                 || transfer == kCVImageBufferTransferFunction_ITU_R_2100_HLG
         }
 
-        /// What the frame is tagged as after the transfer session tone-maps it to
-        /// SDR: BT.709 end to end, no HDR metadata to mislead the display.
+        /// Tags after tone-mapping to SDR: BT.709, no HDR metadata.
         var sdrToneMapped: ColorProperties {
             ColorProperties(
                 primaries: kCVImageBufferColorPrimaries_ITU_R_709_2,
@@ -135,39 +124,27 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     private let height: Int
     private let outputBitDepth: Int
     private let pixelBufferPool: CVPixelBufferPool
-    /// Non-nil when frames leave here in Apple's lossless-compressed tiled
-    /// format rather than as linear planes.
-    ///
-    /// The renderer's power-efficient-compositing metric reached about 87%
-    /// for these surfaces and 0% for the linear surfaces on the test Apple TV.
-    /// That is correlation, not proof of where the work runs. A transfer is
-    /// probed once at open; if the device refuses it, the linear path remains
-    /// the fallback.
+    /// Non-nil when output goes through a pixel transfer (lossless or SDR).
+    /// Probed once at open; if the device refuses, output stays linear.
     private let transferSession: VTPixelTransferSession?
     private let transferOutputPool: CVPixelBufferPool?
     private let gpuConverter: MetalFrameConverter?
     private let gpuOutputPool: CVPixelBufferPool?
 
-    /// A decoded frame, ready for the renderer. The CPU paths deliver
-    /// synchronously from inside `decode`; the GPU path delivers from its
-    /// own queue once the kernel has finished, in decode order.
+    /// Receives ready frames: synchronously from `decode` on the CPU paths,
+    /// from the delivery queue, in decode order, on the GPU path.
     typealias Delivery = @Sendable (CMSampleBuffer) -> Void
 
-    /// GPU frames in flight. The decode queue submits and moves
-    /// on, so dav1d's wait and the GPU's latency overlap instead of adding;
-    /// the cap keeps a slow GPU from running away with pictures.
+    /// GPU delivery. Decode submits and moves on, so dav1d and the GPU
+    /// overlap; the sequencer caps frames in flight.
     private let deliveryQueue = DispatchQueue(label: "ee.helop.lagoon.gpuoutput", qos: .userInitiated)
     private let sequencer = GPUDeliverySequencer(capacity: 3)
     private let failureLock = NSLock()
     private var gpuFailure: Error?
-    /// What the frames leaving this decoder are tagged as. Identical to
-    /// `colorProperties` except on tvOS for HDR sources, where it is the
-    /// BT.709 result of the transfer-session tone map.
+    /// Output tags: `colorProperties`, or BT.709 when HDR is tone-mapped.
     private let outputProperties: ColorProperties
-    /// True when HDR content leaves here as tone-mapped SDR on tvOS. In the
-    /// controlled A/B, this compressed SDR path dropped fewer frames and used
-    /// less memory than direct linear PQ. Its optimized-composition counter
-    /// was also higher, but that metric alone does not establish the cause.
+    /// True when HDR leaves as tone-mapped SDR (the tvOS default: it dropped
+    /// fewer frames and used less memory than linear PQ).
     let outputsToneMappedSDR: Bool
     private let colorProperties: ColorProperties
     private let pixelAspectRatio: (horizontal: Int32, vertical: Int32)?
@@ -176,78 +153,59 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     private var profileStorage = Profile()
     private let detailedTimings: PipelineStageTimings
     private var profileStartedAt: Double?
-    /// Rolling window, so the HUD can show what the decoder is managing now
-    /// rather than an average dragged up by a fast start.
+    /// Rolling window, so the HUD shows the current rate, not a cumulative one.
     private var windowStartedAt: Double?
     private var windowFrames = 0
     private static let windowSeconds = 2.0
 
     let formatDescription: CMVideoFormatDescription
     let usesCompressedOutput: Bool
-    /// Resolved rather than merely requested, so every benchmark line proves
-    /// which of the four output controls the device actually accepted.
+    /// The mode actually in use, not the one requested.
     let outputModeName: String
     let codecName: String
     let codecLongName: String
     let lowDelayEnabled: Bool
-    /// Configured dav1d option. Zero asks dav1d to select its normal delay.
+    /// dav1d's configured max frame delay; zero is dav1d's default.
     let maxFrameDelay: Int64?
     /// Frames libavcodec reports buffering after the decoder is open.
     let decoderDelay: Int32
     var gridDescription: String? { timeline?.gridDescription }
 
-    /// Configured libavcodec thread count after opening. Zero means automatic;
-    /// libavcodec does not expose dav1d's resulting worker count here.
+    /// libavcodec thread count after opening; zero means automatic.
     let resolvedThreadCount: Int32
 
-    /// Where the software path's time goes, so nobody has to guess which stage
-    /// is expensive. Cumulative since the last flush, which is every seek — the
-    /// same boundary the frame-loss bench re-arms on, so a bench window and
-    /// this profile describe the same stretch.
+    /// Where the software path's time goes, since the last seek (the same
+    /// boundary the frame-loss bench uses).
     ///
-    /// `decodeSeconds` is libavcodec (dav1d's workers bill elsewhere, so on a
-    /// threaded decoder this is the wait, not the work). `conversionSeconds`
-    /// is everything between a decoded AVFrame and a ready `CMSampleBuffer`.
-    /// Both are wall time on the decode queue, so against `elapsedSeconds`
-    /// they read as the share of one core this stage holds.
+    /// `decodeSeconds` is time waiting on libavcodec, not dav1d's worker
+    /// time. `conversionSeconds` is AVFrame to `CMSampleBuffer`. Both are wall
+    /// time on the decode queue.
     struct Profile: Equatable, Sendable {
         var frames = 0
         var packets = 0
         var decodeSeconds = 0.0
         var conversionSeconds = 0.0
-        /// Of the conversion, getting a surface to write into rather than
-        /// writing to it. Measured at 0.06 ms on an Apple TV: the pool
-        /// recycles, so allocation is not a cost worth chasing.
+        /// Of the conversion, getting the surface (~0.06 ms on Apple TV).
         var surfaceSeconds = 0.0
         var elapsedSeconds = 0.0
-        /// Frames per second over the last completed rolling window, rather
-        /// than since the seek. See `recentFramesPerSecond`.
+        /// Frames per second over the last completed rolling window.
         var recentFramesPerSecond = 0.0
 
         /// Frames per second since the last seek.
         ///
-        /// **This cannot tell a healthy pipeline from a struggling one**, and
-        /// two builds of measurements were read wrongly because of it. Once the
-        /// queues fill, backpressure throttles the decoder to playback rate,
-        /// so a decoder with headroom to spare and one with none both settle
-        /// here at the frame rate of the content. Read `decodeMilliseconds`
-        /// for capacity and `recentFramesPerSecond` for what is happening now.
+        /// **Not a capacity measure.** Backpressure throttles decode to the
+        /// content rate, healthy or not. Read `decodeMilliseconds` instead.
         var framesPerSecond: Double {
             elapsedSeconds > 0 ? Double(frames) / elapsedSeconds : 0
         }
 
-        /// What one frame costs libavcodec, in milliseconds.
-        ///
-        /// The number that actually answers "does this device have the
-        /// headroom", because unlike a rate it does not move when the decoder
-        /// is deliberately held back. Compare against the frame budget: 41.7 ms
-        /// at 23.976 fps.
+        /// What one frame costs libavcodec, in milliseconds. The headroom
+        /// measure: compare with the frame budget (41.7 ms at 23.976 fps).
         var decodeMilliseconds: Double {
             frames > 0 ? decodeSeconds / Double(frames) * 1_000 : 0
         }
 
-        /// What one frame costs to turn into a renderer surface, in
-        /// milliseconds.
+        /// What one frame costs to convert, in milliseconds.
         var conversionMilliseconds: Double {
             frames > 0 ? conversionSeconds / Double(frames) * 1_000 : 0
         }
@@ -257,10 +215,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             frames > 0 ? surfaceSeconds / Double(frames) * 1_000 : 0
         }
 
-        /// Everything a frame costs this stage, which is what has to fit
-        /// inside a frame period. Reporting decode alone read 76% of budget
-        /// while the real total was over 100%, and hid the conversion for
-        /// four builds.
+        /// Decode plus conversion: what must fit inside a frame period.
         var frameMilliseconds: Double {
             decodeMilliseconds + conversionMilliseconds
         }
@@ -275,16 +230,14 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             elapsedSeconds > 0 ? conversionSeconds / elapsedSeconds : 0
         }
 
-        /// How much of a frame period the decoder is using, where 1.0 is
-        /// exactly keeping up and nothing above it can hold frame rate.
+        /// Share of a frame period used; above 1.0 cannot keep up.
         func decodeBudgetUsed(frameRate: Double) -> Double {
             guard frameRate > 0, frameMilliseconds > 0 else { return 0 }
             return frameMilliseconds / (1_000 / frameRate)
         }
     }
 
-    /// Bytes one decoded surface occupies, for the queue limit that has to
-    /// bound them (a 4K P010 frame is 23.7 MiB).
+    /// Bytes per decoded surface, for the queue limit (4K P010 is 23.7 MiB).
     var decodedFrameBytes: Int64 {
         DecodedFrameMemory.bytesPer420Frame(
             width: width,
@@ -303,11 +256,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         detailedTimings.reset()
     }
 
-    /// H.264 is accepted only when the stream is interlaced. The
-    /// progressive case belongs to VideoToolbox, and keeping it out of here
-    /// means a hardware description that fails to build for progressive
-    /// H.264 still surfaces as the failure it is rather than quietly
-    /// decoding on the CPU.
+    /// H.264 only when interlaced, so a progressive H.264 failure surfaces
+    /// instead of quietly decoding on the CPU.
     static func supports(codecID: AVCodecID, interlaced: Bool = false) -> Bool {
         codecID == AV_CODEC_ID_VC1
             || codecID == AV_CODEC_ID_WMV3
@@ -318,9 +268,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             || (codecID == AV_CODEC_ID_H264 && interlaced)
     }
 
-    /// Resolves the new four-way selector while preserving the old boolean
-    /// launch argument for existing scripts. The HDR-oriented aliases are
-    /// accepted because those are the names used in the experiment matrix.
+    /// Resolves the output-mode selector, still honouring the older boolean
+    /// launch argument and the HDR-named aliases.
     static func outputMode(
         requestedValue: String?,
         legacyCompressedOutput: Bool?,
@@ -374,19 +323,12 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             throw DecoderError.codecSetup("invalid codec parameters")
         }
         context.pointee.pkt_timebase = timeBase
-        // The production default is the device's active processor count; the
-        // diagnostic launch argument may request zero to test dav1d auto or a
-        // specific value. `drain()` and `flush()` already handle the delay
-        // frame threading introduces.
+        // `drain()` and `flush()` handle frame threading's delay.
         let requestedThreadCount = SoftwareDecodeThreadPolicy.resolvedThreadCount()
         context.pointee.thread_count = requestedThreadCount
         if codecID == AV_CODEC_ID_AV1 {
-            // dav1d's zero/automatic frame delay is ceil(sqrt(n_threads)): only
-            // three frames for the five workers exposed by the test Apple TV.
-            // Exposing the full frame-context limit improved two independent
-            // 4K 10-bit decode-only fixtures by 34-43% in throughput.
-            // This is set on libdav1d's private AVOptions before avcodec_open2,
-            // exactly where FFmpeg copies it into Dav1dSettings.
+            // See `SoftwareDecodeThreadPolicy`. Must be set on the private
+            // options before avcodec_open2.
             let requestedDelay = SoftwareDecodeThreadPolicy.resolvedMaxFrameDelay(
                 threadCount: requestedThreadCount
             )
@@ -452,13 +394,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         attributes[kCVPixelBufferWidthKey as String] = resolvedWidth
         attributes[kCVPixelBufferHeightKey as String] = resolvedHeight
         attributes[kCVPixelBufferPixelFormatTypeKey as String] = outputPixelFormat
-        // Without this the surface cannot be wrapped as a Metal texture and
-        // the GPU conversion silently falls back to the CPU for every frame.
+        // Without this the GPU conversion silently falls back to the CPU.
         attributes[kCVPixelBufferMetalCompatibilityKey as String] = true
-        // Match the Core Animation compatibility hint carried by
-        // VideoToolbox surfaces. It did not make Lagoon's linear buffers enter
-        // the renderer's optimized-composition mode on the test Apple TV, but
-        // remains part of the recommended-compatible surface description.
+        // Matches VideoToolbox's surfaces.
         attributes[kCVPixelBufferIOSurfaceCoreAnimationCompatibilityKey as String] = true
         let poolAttributes: [String: Any] = [
             kCVPixelBufferPoolMinimumBufferCountKey as String: 18,
@@ -479,11 +417,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             throw DecoderError.pixelBufferPool(poolStatus)
         }
 
-        // The transfer function is what puts tvOS into HDR; the primaries and
-        // matrix are left alone so the colour is as close as it can be without
-        // tone mapping. Dropping the static metadata with it keeps
-        // the display from being told about a master it is no longer being
-        // shown in.
+        // The transfer function is what switches tvOS to HDR. Primaries and
+        // matrix stay; static metadata goes with the transfer.
         let properties = ColorProperties(
             primaries: SampleBufferFactory.colorPrimaries(codecpar.pointee.color_primaries),
             transfer: SampleBufferFactory.transferFunction(codecpar.pointee.color_trc),
@@ -509,9 +444,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         let aspect = SampleBufferFactory.pixelAspectRatio(codecpar.pointee.sample_aspect_ratio)
         Self.apply(properties, pixelAspectRatio: aspect, to: prototype)
 
-        // Production keeps the measured tvOS choice, while the explicit
-        // selector below can separate storage conversion from color
-        // conversion. iOS retains source color by default.
+        // tvOS tone-maps HDR by default (measured); iOS keeps source colour.
         #if os(tvOS)
         let toneMapHDRByDefault = properties.isHDR
         #else
@@ -525,14 +458,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             toneMapHDRByDefault: toneMapHDRByDefault
         )
 
-        // Every transfer mode gets a distinct destination pool and one probe
-        // transfer. This splits source versus SDR color from ordinary versus
-        // lossless destination storage. Direct-source still differs from all
-        // three controls by having no VT transfer at all; see playback.md for
-        // the comparisons the matrix can and cannot isolate.
-        // The GPU stage comes first: it replaces both CPU passes, and where
-        // Metal cannot serve the stream the mode degrades to its transfer
-        // equivalent so the matrix below still applies.
+        // GPU first; if Metal cannot serve the stream, degrade to the
+        // transfer equivalent. Each transfer mode gets its own pool and one
+        // probe transfer. See playback.md for what the matrix isolates.
         var gpuSetup: (MetalFrameConverter, CVPixelBufferPool, CVPixelBuffer, lossless: Bool)?
         if requestedOutputMode.usesGPU {
             gpuSetup = Self.makeGPUOutput(
@@ -545,9 +473,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                 properties: properties
             )
             if gpuSetup == nil {
-                // An explicitly requested mode fails hard rather than
-                // falling back, so an experiment cannot quietly measure the
-                // path it was not asked for.
+                // An explicit request fails rather than measure another path.
                 if tuning.softwareDecodeOutputMode != nil {
                     var framePointer: UnsafeMutablePointer<AVFrame>? = decodedFrame
                     av_frame_free(&framePointer)
@@ -582,9 +508,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                     kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
                 ]
             } else if requestedOutputMode.convertsToSDR {
-                // The SDR lossless formats are video-range, so the ordinary
-                // SDR control must use the equivalent range even if the
-                // decoded source happened to be full-range.
+                // Video range, to match the lossless SDR formats.
                 transferAttributes[kCVPixelBufferPixelFormatTypeKey as String] = resolvedBitDepth == 10
                     ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
                     : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
@@ -730,8 +654,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         avcodec_free_context(&contextPointer)
     }
 
-    /// Synchronous convenience for callers that want every frame back in
-    /// hand: benchmarks and fixtures. Playback uses the delivering variant.
+    /// Returns every frame, for benchmarks and fixtures.
     func decode(packet: UnsafeMutablePointer<AVPacket>) throws -> [CMSampleBuffer] {
         let collected = CollectedFrames()
         try decode(packet: packet) { collected.append($0) }
@@ -760,8 +683,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         return collected.frames
     }
 
-    /// End of stream: every picture libavcodec still holds comes out, and
-    /// this returns only once the GPU has delivered the last of them.
+    /// End of stream: flushes libavcodec and returns once the GPU has
+    /// delivered the last frame.
     func drain(deliver: @escaping Delivery) throws {
         try rethrowGPUFailure()
         let status = avcodec_send_packet(codecContext, nil)
@@ -778,14 +701,13 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         func append(_ frame: CMSampleBuffer) { lock.withLock { storage.append(frame) } }
     }
 
-    /// GPU frames submitted and not yet delivered; the decode stage counts
-    /// them as video already read.
+    /// GPU frames not yet delivered; counted as video already read.
     var pendingOutputCount: Int {
         sequencer.pendingCount
     }
 
-    /// Blocks until every submitted GPU frame has been delivered. Bounded,
-    /// because a GPU that never answers must not wedge the demux loop.
+    /// Blocks until GPU frames are delivered. Bounded, so a hung GPU cannot
+    /// wedge the demux loop.
     func waitForPendingOutput() {
         sequencer.waitUntilDrained(timeout: 2)
     }
@@ -800,11 +722,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         failureLock.withLock { gpuFailure = gpuFailure ?? error }
     }
 
-    /// Benchmark-only sink for establishing dav1d's ceiling without Core
-    /// Video allocation, P010 conversion, VideoToolbox transfer, sample
-    /// wrapping, or rendering. The normal playback stage never calls this;
-    /// the opt-in fixture benchmark owns a fresh decoder instance so its
-    /// discard run cannot affect presentation state.
+    /// Benchmark only: decodes and discards, to measure dav1d alone. Use a
+    /// fresh decoder, never the playback one.
     func decodeDiscardingOutput(packet: UnsafeMutablePointer<AVPacket>) throws -> Int {
         let status = avcodec_send_packet(codecContext, packet)
         guard status >= 0 else { throw DecoderError.decode(status) }
@@ -822,10 +741,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         waitForPendingOutput()
         avcodec_flush_buffers(codecContext)
         timeline?.reset()
-        // A seek starts a new stretch of playback, which is also the boundary
-        // the frame-loss bench re-arms on. Averaging across one would mix two
-        // scenes into a single number, and the whole point of the profile is
-        // that it describes the scene the bench is measuring.
+        // Reset on seek, as the bench does, so the profile covers one scene.
         profileLock.withLock {
             profileStorage = Profile()
             profileStartedAt = nil
@@ -865,8 +781,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         return frames
     }
 
-    /// Monotonic and cheap; `ProcessInfo.systemUptime` reads the same mach
-    /// timebase the signposts do.
+    /// Monotonic, on the same timebase as the signposts.
     private static func now() -> Double {
         ProcessInfo.processInfo.systemUptime
     }
@@ -898,8 +813,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         }
     }
 
-    /// Returns the ready sample for the CPU paths, or nil once the frame has
-    /// been handed to the GPU, which delivers it itself.
+    /// The ready sample on CPU paths, or nil when the GPU will deliver it.
     private func makeSampleBuffer(deliver: @escaping Delivery) throws -> CMSampleBuffer? {
         let decodedFormat = AVPixelFormat(rawValue: frame.pointee.format)
         let isSupported8Bit = outputBitDepth == 8 && (
@@ -918,18 +832,12 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             throw DecoderError.unsupportedPixelFormat(name)
         }
 
-        // An interlaced frame is made progressive before it is copied out,
-        // so nothing downstream ever sees a field pair. Ten-bit
-        // formats are left alone: interlaced content at that depth is not
-        // something this engine has met, and guessing at one is worse than
-        // the transcode the profile still asks for.
+        // Deinterlace 8-bit only; 10-bit interlaced is untested.
         if isSupported8Bit, frame.pointee.flags & Self.interlacedFrameFlag != 0 {
             deinterlaceInPlace(decodedFormat: decodedFormat)
         }
-        // Resolve every property that belongs to the AVFrame before copying
-        // its pixels. Once the copy is complete the dav1d picture can return to
-        // its pool; keeping a 4K 10-bit source referenced through a synchronous
-        // VT transfer needlessly adds one more ~24 MiB live picture.
+        // Read frame properties before copying, so the picture can be
+        // released right after (~24 MiB at 4K 10-bit).
         let timing = resolvedTiming()
 
         if let gpuConverter, let gpuOutputPool, decodedFormat == AV_PIX_FMT_YUV420P10LE {
@@ -965,10 +873,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         let conversionStarted = Self.now()
         let conversionEnded: Double
         do {
-            // CPU ownership ends at this scope. In particular, the pixel
-            // buffer must be unlocked before VideoToolbox is asked to read it;
-            // holding a base-address lock across GPU/accelerator work can force
-            // synchronization and was the old production behaviour.
+            // Unlock before VideoToolbox reads it; a held lock forces a sync.
             defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
             guard let sourceY = planePointer(0),
                   let destinationY = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0)?.assumingMemoryBound(to: UInt8.self),
@@ -1056,18 +961,14 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         detailedTimings.record(.p010Conversion, from: conversionStarted, to: conversionEnded)
         Self.apply(colorProperties, pixelAspectRatio: pixelAspectRatio, to: pixelBuffer)
 
-        // The source picture is no longer read below this point. Releasing it
-        // before a synchronous transfer reduces decoder-pool residency and can
-        // let dav1d schedule the next frame sooner.
+        // Release the source before the transfer so dav1d can reuse it.
         av_frame_unref(frame)
         return try makeReadySample(from: try finished(pixelBuffer), timing: timing)
     }
 
-    /// The source-linear surface, or the configured transfer destination.
-    /// The call is synchronous from this producer's perspective; its internal
-    /// execution mechanism is private. Once setup selects a transfer format,
-    /// a per-frame failure must not fall back to the source buffer because the
-    /// decoder's fixed format description describes the transfer output.
+    /// The linear surface, or the transfer destination. A per-frame transfer
+    /// failure must not fall back to the source: the format description
+    /// describes the transfer output.
     private func finished(_ linear: CVPixelBuffer) throws -> CVPixelBuffer {
         guard let transferSession, let transferOutputPool else { return linear }
         var transferred: CVPixelBuffer?
@@ -1100,9 +1001,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         return transferred
     }
 
-    /// Presentation timing for the frame the decoder is holding. Resolved
-    /// before the pixels are converted, so the CPU and GPU paths hand the same
-    /// stamps to the renderer.
+    /// Timing for the held frame, resolved before conversion so CPU and GPU
+    /// paths stamp alike.
     private func resolvedTiming() -> CMSampleTimingInfo {
         let rawPTS = frame.pointee.best_effort_timestamp != Int64.min
             ? frame.pointee.best_effort_timestamp
@@ -1134,10 +1034,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         )
     }
 
-    /// The GPU output stage: one pool allocation, one kernel dispatch, no
-    /// intermediate buffer and no transfer session. The dav1d
-    /// picture is kept alive by a frame reference until the kernel has read
-    /// it; the sample is wrapped and delivered from the delivery queue.
+    /// GPU output: one pool buffer, one dispatch. A frame reference keeps the
+    /// picture alive until the kernel has read it.
     private func submitGPUSample(
         converter: MetalFrameConverter,
         pool: CVPixelBufferPool,
@@ -1157,10 +1055,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             throw DecoderError.unsupportedPixelFormat("missing 10-bit planar planes")
         }
         guard let held = av_frame_alloc() else { throw DecoderError.pixelBuffer(-1) }
-        // The reference is what keeps the dav1d picture alive until the kernel
-        // has read it. If it fails — it allocates, so it can — `held` points at
-        // nothing, and freeing it later would release the frame's planes out
-        // from under a running dispatch. Give up before the slot is reserved.
+        // If the reference fails, freeing `held` later would release planes
+        // under a running dispatch. Give up before reserving a slot.
         let referenceStatus = av_frame_ref(held, frame)
         guard referenceStatus >= 0 else {
             var pointer: UnsafeMutablePointer<AVFrame>? = held
@@ -1169,14 +1065,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         }
         let sequence = sequencer.reserve()
         let submitted = Self.now()
-        // Both of these are handed to the GPU stage and belong to this
-        // dispatch alone from here on. `heldFrame` is the reference taken
-        // above, owned by the Metal completion thread, which frees it the
-        // moment the kernel is done reading the planes; the surface came
-        // straight out of the pool a few lines up and is written by the GPU,
-        // then read by the delivery queue after that completion, so the two
-        // never touch it at the same time. Neither Core Video nor an FFmpeg
-        // pointer is Sendable, and neither needs to be for a hand-off.
+        // Handed off, not shared: the completion thread frees `heldFrame`
+        // once the kernel has read it; the delivery queue reads the surface
+        // only after the GPU has written it.
         nonisolated(unsafe) let heldFrame = held
         nonisolated(unsafe) let destination = pixelBuffer
         do {
@@ -1190,9 +1081,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                 av_frame_free(&pointer)
                 detailedTimings.record(.gpuConversion, from: submitted, to: Self.now())
                 deliveryQueue.async { [self] in
-                    // The sequencer holds this until the frames before it have
-                    // been delivered, so the capture of the decoder is
-                    // explicit, as it is for the two closures around it.
+                    // Held until earlier frames are delivered; explicit capture.
                     sequencer.complete(sequence) { [self] in
                         switch result {
                         case .success:
@@ -1219,11 +1108,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         av_frame_unref(frame)
     }
 
-    /// Builds the Metal output stage when the stream is one the kernel
-    /// handles: little-endian 10-bit planar 4:2:0 and, for tone mapping, PQ
-    /// BT.2020. Nil means the caller falls back to VideoToolbox. Destinations
-    /// are linear P010 unless `-debug.softwareDecodeGPULossless YES` asks for
-    /// Apple's lossless-compressed layout, which Metal may or may not accept.
+    /// The Metal stage for 10-bit planar 4:2:0 (PQ BT.2020 when tone-mapping),
+    /// or nil to fall back. Linear P010 unless
+    /// `-debug.softwareDecodeGPULossless YES`.
     private static func makeGPUOutput(
         mode: OutputMode,
         codecpar: UnsafeMutablePointer<AVCodecParameters>,
@@ -1284,10 +1171,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &probe) == kCVReturnSuccess,
                   let probe,
                   converter.canWrite(probe) else { continue }
-            // Metal accepts a lossless-compressed destination at texture
-            // creation and can still refuse it at dispatch (tvOS 26 on an
-            // A15 did), so that layout is proven with one real conversion
-            // before it counts. Linear P010 has never needed the trial.
+            // Metal can accept a lossless destination and still refuse it at
+            // dispatch (A15, tvOS 26), so prove it with one conversion.
             if lossless, !trialConvert(converter: converter, into: probe, width: width, height: height) {
                 continue
             }
@@ -1320,9 +1205,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         return (try? converter.convert(luma: luma, cb: cb, cr: cr, into: probe)) != nil
     }
 
-    /// The grade's peak: mastering-display maximum luminance, MaxCLL failing
-    /// that, and the HDR10 convention of 1000 nits when the stream says
-    /// nothing usable.
+    /// The grade's peak: mastering-display maximum, else MaxCLL, else 1000 nits.
     static func sourcePeakNits(_ codecpar: UnsafeMutablePointer<AVCodecParameters>) -> Float {
         if let mastering: AVMasteringDisplayMetadata = SampleBufferFactory.sideData(
             codecpar, type: AV_PKT_DATA_MASTERING_DISPLAY_METADATA
@@ -1364,17 +1247,10 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     private static let interlacedFrameFlag: Int32 = 1 << 3
     private static let topFieldFirstFlag: Int32 = 1 << 4
 
-    /// Deinterlaces the decoded frame in place, before it is copied out.
+    /// Deinterlaces the decoded frame in place. The hardware path has no
+    /// deinterlacer, so interlaced HEVC is not deinterlaced here.
     ///
-    /// Only the software path has this. It is where MPEG-2 is decoded and so
-    /// where DVD lives, and where interlaced H.264 is sent so
-    /// that 1080i broadcast recordings direct-play; the hardware path has no
-    /// deinterlacing stage, which is why the device profile still asks the
-    /// server to handle interlaced HEVC.
-    ///
-    /// The frame is made writable first. What the decoder handed over may
-    /// still be a reference frame that later pictures are predicted from, and
-    /// editing that in place would corrupt everything that follows it.
+    /// Made writable first: the frame may be a reference for later pictures.
     private func deinterlaceInPlace(decodedFormat: AVPixelFormat) {
         guard av_frame_make_writable(frame) >= 0 else { return }
         let topFieldFirst = frame.pointee.flags & Self.topFieldFirstFlag != 0
@@ -1388,8 +1264,6 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         )
         if decodedFormat == AV_PIX_FMT_NV12 {
             guard let chroma = planePointer(1) else { return }
-            // Interleaved chroma: a prediction steps two bytes at a time so
-            // it never mixes a U sample with a V one.
             Deinterlacer.plane(
                 base: UnsafeMutablePointer(mutating: chroma),
                 stride: planeStride(1),
@@ -1426,10 +1300,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         }
     }
 
-    /// Resolves the storage contract before Core Video creates its fixed-format
-    /// pool. Stream probing normally supplies the pixel format; the bit-depth
-    /// fields cover containers that only declare depth. Legacy codecs are
-    /// intrinsically 8-bit inside Lagoon's advertised envelope.
+    /// Output bit depth, from the pixel format or, failing that, the declared
+    /// depth. Legacy codecs are 8-bit.
     static func outputBitDepth(
         pixelFormat: AVPixelFormat,
         bitsPerRawSample: Int32,
@@ -1455,17 +1327,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         }
     }
 
-    /// Splits a plane's rows across cores.
-    ///
-    /// The primitives below are NEON but single-threaded. Row ranges are
-    /// independent, so this needs no coordination beyond the split, and a
-    /// negative stride is not a special case: the caller has already pointed
-    /// the base at the last row.
-    ///
-    /// Worth 0.5 ms of a 4.8 ms conversion on an Apple TV, measured — only
-    /// that much because the copy is bandwidth-bound, not core-bound. Chunks
-    /// stay below the core count for the same reason: these threads compete
-    /// with dav1d's.
+    /// Splits a plane's rows across cores for the single-threaded NEON
+    /// primitives. Saves 0.5 of 4.8 ms (bandwidth-bound); fewer chunks than
+    /// cores, since these threads compete with dav1d's.
     private static let conversionChunks: Int = {
         let override = SoftwareDecodeThreadPolicy.commandLineInteger(
             forKey: "debug.softwareDecodeConvertChunks"
@@ -1614,12 +1478,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         }
     }
 
-    /// Converts all three planar 10-bit source planes into P010 with one
-    /// parallel dispatch. The old path called the luma and chroma helpers
-    /// separately, paying two `concurrentPerform` barriers per 4K frame even
-    /// though both operations are independent and use the same chunk count.
-    /// Keeping both kernels in each worker also reduces scheduler traffic
-    /// while preserving the hand-written NEON loops in `LagoonPixelOps`.
+    /// Converts all three 10-bit planes to P010 in one parallel dispatch,
+    /// one barrier per frame instead of two.
     static func convertPlanar10BitToP010(
         sourceY: UnsafePointer<UInt16>,
         sourceYStride: Int,
@@ -1710,9 +1570,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         to pixelBuffer: CVPixelBuffer
     ) {
         if let pixelAspectRatio {
-            // `CMVideoFormatDescriptionCreateForImageBuffer` reads this back
-            // off the buffer, so the description built from the prototype
-            // carries the same geometry the compressed path advertises.
+            // Carried into the format description built from the prototype.
             CVBufferSetAttachment(
                 pixelBuffer,
                 kCVImageBufferPixelAspectRatioKey,
@@ -1765,17 +1623,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         } else {
             CVBufferRemoveAttachment(pixelBuffer, kCVImageBufferChromaLocationTopFieldKey)
         }
-        // HDR10 static metadata. The transfer function alone is what switches
-        // tvOS into HDR, but without these the display tone-maps from its own
-        // defaults instead of the master's — and the codecs that reach this
-        // path (VP9 always, AV1 wherever there is no hardware decoder) are
-        // advertised for HDR10/HLG/HDR10+ in `DeviceProfile`.
-        //
-        // `CMVideoFormatDescriptionCreateForImageBuffer` copies propagated
-        // attachments into the description's extensions, and these three
-        // CVBuffer keys are the same strings as their CMFormatDescription
-        // counterparts, so the prototype carries them into the format
-        // description and every decoded frame carries them to the renderer.
+        // HDR10 static metadata; without it the display tone-maps from its
+        // own defaults. These CVBuffer keys match the CMFormatDescription
+        // ones, so they reach both the description and every frame.
         if let masteringDisplay = properties.masteringDisplay {
             CVBufferSetAttachment(
                 pixelBuffer,
@@ -1797,8 +1647,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             CVBufferRemoveAttachment(pixelBuffer, kCVImageBufferContentLightLevelInfoKey)
         }
         if let ambientViewingEnvironment = properties.ambientViewingEnvironment {
-            // Apple TN3145: custom sample-buffer playback has to carry `amve`
-            // through to presentation for correct HDR adaptation.
+            // TN3145: carry `amve` to presentation for HDR adaptation.
             CVBufferSetAttachment(
                 pixelBuffer,
                 kCVImageBufferAmbientViewingEnvironmentKey,
@@ -1809,10 +1658,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             CVBufferRemoveAttachment(pixelBuffer, kCVImageBufferAmbientViewingEnvironmentKey)
         }
         if properties.transfer == kCVImageBufferTransferFunction_ITU_R_709_2 {
-            // An ICC profile or gamma value can override/conflict with the
-            // explicit BT.709 transfer description. The source path does not
-            // create either, but VT is allowed to propagate unknown source
-            // attachments, so make the SDR contract unambiguous.
+            // VT may propagate an ICC profile or gamma that conflicts with
+            // BT.709; remove them.
             CVBufferRemoveAttachment(pixelBuffer, kCVImageBufferICCProfileKey)
             CVBufferRemoveAttachment(pixelBuffer, kCVImageBufferGammaLevelKey)
         }

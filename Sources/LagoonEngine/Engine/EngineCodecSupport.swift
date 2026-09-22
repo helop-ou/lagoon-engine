@@ -1,27 +1,19 @@
 import Foundation
 import Libavcodec
 
-/// What this engine can decode, as data rather than prose.
+/// What this engine can decode, as data. `docs/codec-support.md` is rendered
+/// from it.
 ///
-/// The decision itself lives in `FFmpegDemuxer.usesCompressedVideoPath` and
-/// `SoftwareVideoDecoder.supports`, which are switches over codec ids and no
-/// use to anybody reading documentation. This restates them in a shape a
-/// document can be rendered from, and the tests pin it against those two
-/// functions so a codec added to one and not the other fails rather than
-/// publishing a table that lies.
-///
-/// Internal on purpose: the entries carry `AVCodecID`, and FFmpeg's types do
-/// not belong in this package's public API. `docs/codec-support.md` is the
-/// published artifact.
+/// The real decision lives in `FFmpegDemuxer.usesCompressedVideoPath` and
+/// `SoftwareVideoDecoder.supports`; tests pin this table against both.
+/// Internal because entries carry `AVCodecID`, which stays out of the public API.
 nonisolated enum EngineCodecSupport {
     enum VideoPath: String {
-        /// Handed to AVFoundation compressed, in its container's own
-        /// bitstream form.
+        /// Handed to AVFoundation compressed.
         case videoToolbox = "VideoToolbox"
-        /// Decoded by libavcodec on the CPU, then rendered as pixel buffers.
+        /// Decoded by libavcodec on the CPU.
         case software = "Software"
-        /// VideoToolbox when a decode session can be made for the stream,
-        /// libavcodec when it cannot.
+        /// VideoToolbox if it can make a session for the stream, else libavcodec.
         case either = "VideoToolbox, software fallback"
     }
 
@@ -50,8 +42,7 @@ nonisolated enum EngineCodecSupport {
 
     struct Audio {
         let name: String
-        /// The CoreAudio format the renderer is given, or nil when the codec
-        /// is decoded to linear PCM first.
+        /// The CoreAudio format passed through, or nil when decoded to PCM.
         let native: String?
         let note: String
     }

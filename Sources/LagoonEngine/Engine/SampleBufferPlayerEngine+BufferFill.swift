@@ -3,26 +3,17 @@ import os
 
 /// Proactive cache fill, which the engine runs for itself.
 ///
-/// Fill starts only after the player has presented its initial cushion and
-/// advances in 1 MiB requests. `PlaybackFillPolicy` decides the pace from the
-/// cushion of cached media ahead of the playhead, backs off after a failed
-/// fetch instead of giving up, and gives the link to the foreground after a
-/// stall. Native foreground playback — not URLSession priority hints — stays
-/// the hard priority.
-///
-/// Every input the policy reads is the engine's own state, which is why this
-/// lives here. A host ran this loop until the extraction and could only do so
-/// by reaching back for stall counts, rate, duration and buffering.
+/// Starts once the first cushion is presented and fetches 1 MiB at a time.
+/// `PlaybackFillPolicy` paces it from the cached media ahead of the
+/// playhead, backs off after a failed fetch, and yields the link after a
+/// stall. Foreground playback always has priority, not by URLSession hints.
 extension SampleBufferPlayerEngine {
     func publishBufferState(_ metrics: PlaybackCacheMetrics?) {
         bufferState = metrics?.bufferState ?? .empty
     }
 
     /// Starts, or restarts, the fill loop for the session prepared earlier.
-    ///
-    /// A successor being warmed holds the link instead: one proactive
-    /// download at a time, and near the end of an episode the bytes the
-    /// viewer is about to need are the next episode's.
+    /// Not while a successor is warming: one proactive download at a time.
     func startBufferFill() {
         bufferFillTask?.cancel()
         bufferFillTask = nil
@@ -35,8 +26,7 @@ extension SampleBufferPlayerEngine {
         let generation = UUID()
         bufferFillGeneration = generation
         bufferFillTask = Task { [weak self] in
-            // A finished loop clears its handle so a resume can start a fresh
-            // one; a loop that was replaced leaves the newer handle alone.
+            // Clear the handle so a resume can restart, unless replaced.
             defer {
                 if let self, self.bufferFillGeneration == generation {
                     self.bufferFillTask = nil
@@ -51,10 +41,8 @@ extension SampleBufferPlayerEngine {
             var policy = PlaybackFillPolicy()
             var observedStalls = self.stallCount
 
-            // Only the pre-fetch snapshot consumes a stall: the policy acts on
-            // it there, so a stall that lands while a chunk is in flight must
-            // survive the post-fetch snapshot and take the cooldown on the
-            // next pass instead of being discarded.
+            // Only the pre-fetch snapshot consumes a stall, so one that lands
+            // mid-fetch still triggers the cooldown on the next pass.
             @MainActor func snapshot(
                 _ metrics: PlaybackCacheMetrics,
                 consumingStall: Bool = true
@@ -145,11 +133,9 @@ extension SampleBufferPlayerEngine {
 
     // MARK: - Successor warm-up
 
-    /// Cooperative 1 MiB requests (the cache session's request size), up to
-    /// eight MiB, with the same stall backoff and link-time pacing as the
-    /// fill loop. The successor's own fill loop takes over once it starts,
-    /// so a failed or exhausted chunk ends the warm-up rather than retrying:
-    /// this one must never hold the link during the handoff.
+    /// Fetches up to 8 MiB in 1 MiB requests, with the fill loop's stall
+    /// backoff and pacing. A failed chunk ends it rather than retrying: it
+    /// must never hold the link during the handoff.
     func startSuccessorWarm(_ session: PlaybackCacheSession) {
         successorWarmTask?.cancel()
         guard session.directScope != nil else {

@@ -1,24 +1,14 @@
 import Foundation
 
-/// Whether a length-prefixed access unit is somewhere a decoder can be
-/// *started*, as opposed to somewhere a container is willing to seek.
+/// Whether a length-prefixed access unit can *start* a decoder, which is
+/// stricter than the container's keyframe flag.
 ///
-/// The two are not the same thing, and the difference ends a direct play.
-/// `AV_PKT_FLAG_KEY` on a Matroska block means the muxer marked
-/// the block seekable; for an open-GOP H.264 encode that is every
-/// recovery-point I picture, none of which is an IDR. libavcodec starts on
-/// one happily — it decodes the recovery period and lets the leading
-/// pictures come out wrong for a few frames. `AVSampleBufferVideoRenderer`
-/// does not: the first sample after `flush()` has to be a real random-access
-/// point, and anything else comes back as `didFailToDecodeNotification`,
-/// which the delivery ladder reads as `.undecodable` and answers with a
-/// server-side transcode.
-///
-/// So the engine asks this instead of the flag.
+/// In open-GOP H.264, Matroska flags every recovery-point I picture as a key,
+/// and none is an IDR. libavcodec starts on one; `AVSampleBufferVideoRenderer`
+/// fails to decode it after `flush()`, which the ladder reads as
+/// `.undecodable` and transcodes. So the engine asks this, not the flag.
 nonisolated enum VideoRandomAccessPoint {
-    /// The two length-prefixed codecs that reach `AVSampleBufferVideoRenderer`
-    /// as compressed samples. They read the NAL type out of different bits
-    /// of the same header byte.
+    /// Codecs that reach the renderer compressed.
     enum Codec {
         case h264
         case hevc
@@ -32,15 +22,10 @@ nonisolated enum VideoRandomAccessPoint {
 
         /// NAL types that begin a decodable sequence on their own.
         ///
-        /// H.264: only the IDR (5). A `recovery_point` SEI attached to a
-        /// non-IDR I picture (1) is a *gradual* refresh — correct output is
-        /// promised some frames later, which is exactly the promise a
-        /// hardware decoder handed a fresh session will not accept.
-        ///
-        /// HEVC: the IRAP range, BLA (16-18) through CRA (21). A CRA is a
-        /// clean random-access point whose leading RASL pictures the decoder
-        /// discards by specification, so VideoToolbox accepts one; 22 and 23
-        /// are reserved IRAP types and are not assumed decodable.
+        /// H.264: IDR (5) only. A recovery-point I picture is a gradual
+        /// refresh, which a fresh hardware session will not accept.
+        /// HEVC: BLA (16-18) through CRA (21). VideoToolbox accepts a CRA;
+        /// 22 and 23 are reserved.
         var randomAccessTypes: ClosedRange<UInt8> {
             switch self {
             case .h264: 5...5
@@ -48,8 +33,8 @@ nonisolated enum VideoRandomAccessPoint {
             }
         }
 
-        /// Sequence/picture parameter sets, worth naming in a trace because
-        /// their absence is the other way a first post-flush sample fails.
+        /// Parameter sets. Traced, because their absence also fails a first
+        /// post-flush sample.
         var parameterSetTypes: Set<UInt8> {
             switch self {
             case .h264: [7, 8]
@@ -57,8 +42,7 @@ nonisolated enum VideoRandomAccessPoint {
             }
         }
 
-        /// The codec's configuration record byte holding `lengthSizeMinusOne`
-        /// — `avcC` puts it at 4, `hvcC` at 21.
+        /// Byte holding `lengthSizeMinusOne` in the `avcC`/`hvcC` record.
         var nalLengthSizeByte: Int {
             switch self {
             case .h264: 4
@@ -67,21 +51,16 @@ nonisolated enum VideoRandomAccessPoint {
         }
     }
 
-    /// NAL length prefix width from an `avcC`/`hvcC` record.
-    ///
-    /// nil when the record is too short to carry the field, which is the
-    /// same "we cannot tell" the callers treat as "do not filter".
+    /// NAL length prefix width from an `avcC`/`hvcC` record; nil (do not
+    /// filter) when the record is too short.
     static func nalLengthSize(configurationRecord record: Data, codec: Codec) -> Int? {
         let index = record.startIndex + codec.nalLengthSizeByte
         guard record.count > codec.nalLengthSizeByte else { return nil }
         return Int(record[index] & 0x3) + 1
     }
 
-    /// Every NAL type in one length-prefixed access unit, in order.
-    ///
-    /// nil when the payload does not parse as length-prefixed units — a
-    /// malformed or differently framed packet must not be *classified*, so
-    /// callers can leave it alone rather than act on a wrong reading.
+    /// Every NAL type in one access unit, in order. nil when the payload does
+    /// not parse, so a malformed packet is left alone, not misclassified.
     static func nalTypes(
         lengthPrefixed payload: UnsafeRawBufferPointer,
         lengthSize: Int,
@@ -111,11 +90,8 @@ nonisolated enum VideoRandomAccessPoint {
         nalTypes.contains { codec.randomAccessTypes.contains($0) }
     }
 
-    /// The same question asked of a payload, for callers that hold bytes.
-    ///
-    /// nil means "cannot tell" — an unparseable payload, an unknown length
-    /// size — and every caller treats that as "let it through", so a stream
-    /// this cannot read behaves exactly as it did before this existed.
+    /// The same question asked of a payload. nil means "cannot tell", which
+    /// every caller treats as "let it through".
     static func isDecoderStartPoint(
         lengthPrefixed payload: UnsafeRawBufferPointer,
         lengthSize: Int,

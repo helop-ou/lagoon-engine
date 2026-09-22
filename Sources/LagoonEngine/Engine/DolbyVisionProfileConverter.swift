@@ -5,28 +5,22 @@ import OSLog
 
 nonisolated private let log = Logger(subsystem: "ee.helop.lagoon", category: "dovi-p7")
 
-/// Which way a single-track Dolby Vision profile 7 HEVC stream (a UHD
-/// Blu-ray remux: base layer plus type-62 RPU and type-63 enhancement-layer
-/// NAL units interleaved in one track) reaches the decoder.
+/// How a single-track Dolby Vision profile 7 stream (base layer plus type-62
+/// RPU and type-63 enhancement-layer NALs) reaches the decoder.
 nonisolated enum DolbyVisionProfile7Mode: Sendable, Equatable {
-    /// Rewrite every RPU to profile 8.1 with libdovi and drop the
-    /// enhancement layer, tagging the track for real Dolby Vision. Default.
+    /// Default: convert RPUs to profile 8.1, drop the enhancement layer.
     case convert
-    /// The older behaviour: drop both unit types and let the base
-    /// layer present as HDR10. Settings → Advanced → Playback Diagnostics
-    /// → "Dolby Vision Compatibility Mode".
+    /// Drop both unit types; the base layer plays as HDR10.
     case stripToHDR10
 }
 
-/// A snapshot of one playback's profile 7 rewrite, for the HUD and the
-/// frame-loss bench's stdout line.
+/// One playback's profile 7 rewrite counts, for the HUD and the bench.
 nonisolated struct DolbyVisionRewriteStats: Equatable, Sendable {
     var mode: DolbyVisionProfile7Mode
     /// Packets that carried a type 62 or 63 unit.
     var packets: Int = 0
     var rpusConverted: Int = 0
-    /// Type 62 units removed — strip mode, or a conversion failure in
-    /// convert mode.
+    /// Type 62 units removed: strip mode, or a failed conversion.
     var rpusDropped: Int = 0
     /// Type 63 units removed.
     var enhancementUnitsDropped: Int = 0
@@ -37,24 +31,17 @@ nonisolated struct DolbyVisionRewriteStats: Equatable, Sendable {
     var enhancementLayerType: String?
 }
 
-/// Rewrites a single-track Dolby Vision profile 7 HEVC stream to profile
-/// 8.1 in flight, packet by packet, so tvOS engages real Dolby Vision
-/// instead of the HDR10-only base layer.
+/// Rewrites Dolby Vision profile 7 to 8.1 packet by packet, so tvOS plays
+/// real Dolby Vision instead of the HDR10 base layer.
 ///
-/// Every type-62 RPU is parsed with libdovi, converted with
-/// `dovi_convert_rpu_with_mode(rpu, 2)` (the same transform `dovi_tool -m 2`
-/// performs: enhancement-layer and NLQ signalling removed, DM coefficients
-/// set for 8.1, and for a FEL source the base-layer mapping curves reset to
-/// identity, since a FEL mapping was designed to be applied with the
-/// residual — mode 4 would keep them) and written back escaped; every
-/// type-63 enhancement-layer unit is dropped. A libdovi failure on one RPU drops that unit and counts an
-/// error rather than stalling the stream. Used from the demuxer's serial
-/// queue; `stats` is also read from the main actor for the HUD, so it is
-/// guarded by a lock.
+/// Each RPU goes through `dovi_convert_rpu_with_mode(rpu, 2)` (as
+/// `dovi_tool -m 2`). Mode 2, not 4, because it resets a FEL source's mapping
+/// curves to identity; they only make sense with the residual. Type-63 units
+/// are dropped. A failed RPU is dropped and counted, never stalls the stream.
+/// Runs on the demux queue; `stats` is locked because the HUD reads it.
 nonisolated final class DolbyVisionProfileConverter {
-    /// The dvvC payload source for the converted stream: profile 8, level
-    /// and version copied from the container's own record, single-layer
-    /// RPU-only signalling.
+    /// dvvC for the converted stream: profile 8, single layer, level and
+    /// version from the container's record.
     let synthesizedRecord: AVDOVIDecoderConfigurationRecord
 
     private let lock = NSLock()
@@ -87,10 +74,8 @@ nonisolated final class DolbyVisionProfileConverter {
         mutableStats = DolbyVisionRewriteStats(mode: .convert)
     }
 
-    /// Rewrites one packet. Returns nil when the payload carries no type 62
-    /// or 63 unit (so the zero-copy path stays in use) or does not parse —
-    /// same contract as `HEVCNALUnitRewriter.rewrite`, which this is built
-    /// on.
+    /// Rewrites one packet. nil when nothing changed or the payload does not
+    /// parse, as `HEVCNALUnitRewriter.rewrite`.
     func convert(payload: UnsafeRawBufferPointer, lengthSize: Int) -> Data? {
         var converted = 0
         var rpuDropped = 0
@@ -127,12 +112,8 @@ nonisolated final class DolbyVisionProfileConverter {
             }
         }
 
-        // Whenever a type 62/63 unit was seen, the walk above always
-        // returns `.drop` or `.replace` for it, never `.keep`, so a
-        // complete (non-malformed) walk is guaranteed to have changed
-        // something and `rewrite` returns non-nil. A nil result here can
-        // only mean the payload didn't parse — pass through untouched,
-        // with nothing committed to `stats`, exactly like an unchanged one.
+        // nil: no 62/63 unit, or the payload did not parse. Pass through
+        // with nothing counted.
         guard let result else { return nil }
 
         lock.lock()
@@ -155,8 +136,8 @@ nonisolated final class DolbyVisionProfileConverter {
         case failed
     }
 
-    /// Parses, converts and re-escapes one type-62 unit. `unit` is the raw
-    /// NAL bytes libdovi expects: header byte first, no length prefix.
+    /// Parses, converts and re-escapes one type-62 unit (header byte first,
+    /// no length prefix).
     private func convertRPU(unit: UnsafeRawBufferPointer) -> RPUOutcome {
         guard let base = unit.baseAddress else { return .failed }
         guard let rpu = dovi_parse_unspec62_nalu(base.assumingMemoryBound(to: UInt8.self), unit.count) else {
@@ -199,8 +180,7 @@ nonisolated final class DolbyVisionProfileConverter {
         return .converted(Data(bytes: dataPointer, count: written.pointee.len))
     }
 
-    /// Whether `byteCount` can be expressed in a `lengthSize`-byte
-    /// big-endian prefix.
+    /// Whether `byteCount` fits a `lengthSize`-byte prefix.
     private static func fits(byteCount: Int, lengthSize: Int) -> Bool {
         byteCount <= (1 << (8 * lengthSize)) - 1
     }

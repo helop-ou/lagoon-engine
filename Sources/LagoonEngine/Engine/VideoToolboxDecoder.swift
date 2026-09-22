@@ -3,13 +3,11 @@ import CoreVideo
 import Foundation
 import VideoToolbox
 
-/// Hardware-decodes the compressed video samples produced by the demuxer.
+/// Hardware-decodes the demuxer's compressed video samples.
 ///
-/// `AVSampleBufferVideoRenderer` can accept compressed samples directly, but
-/// on full-raster 4K Main10 that path was missing presentation deadlines even
-/// with a permanently full input queue. Decoding ahead here keeps the Lagoon
-/// engine, synchronizer, transport, tracks, and subtitle pipeline intact while
-/// handing the renderer ready-to-display IOSurface-backed frames.
+/// Given compressed 4K Main10 directly, `AVSampleBufferVideoRenderer` missed
+/// deadlines even with a full queue, so this decodes ahead and hands it
+/// IOSurface-backed frames.
 nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
     enum DecoderError: LocalizedError {
         case sessionCreation(OSStatus)
@@ -30,9 +28,8 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
             }
         }
 
-        /// The status VideoToolbox reported, whichever stage produced it.
-        /// Every case carries one, and what it says is often the difference
-        /// between a dead session and a dead stream.
+        /// The status VideoToolbox reported. Often what tells a dead session
+        /// from a dead stream.
         var status: OSStatus {
             switch self {
             case .sessionCreation(let status),
@@ -48,9 +45,8 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
     typealias ErrorHandler = @Sendable (DecoderError) -> Void
 
     private let formatDescription: CMVideoFormatDescription
-    /// False only for AV1 where the device has no AV1 silicon, so that Apple's
-    /// software decoder is allowed to answer instead of the session being
-    /// refused.
+    /// False only for AV1 without AV1 silicon, so Apple's software decoder
+    /// may answer.
     let requiresHardware: Bool
     private let imageBufferAttributes: CFDictionary
     private let ambientViewingEnvironment: Data?
@@ -61,31 +57,20 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
     private var recoverableFrameErrorCount = 0
     private var presentationQueue: VideoPresentationOrderQueue<CMSampleBuffer>
     private var session: VTDecompressionSession?
-    /// Six covers hierarchical B-frame ladders used by the HEVC encoders in
-    /// the supported envelope; honor a larger depth when the container's
-    /// codec parameters explicitly report one, with a defensive upper bound.
+    /// Six covers common HEVC B-pyramids; a larger container-reported depth
+    /// is honoured, up to a bound.
     let reorderDepth: Int
 
-    /// A missing reference is scoped to the access unit reported by the
-    /// callback. It is common in HEVC preroll after a random-access seek:
-    /// later pictures (or the next IRAP) can still decode in the same
-    /// session. Treating it as a session failure made an otherwise playable
-    /// title abort after intro skips, scrubs, and audio-track changes.
+    /// A missing reference drops one access unit, not the session. It is
+    /// common in HEVC preroll after a seek; treating it as fatal aborted
+    /// playable titles after scrubs and track changes.
     var droppedFrameCount: Int {
         stateLock.withLock { recoverableFrameErrorCount }
     }
 
-    /// Whether VideoToolbox will actually give us a decoder for this stream.
-    ///
-    /// Not the question `VTIsHardwareDecodeSupported` answers. That reports
-    /// silicon; this reports whether a session can be created at all, which is
-    /// what the caller actually needs to know before committing a stream to
-    /// the compressed path. The two differ for AV1 on an A15: no hardware, and
-    /// no software decoder behind it either, so the session is refused with
-    /// -12906 whether or not hardware is required.
-    ///
-    /// Asked with no specification and no callback, so it answers for the
-    /// decoder itself rather than for any particular configuration of it.
+    /// Whether VideoToolbox can create a session for this stream at all,
+    /// hardware or software. `VTIsHardwareDecodeSupported` only reports
+    /// silicon. (AV1 on an A15 has neither and fails with -12906.)
     static func canDecode(_ formatDescription: CMVideoFormatDescription) -> Bool {
         var session: VTDecompressionSession?
         let status = VTDecompressionSessionCreate(
@@ -106,19 +91,11 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
         status == kVTVideoDecoderReferenceMissingErr
     }
 
-    /// Whether a status is about the decode *session* rather than the samples
-    /// it was handed.
+    /// Whether a status is about the decode *session*, not the samples. The
+    /// fix is a new session, never the ladder's transcode rung.
     ///
-    /// `kVTInvalidSessionErr` is the session having gone away underneath us:
-    /// the system reclaims decoders, and a sample in flight when it does
-    /// reports this. The other two are the decoder declining to work rather
-    /// than declining this bitstream — a malfunction, and a decoder the
-    /// system will not hand out at this moment. Apple's answer to all three
-    /// is a new session, and not one of them is a statement about the
-    /// samples, so none is grounds for the ladder's one-way transcode rung.
-    ///
-    /// Distinct from `isRecoverableFrameError` above, which is about a single
-    /// access unit inside a session that is still perfectly alive.
+    /// `isRecoverableFrameError` is different: one bad access unit in a live
+    /// session.
     static func isSessionFault(_ status: OSStatus) -> Bool {
         status == kVTInvalidSessionErr
             || status == kVTVideoDecoderMalfunctionErr
@@ -155,10 +132,8 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
         )
     }
 
-    /// Submits one compressed access unit. The session-level callback is
-    /// intentional: Apple's per-frame output-handler API explicitly does not
-    /// promise display-order callbacks. Temporal processing on the session
-    /// callback lets VideoToolbox retain and emit reordered codecs by PTS.
+    /// Submits one access unit. Uses the session callback with temporal
+    /// processing; the per-frame handler API does not promise display order.
     func decode(_ sampleBuffer: CMSampleBuffer) throws {
         guard let session else {
             throw DecoderError.sessionCreation(kVTInvalidSessionErr)
@@ -174,9 +149,7 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
         guard status == noErr else { throw DecoderError.decode(status) }
     }
 
-    /// A seek must discard the decoder's reference frames along with the
-    /// render queues. Recreating the session guarantees the next keyframe
-    /// starts a clean dependency chain.
+    /// Seek: recreates the session so the next keyframe starts clean.
     func reset() throws {
         stateLock.withLock {
             acceptingOutput = false
@@ -195,8 +168,7 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
     /// Emits frames retained for presentation-order processing before EOF.
     func finish() throws {
         guard let session else { return }
-        // Temporal processing permits VideoToolbox to retain frames
-        // indefinitely. Apple requires an explicit finish before waiting.
+        // Temporal processing may retain frames; finish before waiting.
         let finishStatus = VTDecompressionSessionFinishDelayedFrames(session)
         guard finishStatus == noErr else { throw DecoderError.decode(finishStatus) }
         let waitStatus = VTDecompressionSessionWaitForAsynchronousFrames(session)
@@ -222,14 +194,9 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
         requiresHardware: Bool,
         owner: VideoToolboxDecoder
     ) throws -> VTDecompressionSession {
-        // Failure is preferable to silently moving 4K Main10 onto a software
-        // decoder. All video formats Lagoon advertises here are supported by
-        // the Apple TV hardware decoder.
-        //
-        // The exception is AV1 on a device with no AV1 silicon.
-        // There the alternative is not a better decoder but libdav1d on the
-        // CPU, so Apple's own software decoder is worth having if it exists,
-        // and requiring hardware would refuse it.
+        // Require hardware: failing beats silently decoding 4K Main10 on the
+        // CPU. Except AV1 without silicon, where Apple's software decoder
+        // beats the libdav1d alternative.
         let decoderSpecification: CFDictionary? = requiresHardware
             ? [
                 kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder as String: true
@@ -265,9 +232,8 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
         return created
     }
 
-    /// Reconcile AVSampleBufferVideoRenderer's tvOS 26 preferences with the
-    /// two hard requirements of this path. Pixel format remains unconstrained
-    /// so VideoToolbox can preserve native 8/10-bit and HDR output.
+    /// The renderer's preferred attributes plus this path's two requirements.
+    /// Pixel format stays open so native 8/10-bit and HDR survive.
     static func resolvedPixelBufferAttributes(
         recommended: CVPixelBufferAttributes
     ) -> CVPixelBufferAttributes {
@@ -276,9 +242,8 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
         return CVPixelBufferAttributes(merging: [recommended, required]) ?? required
     }
 
-    /// Stop the old callback generation completely before a new session is
-    /// allowed to emit. This prevents a frame decoded before a seek from
-    /// racing into the new presentation queue after it has been reset.
+    /// Stops the old callback generation before a new session emits, so a
+    /// pre-seek frame cannot race into the reset queue.
     private func discardSession() {
         guard let session else { return }
         self.session = nil
@@ -302,9 +267,8 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
             errorHandler(.decode(status))
             return
         }
-        // A nil image with no error is VideoToolbox intentionally
-        // suppressing output (for example, an undecodable leading frame
-        // immediately after a seek), not a failed decoder session.
+        // Nil with no error is suppressed output (e.g. a leading frame after
+        // a seek), not a failure.
         guard let imageBuffer else { return }
         var outputFormat: CMVideoFormatDescription?
         let formatStatus = CMVideoFormatDescriptionCreateForImageBuffer(
@@ -334,9 +298,8 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
             return
         }
         if let ambientViewingEnvironment {
-            // VideoToolbox normally propagates this from the source format.
-            // Attach it to the sample as an explicit fallback, which TN3145
-            // permits and which avoids mutating a non-modifiable pixel buffer.
+            // Fallback on the sample (TN3145), since the pixel buffer may not
+            // be modifiable.
             CMSetAttachment(
                 output,
                 key: kCVImageBufferAmbientViewingEnvironmentKey,
@@ -347,9 +310,8 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
         enqueueForPresentation(output)
     }
 
-    /// VideoToolbox's callbacks are not an ordering contract. Keep exactly
-    /// the codec's reorder lookahead, then release the smallest PTS. This is
-    /// both stricter and dramatically smaller than buffering a GOP.
+    /// Callbacks are not ordered. Holds the codec's reorder depth and
+    /// releases the smallest PTS.
     private func enqueueForPresentation(_ buffer: CMSampleBuffer) {
         stateLock.withLock {
             guard acceptingOutput else { return }
@@ -371,9 +333,8 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
     }
 }
 
-/// Small, testable presentation-order lookahead. Sequence breaks ties so
-/// duplicate/invalid timestamps remain deterministic instead of depending on
-/// the standard library sort implementation.
+/// Presentation-order lookahead. A sequence number breaks ties so duplicate
+/// or invalid timestamps stay deterministic.
 nonisolated struct VideoPresentationOrderQueue<Element> {
     private struct Entry {
         let value: Element

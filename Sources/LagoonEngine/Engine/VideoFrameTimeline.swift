@@ -1,30 +1,23 @@
 import CoreMedia
 
-/// Rewrites container timestamps on video packets onto an exact frame grid.
+/// Snaps video packet timestamps onto an exact frame grid.
 ///
-/// Matroska stamps at 1 ms, but a 23.976 fps frame is 41.708 ms, so every pts
-/// lands up to ~0.5 ms off the grid and measured muxes a further ms. At 60 Hz
-/// the vsync bins swallow it; on a display matched to the content rate there
-/// is one vsync per frame and no slack. Hardware A/Bs later showed this was
-/// not the cause of the 10% loss, but exact stamps add no jitter either.
+/// Matroska stamps at 1 ms, so a 23.976 fps pts lands up to ~0.5 ms off the
+/// grid (more in real muxes). On a display matched to the content rate there
+/// is one vsync per frame and no slack for that.
 ///
 /// Packets arrive in decode order, so stamps step back and forth by whole
-/// frames (B-frame reordering). Each snaps to the nearest whole-frame step
-/// from the previous snapped one, in integer arithmetic in the frame rate's
-/// own timescale, so steps cannot drift. A stamp beyond tolerance — variable
-/// frame rate, broken mux — passes through and re-anchors.
+/// frames. Each snaps to the nearest whole-frame step from the previous one,
+/// in integer ticks of the frame rate's timescale, so it cannot drift. A stamp
+/// beyond tolerance (VFR, broken mux) passes through and re-anchors.
 nonisolated struct VideoFrameTimeline {
-    /// Comfortably above measured mux sloppiness (≤ ~2 ms) and far below
-    /// half a frame period (≥ 8 ms at 60 fps): inside is quantization,
-    /// outside is a genuinely off-grid stamp.
+    /// Above mux sloppiness (≤ ~2 ms), below half a frame (≥ 8 ms at 60 fps).
     static let tolerance = 0.005
 
-    /// Frame rate as the exact rational fps = num/den — the timescale is
-    /// `num` so one frame duration is exactly `den` ticks.
+    /// fps = num/den. The timescale is `num`, so one frame is `den` ticks.
     private let num: Int32
     private let den: Int64
-    /// The previous frame's snapped pts in ticks at timescale `num`; nil
-    /// before the first frame and after `reset()`.
+    /// Previous snapped pts in ticks; nil before the first frame.
     private var previousTicks: Int64?
 
     /// nil when the rate can't form a usable grid.
@@ -36,25 +29,22 @@ nonisolated struct VideoFrameTimeline {
         den = Int64(frameRateDen)
     }
 
-    /// One frame, exactly, in the grid's timescale.
     var frameDuration: CMTime {
         CMTime(value: den, timescale: num)
     }
 
-    /// For the HUD's gate check: which grid is in force.
+    /// For the HUD: which grid is in force.
     var gridDescription: String {
         "\(num)/\(den)"
     }
 
-    /// Forget the chain (seek/flush) — the next frame re-anchors.
+    /// Seek or flush: the next frame re-anchors.
     mutating func reset() {
         previousTicks = nil
     }
 
-    /// The container pts snapped onto the frame grid, or nil for a stamp
-    /// too far off it (the caller keeps the container timing for that
-    /// frame). Packets arrive in decode order; steps are signed whole
-    /// frames from the previous snapped stamp.
+    /// The snapped pts, or nil when too far off the grid (the caller keeps
+    /// the container timing for that frame).
     mutating func snapped(containerSeconds: Double) -> CMTime? {
         let rawTicks = (containerSeconds * Double(num)).rounded()
         guard let previous = previousTicks else {
@@ -66,8 +56,7 @@ nonisolated struct VideoFrameTimeline {
         let candidate = previous + Int64(steps) * den
         let error = abs(Double(candidate) / Double(num) - containerSeconds)
         guard error <= Self.tolerance, candidate != previous else {
-            // Off the grid (VFR, duplicate stamp, broken mux): pass this
-            // frame through and re-anchor the chain on its position.
+            // Off the grid or a duplicate: pass through and re-anchor.
             previousTicks = Int64(rawTicks)
             return nil
         }

@@ -5,26 +5,19 @@ import Libavcodec
 import Libavformat
 import Libavutil
 
-// Thin wrapper over libavformat. All methods must be called on
-// the engine's demux queue; nothing here is thread-safe on its own.
-//
-// FFmpeg imports as raw C: pointers, manual unref, sentinel values. The
-// sentinels are redefined locally because their macros don't import.
-/// Where a container decides its own timeline begins.
+// Thin wrapper over libavformat. Call only on the engine's demux queue;
+// nothing here is thread-safe. FFmpeg sentinels are redefined below because
+// their macros do not import.
+/// Where a container's timeline begins.
 ///
-/// MP4, Matroska and Jellyfin's fMP4 all start at zero, so this never came up
-/// until a disc did: MPEG-TS begins wherever the muxer felt like, and
-/// WALL·E's Blu-ray starts at 4198 s. Everything above the demuxer expects
-/// media time from zero, so the origin is subtracted from every packet and
-/// added back onto every seek.
+/// MPEG-TS can start anywhere (one Blu-ray starts at 4198 s), but everything
+/// above the demuxer expects zero, so the origin is subtracted from every
+/// packet and added back onto every seek.
 nonisolated enum ContainerTimeline {
     /// AV_TIME_BASE, the unit `AVFormatContext.start_time` is expressed in.
     static let microsecondsPerSecond = 1_000_000.0
 
-    /// How much to take off a stream's timestamps, in that stream's own time
-    /// base. Zero when the container starts where everything expects it to,
-    /// which keeps every source that worked before this on identical
-    /// arithmetic.
+    /// How much to take off a stream's timestamps, in its own time base.
     static func startOffset(startTime: Int64, timeBase: AVRational) -> Int64 {
         guard startTime != Int64.min, startTime > 0,
               timeBase.den > 0, timeBase.num > 0 else { return 0 }
@@ -55,8 +48,7 @@ nonisolated enum DemuxError: LocalizedError {
         }
     }
 
-    /// Stage and AVERROR for the diagnostic report; the codec name of an
-    /// unsupported stream is already a fact of the attempt.
+    /// Stage and AVERROR for the diagnostic report.
     var diagnosticDetail: PlaybackFailureDetail {
         switch self {
         case .openFailed(_, let code):
@@ -68,9 +60,8 @@ nonisolated enum DemuxError: LocalizedError {
         }
     }
 
-    /// Whether a different delivery of the same media could help. Opening
-    /// and seeking are container and transport problems, which a server-side
-    /// remux routinely fixes; an unsupported codec is not.
+    /// Open and seek failures are delivery problems (a remux may fix them);
+    /// an unsupported codec is not.
     var cause: PlaybackEngineFailure.Cause {
         switch self {
         case .openFailed, .seekFailed: .delivery
@@ -79,11 +70,9 @@ nonisolated enum DemuxError: LocalizedError {
     }
 }
 
-/// AC-3 normally stays compressed through Apple's audio renderer. Alongside
-/// Lagoon's software-decoded VC-1 video, however, that path exhibits audible
-/// interruptions and sustained MallocHelper growth on tvOS. Decoding only
-/// that legacy pairing to LPCM keeps the Jellyfin session Direct Play while
-/// preserving E-AC-3/Atmos passthrough for modern media.
+/// AC-3 alongside software-decoded video is decoded to LPCM: passed through,
+/// it interrupted audio and grew memory on tvOS. Everything else keeps
+/// passthrough.
 nonisolated enum AudioDecodePolicy {
     static func requiresLocalPCM(codecID: AVCodecID, softwareVideoDecoded: Bool) -> Bool {
         softwareVideoDecoded && codecID == AV_CODEC_ID_AC3
@@ -97,25 +86,20 @@ nonisolated struct DemuxedStream {
     let language: String?
     let title: String?
     let channels: Int
-    /// FFmpeg reported the Atmos profile (E-AC3 JOC / TrueHD Atmos) —
-    /// surfaces in track names so the JOC track is identifiable.
+    /// FFmpeg reported an Atmos profile (E-AC3 JOC or TrueHD Atmos).
     let isAtmos: Bool
-    /// nil only for subtitle streams — cues render as an overlay, not
-    /// through a sample-buffer renderer.
+    /// nil only for subtitle streams, which render as an overlay.
     let formatDescription: CMFormatDescription?
-    /// Fallback per-packet duration in seconds for audio packets that
-    /// arrive without one (frames-per-packet / sample-rate).
+    /// Seconds, for audio packets that arrive without a duration.
     let fallbackPacketDuration: Double
-    /// Video codec reorder lookahead reported by libavformat. Zero for
-    /// audio/subtitle streams and video formats without reordered frames.
+    /// Video reorder depth from libavformat; zero when there is none.
     let videoReorderDepth: Int
 }
 
 nonisolated final class FFmpegDemuxer {
     enum ReadResult {
         case video(CMSampleBuffer)
-        /// A compressed access unit for the software decode stage, which
-        /// runs off this queue so reading and decoding overlap.
+        /// A compressed access unit for the software decode stage.
         case videoPacket(SoftwareVideoPacket)
         case audio([CMSampleBuffer], streamIndex: Int32)
         case subtitle([SubtitleEvent], streamIndex: Int32)
@@ -133,9 +117,8 @@ nonisolated final class FFmpegDemuxer {
     private var videoTimeBase = AVRational(num: 1, den: 1)
     private var audioTimeBases: [Int32: AVRational] = [:]
     private var selectedAudioStreamIndex: Int32 = -1
-    /// `-debug.disableAudio YES` opens the title with no audio streams at
-    /// all, so a hardware CPU trace can tell the audio path's cost apart from
-    /// the video path's. Diagnostic only; never a user setting.
+    /// `-debug.disableAudio YES` opens with no audio, to isolate video's CPU
+    /// cost in a trace. Diagnostic only.
     private static let audioDisabledForDiagnostics: Bool = {
         guard let value = SoftwareDecodeThreadPolicy.commandLineString(forKey: "debug.disableAudio") else {
             return false
@@ -143,65 +126,43 @@ nonisolated final class FFmpegDemuxer {
         return ["yes", "true", "1"].contains(value.lowercased())
     }()
     private var didDrainAudioAtEOF = false
-    // M4: codecs CoreAudio can't take compressed decode to LPCM here.
+    // Codecs CoreAudio can't take compressed are decoded to LPCM.
     private var audioDecoders: [Int32: AudioDecoder] = [:]
     private var subtitleDecoders: [Int32: SubtitleDecoder] = [:]
-    // Sample-exact pts chains for compressed passthrough audio —
-    // container timestamps are quantized (Matroska: 1 ms) and the renderer
-    // turns every quantization mismatch into an audible discontinuity.
+    // Sample-exact timing for passthrough audio; see `PassthroughAudioTimeline`.
     private var passthroughTimelines: [Int32: PassthroughAudioTimeline] = [:]
-    // Remove Matroska's millisecond quantization from video PTS.
-    // This was not the root cause of the measured 10% HEVC frame loss, but
-    // keeps both compressed and decoded presentation timing sample-exact.
+    // Removes Matroska's millisecond quantization from video PTS.
     private var videoTimeline: VideoFrameTimeline?
-    // Apple exposes no tvOS VideoToolbox decoder for VC-1. The original
-    // stream still direct-plays: libavcodec produces ready Core Video frames
-    // that enter the same AVFoundation renderer/synchronizer as every other
-    // codec.
-    /// Built here because this is where the codec parameters are, then handed
-    /// to the engine, which drives it from a decode queue of its own. Nil
-    /// again the moment it is taken: the demuxer does not decode video.
+    /// Built here from the codec parameters, then taken by the engine, which
+    /// runs it on its own queue. The demuxer never decodes video.
     private var softwareVideoDecoder: SoftwareVideoDecoder?
     private var softwareGridDescription: String?
 
-    /// How a single-track Dolby Vision profile 7 stream is
-    /// handled — rewritten to profile 8.1 (`.convert`, default) or stripped
-    /// to the HDR10 fallback (`.stripToHDR10`, Settings → Debug).
-    /// Set before `open`.
+    /// How Dolby Vision profile 7 is handled. Set before `open`.
     var dolbyVisionProfile7Mode: DolbyVisionProfile7Mode = .convert
     /// Armed by the open-time gate in `.convert` mode; demux-queue use only.
     private var profile7Converter: DolbyVisionProfileConverter?
-    /// A/B toggle: opt back into marking disposable frames droppable
-    /// (4e2ad5f's behavior) — see the factory's attachment comment for
-    /// why the default volunteers nothing. Set before `open`.
+    /// Marks disposable frames droppable; see the attachment comment in
+    /// `SampleBufferFactory.sampleBuffer`. Set before `open`.
     var markDroppableFrames = false
-    /// Non-nil = a profile 7 rewrite (convert or strip) is armed; demux-queue
-    /// use only.
+    /// Non-nil when a profile 7 rewrite is armed. Demux queue only.
     private var videoNALLengthSize: Int?
-    /// Set when the video track arrives start-code delimited, which is every
-    /// MPEG-TS and so every Blu-ray clip the disc reader opens.
+    /// Set when video is start-code delimited (MPEG-TS).
     private var videoUsesStartCodes = false
-    /// What the compressed video payloads handed to the renderer are,
-    /// so a post-seek packet can be asked whether a decoder can *start* on it
-    /// rather than only whether the container would seek to it. Both nil for
-    /// software-decoded video and for any codec this cannot read, which
-    /// leaves that stream on exactly its earlier path.
+    /// Lets a post-seek packet be checked as a decoder start point. Both nil
+    /// for software-decoded video and unreadable codecs, which skip the check.
     private var videoRandomAccessCodec: VideoRandomAccessPoint.Codec?
     private var videoPayloadNALLengthSize: Int?
     /// Where a seek left the video stream. Demux-queue use only.
     private var postSeekVideoFilter: PostSeekVideoFilter = .idle
     /// Per stream, the container origin to subtract from its timestamps.
-    /// Empty for every container that already starts at zero.
     private var streamStartOffsets: [Int32: Int64] = [:]
-    // Written per-packet on the demux queue, read by the HUD from the main
-    // actor — proof the rewrite engaged (the retraction lesson: verify
-    // the gate before trusting the A/B). Strip mode's own snapshot; convert
-    // mode forwards the converter's separately locked one instead.
+    // Strip mode's stats: written on the demux queue, read by the HUD.
+    // Convert mode reports the converter's own instead.
     private let stripStatsLock = NSLock()
     nonisolated(unsafe) private var stripStats: DolbyVisionRewriteStats?
 
-    /// Snapshot of this playback's profile 7 rewrite — nil until the
-    /// open-time gate arms strip or convert mode on a real profile 7 stream.
+    /// This playback's profile 7 rewrite, or nil when none is armed.
     var dolbyVisionRewriteStats: DolbyVisionRewriteStats? {
         if let profile7Converter {
             return profile7Converter.stats
@@ -211,13 +172,9 @@ nonisolated final class FFmpegDemuxer {
         return stripStats
     }
 
-    /// Compressed audio packets `PassthroughAudioTimeline` rejected as
-    /// overlapping. These never reach a renderer, so `AudioContinuityMonitor`
-    /// cannot see them and `aGaps` stays 0 however many are lost — this is
-    /// the only place the loss is visible. `worstOverlap` in packet-multiples
-    /// is what says which failure it is: under 1 is the boundary repeat the
-    /// guard was written for, far above it is a real discontinuity being
-    /// muted rather than re-anchored.
+    /// Audio packets `PassthroughAudioTimeline` rejected as overlapping; the
+    /// only place this loss is visible. A worst overlap under one packet is a
+    /// boundary repeat; far above is a real jump being muted.
     var audioPacketDropStats: (packets: Int, worstOverlapSeconds: Double, packetSeconds: Double)? {
         audioDropLock.lock()
         defer { audioDropLock.unlock() }
@@ -234,36 +191,30 @@ nonisolated final class FFmpegDemuxer {
     private(set) var audioStreams: [DemuxedStream] = []
     private(set) var subtitleStreams: [DemuxedStream] = []
     private(set) var durationSeconds: Double = 0
-    /// The video stream's best-guess frame rate (display matching wants
-    /// it); 0 when FFmpeg can't tell.
+    /// Best-guess frame rate for display matching; 0 when unknown.
     private(set) var videoFrameRate: Double = 0
-    /// The pts grid in force, for the HUD's gate check (demux queue only).
+    /// The pts grid in force, for the HUD (demux queue only).
     var videoGridDescription: String? {
         softwareGridDescription ?? videoTimeline?.gridDescription
     }
-    /// Whether video leaves here as compressed packets for libavcodec rather
-    /// than as samples for an Apple decoder. Stored rather than derived from
-    /// the decoder, which is handed away during open.
+    /// Whether video goes to libavcodec rather than an Apple decoder. Stored,
+    /// because the decoder is handed away.
     private(set) var outputsDecodedVideo = false
 
-    /// Stops routing AV1 to an Apple decoder, for a reopen after one could
-    /// not be created. Call before `open`.
+    /// For a reopen after VideoToolbox refused AV1. Call before `open`.
     func disableVideoToolboxAV1() {
         routesAV1ToVideoToolbox = false
     }
 
     private var routesAV1ToVideoToolbox = true
 
-    /// Transfers the software decoder to its caller, which becomes
-    /// responsible for decoding, flushing and draining it. Returns it once.
+    /// Hands the software decoder to the caller, once.
     func takeSoftwareVideoDecoder() -> SoftwareVideoDecoder? {
         defer { softwareVideoDecoder = nil }
         return softwareVideoDecoder
     }
 
-    /// Wall time spent inside `av_read_frame` and the packets it produced —
-    /// the delivery half of "where does the time go". Cumulative
-    /// since the last seek, matching the decoder's own profile.
+    /// Wall time in `av_read_frame` and packets read, since the last seek.
     var ioProfile: (readSeconds: Double, packets: Int, elapsedSeconds: Double) {
         ioLock.withLock {
             (ioReadSeconds, ioPackets, ioStartedAt.map { ioLastReadAt - $0 } ?? 0)
@@ -280,16 +231,11 @@ nonisolated final class FFmpegDemuxer {
         self.capabilities = capabilities
     }
 
-    /// Whether a stream goes to VideoToolbox as compressed samples or is
-    /// decoded here. AV1 is offered and settled per stream at session
-    /// creation; otherwise libdav1d produces P010/NV12. VP9 is always software.
+    /// Whether a stream goes to VideoToolbox compressed or is decoded in
+    /// software. AV1 is settled per stream at session creation.
     ///
-    /// `interlaced` is the stream's own probed field order. Interlaced H.264
-    /// takes the software decoder because that is the only path with a
-    /// deinterlacing stage — VideoToolbox would hand back woven field pairs
-    /// and the picture would comb on motion. Progressive H.264 is untouched.
-    /// HEVC has no software route here, so it stays compressed whatever the
-    /// field order says.
+    /// Interlaced H.264 goes to software, the only path with a deinterlacer;
+    /// VideoToolbox would comb on motion. HEVC has no software route.
     static func usesCompressedVideoPath(
         codecID: AVCodecID,
         capabilities: PlaybackCapabilities,
@@ -307,10 +253,8 @@ nonisolated final class FFmpegDemuxer {
         }
     }
 
-    /// Whether a probed field order describes interlaced pictures. Unknown
-    /// is progressive: it is what libavformat reports when nothing in the
-    /// stream said otherwise, and sending that to the software decoder
-    /// would take H.264 off the hardware for no reason.
+    /// Whether a field order is interlaced. Unknown counts as progressive,
+    /// so H.264 is not taken off hardware for nothing.
     static func isInterlaced(fieldOrder: AVFieldOrder) -> Bool {
         switch fieldOrder {
         case AV_FIELD_TT, AV_FIELD_BB, AV_FIELD_TB, AV_FIELD_BT:
@@ -324,9 +268,8 @@ nonisolated final class FFmpegDemuxer {
         audioDecoders[streamIndex] != nil
     }
 
-    // Written from the main actor at shutdown, polled by FFmpeg's interrupt
-    // callback from inside blocked network I/O — this is what guarantees a
-    // wedged open/read can't hang teardown.
+    // Set at shutdown, polled by FFmpeg's interrupt callback inside blocked
+    // I/O, so a wedged open or read cannot hang teardown.
     private let interruptLock = NSLock()
     nonisolated(unsafe) private var interruptedFlag = false
 
@@ -356,9 +299,8 @@ nonisolated final class FFmpegDemuxer {
         }
         var completedOpen = false
         defer {
-            // Own the context from allocation, including disc/custom-I/O
-            // setup. avformat_open_input updates this same pointer (and frees
-            // it on failure), so every throw has exactly one cleanup path.
+            // One cleanup path for every throw. avformat_open_input updates
+            // this pointer and frees it on failure.
             if !completedOpen { close() }
         }
         allocated.pointee.interrupt_callback = AVIOInterruptCB(
@@ -368,13 +310,9 @@ nonisolated final class FFmpegDemuxer {
             },
             opaque: Unmanaged.passUnretained(self).toOpaque()
         )
-        // Every http/https open this AVFormatContext makes — the top-level
-        // URL as well as every HLS child manifest/segment/key — now goes
-        // through Lagoon's own transport; libavformat's network stack is
-        // gone. Installing unconditionally covers the top-level open too:
-        // when a custom `pb` is set below for direct-cache or disc
-        // playback, libavformat never calls io_open for the root, so this
-        // is a no-op there.
+        // Every http(s) open, including HLS children, goes through this
+        // transport; libavformat has no network stack. With a custom `pb`
+        // below, the root never calls io_open.
         let transport = FFmpegNetworkTransport(
             isInterrupted: { [weak self] in self?.isInterrupted ?? true },
             hlsCache: cacheSession?.hlsScope,
@@ -383,11 +321,8 @@ nonisolated final class FFmpegDemuxer {
         self.transport = transport
         transport.install(on: allocated)
         if let disc, let cacheScope = cacheSession?.directScope {
-            // A disc image is a filesystem, not a stream. Mount it, choose
-            // the title, and hand libavformat that title's clips laid end to
-            // end — it never learns the image was a disc. Every failure here
-            // is a delivery failure, so a disc this cannot read falls to the
-            // server remux exactly as it did before any of this existed.
+            // Mount the disc image, pick the title, and hand libavformat its
+            // clips end to end. Failures here are delivery failures.
             do {
                 let volume = try UDFVolume(
                     source: PlaybackCacheDiscSource(source: cacheScope),
@@ -413,12 +348,8 @@ nonisolated final class FFmpegDemuxer {
             self.cachedIO = cachedIO
         }
 
-        // hls.c reuses a segment's connection for the next request only
-        // through FFmpeg's own HTTP protocol, which this libavformat no
-        // longer has. Left on, persistence makes every segment fall back to
-        // io_open while keeping the previous context alive, one leaked
-        // AVIOContext per segment for the length of the film. Off, hls.c
-        // closes each segment through io_close2 as it finishes.
+        // Without FFmpeg's HTTP protocol, persistent HLS connections leak one
+        // AVIOContext per segment. Off, hls.c closes each via io_close2.
         var options: OpaquePointer?
         av_dict_set(&options, "http_persistent", "0", 0)
         defer { av_dict_free(&options) }
@@ -439,12 +370,8 @@ nonisolated final class FFmpegDemuxer {
             durationSeconds = Double(ctx.pointee.duration) / avTimeBase
         }
 
-        // A container that does not start at zero has its origin recorded per
-        // stream here, and removed from packets as they are read. Taking the
-        // format's origin rather than each stream's own preserves the offsets
-        // between them: WALL·E's disc starts video and one audio track
-        // together and a second audio track two thirds of a second later,
-        // which is content, not clock.
+        // Use the format's origin, not each stream's, to keep the offsets
+        // between streams: a late-starting audio track is content, not clock.
         for index in 0..<Int(ctx.pointee.nb_streams) {
             guard let stream = ctx.pointee.streams[index] else { continue }
             let offset = ContainerTimeline.startOffset(
@@ -461,11 +388,9 @@ nonisolated final class FFmpegDemuxer {
             throw DemuxError.openFailed("no video stream")
         }
 
-        // M6: in an HLS master every variant becomes a program. Restrict
-        // the working set to the chosen video's program — otherwise other
-        // variants' audio would duplicate the track list and libavformat
-        // would keep downloading their segments. Non-HLS files have no
-        // programs and pass everything through.
+        // In an HLS master each variant is a program. Keep only the chosen
+        // video's program, or other variants duplicate the track list and
+        // keep downloading.
         var programStreams: Set<Int32> = []
         for programIndex in 0..<Int(ctx.pointee.nb_programs) {
             guard let program = ctx.pointee.programs[programIndex] else { continue }
@@ -490,14 +415,9 @@ nonisolated final class FFmpegDemuxer {
             capabilities: capabilities,
             interlaced: videoIsInterlaced
         ) && (videoPar.pointee.codec_id != AV_CODEC_ID_AV1 || routesAV1ToVideoToolbox)
-        // A container that describes no parameter sets has to be caught
-        // before the description is built, not after: the description is
-        // created successfully either way and only the decoder refuses.
-        // MPEG-TS describes its parameter sets in Annex-B, which is not an
-        // hvcC however much the field it arrives in says otherwise. Taken at
-        // face value it builds a description no decoder accepts, and the
-        // refusal arrives as "no hardware decoder" rather than as anything
-        // about framing.
+        // Catch missing or Annex B parameter sets before building the
+        // description: it builds either way and only the decoder refuses,
+        // looking like "no hardware decoder". See `AnnexBStream`.
         let annexBParameterSets = usesCompressedVideo
             ? annexBParameterSets(codecpar: videoPar)
             : nil
@@ -505,8 +425,7 @@ nonisolated final class FFmpegDemuxer {
         let harvestedParameterSets = usesCompressedVideo && annexBParameterSets == nil
             ? harvestedHEVCParameterSets(ctx: ctx, streamIndex: bestVideo, codecpar: videoPar)
             : nil
-        // Once a start-code stream is converted every NAL carries a
-        // four-byte length, whatever the container's own record claimed.
+        // Converted start-code streams always carry four-byte lengths.
         let filterNALLengthSize: Int? = videoUsesStartCodes
             ? Int(AnnexBStream.nalUnitHeaderLength)
             : videoPar.pointee.extradata.flatMap { extradata in
@@ -516,17 +435,8 @@ nonisolated final class FFmpegDemuxer {
                     )
                     : nil
             }
-        // A profile 7 remux (UHD Blu-ray) interleaves base-layer,
-        // RPU (unspec 62) and enhancement-layer (unspec 63) NALs in one
-        // HEVC track. tvOS cannot reconstruct dual-layer DoVi, so by
-        // default every RPU is rewritten to profile 8.1 with libdovi and
-        // every enhancement-layer unit is dropped, tagging the track hvc1
-        // + dvvC so the system engages real Dolby Vision off the rewritten
-        // single layer. The debug toggle falls back to the older
-        // behaviour: drop both unit types and let the base layer present
-        // as HDR10. Neither mode arms without a known NAL length size or a
-        // profile other than 7 — MPEG-TS discs carry no DoVi configuration
-        // record at all, so they're untouched either way.
+        // Dolby Vision profile 7: convert to 8.1 or strip to HDR10 (see
+        // `DolbyVisionProfileConverter`). Needs a known NAL length size.
         var dolbyVisionOverride: AVDOVIDecoderConfigurationRecord?
         if videoPar.pointee.codec_id == AV_CODEC_ID_HEVC,
            let dovi = SampleBufferFactory.doviConfiguration(codecpar: videoPar),
@@ -590,16 +500,14 @@ nonisolated final class FFmpegDemuxer {
                 frameRateNum: guessedRate.num,
                 frameRateDen: guessedRate.den
             )
-            // Only the compressed path reaches the renderer, and
-            // only these two codecs are length-prefixed NAL streams there.
+            // The only length-prefixed NAL codecs on the compressed path.
             switch videoPar.pointee.codec_id {
             case AV_CODEC_ID_H264: videoRandomAccessCodec = .h264
             case AV_CODEC_ID_HEVC: videoRandomAccessCodec = .hevc
             default: videoRandomAccessCodec = nil
             }
             if let codec = videoRandomAccessCodec {
-                // A converted start-code payload carries four-byte lengths
-                // whatever the container's own record said.
+                // Converted start-code payloads carry four-byte lengths.
                 videoPayloadNALLengthSize = videoUsesStartCodes
                     ? Int(AnnexBStream.nalUnitHeaderLength)
                     : videoPar.pointee.extradata.flatMap { extradata in
@@ -635,9 +543,8 @@ nonisolated final class FFmpegDemuxer {
             }
             switch par.pointee.codec_type {
             case AVMEDIA_TYPE_AUDIO:
-                // Passthrough codecs wrap compressed; everything else gets
-                // a libavcodec → LPCM decoder (M4). Only codecs FFmpeg has
-                // no decoder for drop out of the track list.
+                // Passthrough codecs stay compressed; the rest decode to
+                // LPCM. Only codecs FFmpeg cannot decode are dropped.
                 var description: CMFormatDescription?
                 var fallbackDuration: Double = 0
                 if Self.audioDisabledForDiagnostics {
@@ -680,10 +587,9 @@ nonisolated final class FFmpegDemuxer {
                     videoReorderDepth: 0
                 ))
             case AVMEDIA_TYPE_SUBTITLE:
-                // Every subtitle stream is listed even when undecodable so
-                // the engine's per-type ordinals stay aligned with the
-                // server's stream list (M5). Unselected streams stay
-                // discarded inside libavformat.
+                // List every subtitle stream, decodable or not, so per-type
+                // ordinals match the host's stream list. Unselected streams
+                // stay discarded.
                 stream.pointee.discard = AVDISCARD_ALL
                 if let decoder = SubtitleDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
                     subtitleDecoders[Int32(index)] = decoder
@@ -715,8 +621,7 @@ nonisolated final class FFmpegDemuxer {
         completedOpen = true
     }
 
-    /// Demux only the chosen audio stream; the rest are discarded inside
-    /// libavformat so they never cost a packet copy.
+    /// Demuxes only the chosen audio stream; libavformat discards the rest.
     func selectAudio(streamIndex: Int32?) {
         guard let ctx = formatContext else { return }
         selectedAudioStreamIndex = streamIndex ?? -1
@@ -726,17 +631,14 @@ nonisolated final class FFmpegDemuxer {
         }
     }
 
-    /// Whether the video stream is read at all. Discarded inside
-    /// libavformat while the app plays audio in the background,
-    /// so a locked phone neither decodes nor holds pictures nobody sees.
+    /// Discards video during background audio-only playback.
     func setVideoDiscarded(_ discarded: Bool) {
         guard let ctx = formatContext, let videoStream else { return }
         ctx.pointee.streams[Int(videoStream.streamIndex)]?.pointee.discard =
             discarded ? AVDISCARD_ALL : AVDISCARD_DEFAULT
     }
 
-    /// Same discard dance for the chosen embedded subtitle stream (nil =
-    /// subtitles off / an external track is active).
+    /// The same for embedded subtitles; nil when off or external.
     func selectSubtitle(streamIndex: Int32?) {
         guard let ctx = formatContext else { return }
         for stream in subtitleStreams {
@@ -745,16 +647,12 @@ nonisolated final class FFmpegDemuxer {
         }
     }
 
-    /// How far to read looking for parameter sets. They are the opening
-    /// NALs of the first access unit in every file that muxes this way, so
-    /// this only has to cover whatever audio and subtitle packets happen to
-    /// be interleaved ahead of the first video one.
+    /// Packets to read looking for in-band parameter sets. They open the first
+    /// video access unit, so this only covers interleaved audio before it.
     private static let parameterSetProbeLimit = 64
 
-    /// Parameter sets read out of a start-code delimited container record.
-    ///
-    /// nil for every length-prefixed container, which is all of them but
-    /// MPEG-TS, so nothing that worked before this reaches a new path.
+    /// Parameter sets from a start-code delimited record (MPEG-TS); nil for
+    /// length-prefixed containers.
     private func annexBParameterSets(
         codecpar: UnsafeMutablePointer<AVCodecParameters>
     ) -> SampleBufferFactory.BitstreamParameterSets? {
@@ -777,13 +675,9 @@ nonisolated final class FFmpegDemuxer {
         )
     }
 
-    /// VPS, SPS and PPS taken from the bitstream, for an HEVC track whose
-    /// container declared none of its own.
-    ///
-    /// nil in the ordinary case, so a well-formed `hvcC` keeps the existing
-    /// path and reads no packets at all. When it does run, the context is
-    /// rewound afterwards: the demux loop has not started yet and still owes
-    /// the renderer every packet from the beginning.
+    /// VPS, SPS and PPS read from the bitstream, for an HEVC track whose
+    /// `hvcC` declares none. Rewinds afterwards, since the demux loop has not
+    /// started. nil (no reads) for a complete `hvcC`.
     private func harvestedHEVCParameterSets(
         ctx: UnsafeMutablePointer<AVFormatContext>,
         streamIndex: Int32,
@@ -794,8 +688,7 @@ nonisolated final class FFmpegDemuxer {
               codecpar.pointee.extradata_size > 0 else { return nil }
         let hvcc = Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size))
         guard !SampleBufferFactory.hevcExtradataCarriesParameterSets(hvcc),
-              // The header stays valid even with no arrays behind it, so the
-              // NAL length prefix is still described correctly.
+              // The header's length size is valid even with no arrays.
               let lengthSize = HEVCNALUnitRewriter.nalLengthSize(hvcc: hvcc),
               let probe = av_packet_alloc() else { return nil }
         var owned: UnsafeMutablePointer<AVPacket>? = probe
@@ -816,14 +709,12 @@ nonisolated final class FFmpegDemuxer {
             av_packet_unref(probe)
         }
 
-        // Rewind whether or not the harvest worked. A failure here costs the
-        // opening packets, which is worth strictly less than the decoder the
-        // harvest buys, so it is not treated as fatal.
+        // Rewind either way. Failing costs the opening packets, not fatal.
         if avformat_seek_file(ctx, streamIndex, Int64.min, 0, 0, 0) < 0 {
             _ = av_seek_frame(ctx, streamIndex, 0, seekBackwardFlag)
         }
 
-        // VPS, SPS, PPS, in the order the decoder expects them.
+        // VPS, SPS, PPS, in decoder order.
         let ordered = [32, 33, 34].compactMap { sets[UInt8($0)] }
         return ordered.count == 3 ? ordered : nil
     }
@@ -858,28 +749,20 @@ nonisolated final class FFmpegDemuxer {
         guard let ctx = formatContext else {
             throw DemuxError.seekFailed("demuxer not open")
         }
-        // Anchor the request in the selected video stream's clock. HLS can
-        // expose a separate audio rendition as its default stream; seeking
-        // with stream_index -1 then moves audio correctly while video keeps
-        // reading from its prior playlist position.
-        // Back into the container's own clock, which is where the seek has
-        // to land even though everything above this counts from zero.
+        // Seek on the video stream's clock, not stream -1: HLS may default
+        // to a separate audio rendition, leaving video behind. Add the
+        // container origin back.
         let timestamp = Int64(
             seconds * Double(videoTimeBase.den) / Double(max(videoTimeBase.num, 1))
         ) + (streamStartOffsets[videoStreamIndex] ?? 0)
-        // The legacy single-stream seek can leave split HLS audio/video
-        // inputs at different playlist positions (observed as a full audio
-        // queue and zero video after a backward scrub). The newer API seeks
-        // all active streams to a jointly presentable point, and constraining
-        // max_ts to the requested time asks for the keyframe at or before it.
+        // `avformat_seek_file` moves split HLS audio and video together; the
+        // legacy seek could leave them apart. max_ts = target asks for the
+        // keyframe at or before it.
         try Self.validateSeekStatus(reposition(ctx, to: timestamp))
-        // A container with no index answers that request with whatever packet
-        // its binary search stops on, keyframe or not.
+        // A container with no index may land on any packet.
         alignLandingToKeyframe(ctx, target: timestamp)
-        // The packet the container seeks to is not necessarily one
-        // a hardware decoder can be started on, and the packets right behind
-        // it may be presented before it. Both are decided on the first video
-        // packet this seek produces.
+        // The landing may not be a decoder start point, and packets right
+        // behind it may present before it. Decided on the first video packet.
         postSeekVideoFilter = videoRandomAccessCodec != nil ? .awaitingAnchor : .idle
         cachedIO?.setTimelineAnchor(seconds: seconds, duration: durationSeconds)
         didDrainAudioAtEOF = false
@@ -890,9 +773,8 @@ nonisolated final class FFmpegDemuxer {
             passthroughTimelines[index]?.reset()
         }
         videoTimeline?.reset()
-        // The software decoder is the decode stage's, and the stage resets it
-        // itself right after this returns. Flushing it from here would touch
-        // libavcodec from two queues at once.
+        // Not the software decoder: the decode stage resets it on its own
+        // queue, and flushing here would touch libavcodec from two queues.
         for decoder in subtitleDecoders.values {
             decoder.flush()
         }
@@ -903,48 +785,37 @@ nonisolated final class FFmpegDemuxer {
         }
     }
 
-    /// Both seek calls in the order the engine needs them: the newer API
-    /// first, then the legacy single-stream one as a compatibility fallback
-    /// for demuxers that do not implement `avformat_seek_file`. The alignment
-    /// below repositions exactly the way the seek itself does.
+    /// `avformat_seek_file`, falling back to `av_seek_frame` for demuxers
+    /// without it.
     private func reposition(_ ctx: UnsafeMutablePointer<AVFormatContext>, to timestamp: Int64) -> Int32 {
         let status = avformat_seek_file(ctx, videoStreamIndex, Int64.min, timestamp, timestamp, 0)
         return status < 0 ? av_seek_frame(ctx, videoStreamIndex, timestamp, seekBackwardFlag) : status
     }
 
-    /// How far back a mid-GOP landing looks for the keyframe that opens its
-    /// GOP, in seconds, widened once for long-GOP encodes.
+    /// Seconds a mid-GOP landing searches back for its keyframe; widened
+    /// once for long GOPs.
     private static let landingSearchWindows: [Double] = [8, 24]
-    /// Packets one search pass may read: the guard against a stream whose
-    /// timestamps never reach the target. 24 s of 24 fps video is ~580 video
-    /// packets and a comparable number of audio ones.
+    /// Packets one search pass may read, in case timestamps never reach the
+    /// target. 24 s at 24 fps is ~580 video packets plus audio.
     private static let landingSearchPacketBudget = 4_000
-    /// The keyframe is repositioned to a little before its own decode stamp,
-    /// so a binary search that compares decode stamps cannot step past it
-    /// into the pictures that follow. The read path then drops forward onto
-    /// it, or onto a scene-cut keyframe just before it, which is equally
-    /// decodable and no later than the target either way.
+    /// Seconds before the keyframe's decode stamp to seek to, so the binary
+    /// search cannot step past it. The read path drops forward onto it.
     private static let landingSeekMargin = 0.5
-    /// Video is interleaved close behind audio, so the first video packet of
-    /// a landing arrives well inside this.
+    /// Packets to read for a landing's first video packet.
     private static let landingProbePacketBudget = 480
 
     /// Walks a mid-GOP seek back to the last keyframe at or before the target.
     ///
-    /// MPEG-TS has no index, so libavformat binary-searches the PES timestamps
-    /// and stops mid-GOP as often as not. libavcodec decodes on regardless;
-    /// `AVSampleBufferVideoRenderer` returns kVTVideoDecoderBadDataErr (-8969)
-    /// on the first sample after a flush, which the ladder reads as
-    /// `.undecodable` — a downloaded transcode fell to a server transcode when
-    /// resumed.
+    /// MPEG-TS has no index, so the binary search often lands mid-GOP. The
+    /// renderer then fails the first sample (-8969), which the ladder reads
+    /// as `.undecodable`.
     ///
-    /// *At or before* is what the engine expects: `PlaybackClockAnchor` holds
-    /// the clock at the requested time and the audio floor drops the run-in,
-    /// so early costs a decode burst where late would skip content.
+    /// *At or before*: `PlaybackClockAnchor` holds the clock at the target and
+    /// the audio floor drops the run-in, so early costs a decode burst where
+    /// late would skip content.
     ///
-    /// Only for one seekable byte stream — file, direct-play cache, disc
-    /// image. `AVFMT_NOFILE` demuxers fetch their own media, and HLS seeks to
-    /// a segment boundary, a keyframe by construction.
+    /// Seekable byte streams only. `AVFMT_NOFILE` demuxers fetch their own
+    /// media, and HLS lands on segment boundaries, which are keyframes.
     private func alignLandingToKeyframe(_ ctx: UnsafeMutablePointer<AVFormatContext>, target: Int64) {
         guard videoRandomAccessCodec != nil, videoStreamIndex >= 0,
               let format = ctx.pointee.iformat, format.pointee.flags & noFileFormatFlag == 0,
@@ -952,15 +823,13 @@ nonisolated final class FFmpegDemuxer {
               let probe = av_packet_alloc() else { return }
         var owned: UnsafeMutablePointer<AVPacket>? = probe
         defer { av_packet_free(&owned) }
-        // The ordinary landing is a keyframe and pays one repositioning for
-        // the packets this read.
+        // Usually a keyframe: reposition once to undo the probe's reads.
         guard landingIsMidGOP(ctx, probe: probe) else {
             _ = reposition(ctx, to: target)
             return
         }
         let ticksPerSecond = Double(videoTimeBase.den) / Double(max(videoTimeBase.num, 1))
-        // Container clock throughout: `target` still carries the stream's
-        // origin, and packets are read here before it is taken off them.
+        // Container clock throughout: origin not yet removed.
         let origin = streamStartOffsets[videoStreamIndex] ?? 0
         let margin = Int64(Self.landingSeekMargin * ticksPerSecond)
         for window in Self.landingSearchWindows {
@@ -972,13 +841,12 @@ nonisolated final class FFmpegDemuxer {
             }
             if from == origin { break }
         }
-        // No keyframe within reach: the read path drops forward to the next
-        // one instead, which is late but decodable.
+        // No keyframe in reach: the read path drops forward to the next one.
         _ = reposition(ctx, to: target)
     }
 
-    /// Whether the first video packet this landing produces is one no decoder
-    /// can be started on. Reading stops there; the caller repositions.
+    /// Whether the landing's first video packet is not a keyframe. The
+    /// caller repositions afterwards.
     private func landingIsMidGOP(
         _ ctx: UnsafeMutablePointer<AVFormatContext>,
         probe: UnsafeMutablePointer<AVPacket>
@@ -996,13 +864,9 @@ nonisolated final class FFmpegDemuxer {
     }
 
     /// The decode stamp of the last video keyframe presented at or before
-    /// `target`, reading forward from wherever the caller left the cursor.
-    ///
-    /// The container's key flag is the candidate; the post-seek filter still
-    /// classifies the packet the cursor ends up on, so an open GOP keeps its
-    /// leading-picture drop. Presentation decides whether a
-    /// keyframe is early enough, decode decides where to seek: the search a
-    /// container without an index runs compares decode stamps.
+    /// `target`, reading forward from the cursor. Presentation time decides
+    /// "early enough"; decode time is returned because an unindexed seek
+    /// compares decode stamps. The post-seek filter still handles open GOPs.
     private func lastKeyframe(
         _ ctx: UnsafeMutablePointer<AVFormatContext>,
         probe: UnsafeMutablePointer<AVPacket>,
@@ -1025,11 +889,8 @@ nonisolated final class FFmpegDemuxer {
         return latest
     }
 
-    /// `av_read_frame` with the clock around it. This is the transport: on a
-    /// direct-played file it is a cache read, on a stream it is the network,
-    /// and either way it is the third of the three costs — the one that
-    /// used to be indistinguishable from decode because both happened on this
-    /// queue, one after the other.
+    /// `av_read_frame`, timed: the transport cost (cache or network), kept
+    /// apart from decode.
     private func readFrameTimed(
         _ ctx: UnsafeMutablePointer<AVFormatContext>,
         _ packet: UnsafeMutablePointer<AVPacket>
@@ -1052,13 +913,9 @@ nonisolated final class FFmpegDemuxer {
         }
     }
 
-    /// Rewrites one video payload for the profile 7 mode armed by `open`'s
-    /// gate (`videoNALLengthSize` non-nil implies one of the two is).
-    /// Convert mode defers entirely to the converter's own locked stats;
-    /// strip mode uses `HEVCNALUnitRewriter.rewrite` directly, rather than
-    /// the canned `strippingEnhancementLayer`, so it can keep the RPU/EL
-    /// breakdown `dolbyVisionRewriteStats` reports instead of just a byte
-    /// count.
+    /// Rewrites one video payload for the armed profile 7 mode. Strip mode
+    /// calls `rewrite` directly, not `strippingEnhancementLayer`, to count
+    /// RPU and EL units separately.
     private func rewrittenDolbyVisionPayload(
         payload: UnsafeRawBufferPointer,
         lengthSize: Int
@@ -1094,40 +951,25 @@ nonisolated final class FFmpegDemuxer {
     /// What a seek left the compressed video stream doing.
     private enum PostSeekVideoFilter {
         case idle
-        /// Nothing has been read since the seek: the next video packet is
-        /// wherever the decoder is about to be restarted.
+        /// The next video packet is where the decoder restarts.
         case awaitingAnchor
-        /// The container put the cursor inside a GOP and video is
-        /// being dropped until a picture a decoder can start on.
+        /// Landed mid-GOP; dropping until a start point.
         case droppingToKeyframe(dropped: Int)
-        /// The seek landed on an *open* GOP — a picture the container flags
-        /// as a keyframe, that a decoder can start on, but that has pictures
-        /// behind it in decode order presented *before* it. Those reference
-        /// the GOP the renderer's flush has already destroyed.
+        /// Landed on an *open* GOP keyframe. Pictures after it in decode
+        /// order but presented before it reference the flushed GOP.
         case droppingLeadingPictures(anchor: Int64, dropped: Int)
     }
 
-    /// How many packets the leading-picture drop may consume before it gives
-    /// up and lets everything through. Real open GOPs carry one B-pyramid's
-    /// worth (measured: two); this only exists so a stream that lies about
-    /// its timestamps cannot lose its video track.
+    /// Cap on dropped leading pictures (real open GOPs have about two), so a
+    /// stream with bad timestamps keeps its video.
     private static let leadingPictureDropLimit = 32
 
-    /// Whether this packet is one of the open GOP's leading pictures.
+    /// Whether to drop this packet after a seek.
     ///
-    /// The flush before every seek destroys the decoder's reference pictures,
-    /// so a picture referencing the GOP *before* the seek landing cannot be
-    /// decoded. `AVSampleBufferVideoRenderer` answers `didFailToDecode` and
-    /// the ladder reads `.undecodable`, dropping the viewer onto a server
-    /// transcode for the rest of the film. libavcodec is forgiving here and
-    /// Apple's decoder is not, which is why software paths never showed it.
-    ///
-    /// Every such picture presents before the seek landing, which is at or
-    /// before what the viewer asked for, so nothing dropped was going to be
-    /// shown.
-    ///
-    /// Armed only when the anchor is a keyframe that is not an IDR/IRAP: an
-    /// IDR closes its GOP, so closed-GOP content takes the earlier path.
+    /// Leading pictures of an open GOP reference the GOP the flush destroyed.
+    /// Apple's decoder fails them (libavcodec does not), and the ladder would
+    /// read `.undecodable` and transcode. They present before the target, so
+    /// dropping them loses nothing. Only armed for a non-IDR/IRAP keyframe.
     private func postSeekVideoDecision(
         packet: UnsafeMutablePointer<AVPacket>,
         payload: Data?
@@ -1145,8 +987,7 @@ nonisolated final class FFmpegDemuxer {
                 return .keep
             }
             guard pts < anchor else {
-                // Decode order has passed the anchor; everything from here
-                // is a trailing picture.
+                // Past the anchor: trailing pictures from here.
                 postSeekVideoFilter = .idle
                 if ProcessCPUTrace.enabled, dropped > 0 {
                     print(String(
@@ -1162,11 +1003,8 @@ nonisolated final class FFmpegDemuxer {
         }
     }
 
-    /// How many video packets the keyframe search may drop before it gives up
-    /// and lets the stream through. A GOP is a second or two of video and the
-    /// alignment has usually placed the cursor on the keyframe already; this
-    /// only exists so a stream whose keyframes are never flagged cannot lose
-    /// its video track.
+    /// Cap on packets dropped looking for a keyframe, so a stream that never
+    /// flags one keeps its video.
     private static let keyframeSearchDropLimit = 600
 
     /// Classifies the first video packet a seek is willing to deliver, and
@@ -1199,10 +1037,7 @@ nonisolated final class FFmpegDemuxer {
         }
         switch isStartPoint {
         case .some(false) where packet.pointee.flags & keyPacketFlag == 0:
-            // Not a start point and not even a picture the container calls a
-            // keyframe: the seek landed inside a GOP. Everything
-            // here references pictures the renderer's flush destroyed, so it
-            // is dropped until the GOP that can be started on.
+            // Mid-GOP: references flushed pictures. Drop to the next start.
             guard dropped < Self.keyframeSearchDropLimit else { return .keep }
             if ProcessCPUTrace.enabled, dropped == 0 {
                 print(String(
@@ -1213,13 +1048,11 @@ nonisolated final class FFmpegDemuxer {
             postSeekVideoFilter = .droppingToKeyframe(dropped: dropped + 1)
             return .drop
         case .some(false):
-            // A keyframe that is not a start point is the open GOP: keep it
-            // and drop the pictures presented before it.
+            // Open GOP: keep it, drop the pictures presented before it.
             postSeekVideoFilter = .droppingLeadingPictures(anchor: anchor, dropped: 0)
             return .keep
         default:
-            // true is an IDR/IRAP, the clean start. nil is "cannot tell", and
-            // a payload this cannot read must not be acted on.
+            // true: a clean start. nil: cannot tell, so leave it alone.
             return .keep
         }
     }
@@ -1239,11 +1072,9 @@ nonisolated final class FFmpegDemuxer {
     func readNext() -> ReadResult {
         guard let ctx = formatContext, let packet else { return .failed("demuxer not open") }
         var status = readFrameTimed(ctx, packet)
-        // M6: only AVERROR_EOF means the stream ended. Anything else is a
-        // read failure — retry briefly (FFmpegNetworkTransport already
-        // retries transient socket errors on its own; this covers errors
-        // that surface past those retries), then report it instead of
-        // silently ending playback mid-file.
+        // Only AVERROR_EOF ends the stream. Other errors (past the
+        // transport's own retries) retry briefly, then fail rather than end
+        // playback silently.
         var attempts = 0
         while status < 0, status != avErrorEOF, !isInterrupted, attempts < 2 {
             attempts += 1
@@ -1251,11 +1082,8 @@ nonisolated final class FFmpegDemuxer {
             status = readFrameTimed(ctx, packet)
         }
         if status == avErrorEOF || isInterrupted {
-            // Delayed pictures still inside libavcodec are the decode stage's
-            // to drain; it owns the decoder.
-            //
-            // Hand the audio decoder's tail (coalesced partial buffer) to the
-            // renderer before declaring the end.
+            // The decode stage drains video. Emit the audio decoder's tail
+            // before declaring the end.
             if !didDrainAudioAtEOF {
                 didDrainAudioAtEOF = true
                 if selectedAudioStreamIndex >= 0,
@@ -1272,8 +1100,7 @@ nonisolated final class FFmpegDemuxer {
             return .failed(Self.errorText(status))
         }
         defer { av_packet_unref(packet) }
-        // Before anything reads them: the timeline, the renderers, the cache
-        // anchor and the progress report all speak media time from zero.
+        // First: everything downstream expects media time from zero.
         if let offset = streamStartOffsets[packet.pointee.stream_index] {
             if packet.pointee.pts != avNoPTS {
                 packet.pointee.pts -= offset
@@ -1300,18 +1127,14 @@ nonisolated final class FFmpegDemuxer {
         }
 
         if streamIndex == videoStreamIndex, outputsDecodedVideo {
-            // Detached from the reusable packet the `defer` above unrefs, so
-            // the decode stage can hold it past this read. A clone shares
-            // FFmpeg's buffer; it does not copy the access unit.
+            // Detached from the reusable packet so the decode stage can keep it.
             guard let detached = SoftwareVideoPacket(cloning: packet, timeBase: videoTimeBase) else {
                 return .failed("out of memory copying a video packet")
             }
             return .videoPacket(detached)
         }
         if streamIndex == videoStreamIndex, let description = videoStream?.formatDescription {
-            // Start codes become length prefixes before anything downstream
-            // sees the payload, so the filter below and VideoToolbox itself
-            // read one framing.
+            // Convert start codes first, so everything below sees one framing.
             var strippedPayload: Data?
             if videoUsesStartCodes, let data = packet.pointee.data {
                 strippedPayload = AnnexBStream.lengthPrefixed(
@@ -1335,8 +1158,7 @@ nonisolated final class FFmpegDemuxer {
                     strippedPayload = filtered
                 }
             }
-            // Snap the presentation stamp onto the exact frame grid;
-            // decode stamps stay the container's (ordering only).
+            // Snap pts to the frame grid; dts stays the container's.
             var timing: CMSampleTimingInfo?
             if videoTimeline != nil, packet.pointee.pts != avNoPTS {
                 let containerSeconds = Double(packet.pointee.pts)
@@ -1357,9 +1179,7 @@ nonisolated final class FFmpegDemuxer {
                     )
                 }
             }
-            // Ahead of the frame-grid snap below, so a dropped
-            // packet never anchors the timeline on a stamp that is about to
-            // be stepped backwards over.
+            // Drop mid-GOP and leading pictures after a seek.
             if case .drop = postSeekVideoDecision(packet: packet, payload: strippedPayload) {
                 return .skipped
             }
@@ -1383,8 +1203,7 @@ nonisolated final class FFmpegDemuxer {
         if let audio = audioStreams.first(where: { $0.streamIndex == streamIndex }),
            let description = audio.formatDescription,
            let timeBase = audioTimeBases[streamIndex] {
-            // Sample-exact pts for passthrough audio — the
-            // container's quantized stamp only anchors the chain.
+            // Sample-exact pts; the container stamp only anchors the chain.
             let ptsValue = packet.pointee.pts != avNoPTS ? packet.pointee.pts : packet.pointee.dts
             let containerSeconds: Double? = ptsValue == avNoPTS
                 ? nil
@@ -1428,10 +1247,8 @@ nonisolated final class FFmpegDemuxer {
         transport?.closeAll()
         transport = nil
 
-        // These wrappers free AVCodecContext/SWR resources in deinit.
-        // close() runs on the demux queue; clearing them here prevents that
-        // C teardown from being deferred until the main-actor engine is
-        // released after dismissal.
+        // Free decoder C resources here, on the demux queue, rather than
+        // whenever the engine is released.
         audioDecoders.removeAll(keepingCapacity: false)
         subtitleDecoders.removeAll(keepingCapacity: false)
         softwareVideoDecoder = nil

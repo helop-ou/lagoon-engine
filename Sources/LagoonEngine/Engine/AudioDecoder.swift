@@ -5,11 +5,8 @@ import Libavcodec
 import Libavutil
 import Libswresample
 
-/// Decodes audio codecs CoreAudio won't take compressed
-/// (DTS, TrueHD, FLAC, Opus, Vorbis, …) into interleaved Float32 LPCM
-/// sample buffers for AVSampleBufferAudioRenderer. Passthrough codecs
-/// never come here — SampleBufferFactory.audioFormatDescription wraps
-/// those first. All methods run on the demux queue.
+/// Decodes codecs CoreAudio won't take compressed (DTS, TrueHD, FLAC, Opus,
+/// Vorbis, …) into interleaved Float32 LPCM. Runs on the demux queue.
 nonisolated final class AudioDecoder {
     private let codecContext: UnsafeMutablePointer<AVCodecContext>
     private let frame: UnsafeMutablePointer<AVFrame>
@@ -19,26 +16,19 @@ nonisolated final class AudioDecoder {
     private var resampler: OpaquePointer?
     private var resamplerInputFormat = AV_SAMPLE_FMT_NONE
 
-    /// LPCM Float32 interleaved at the stream's declared rate/layout —
-    /// known up front, so the renderer format never changes mid-stream.
+    /// Fixed from the stream's declared rate and layout, so the renderer
+    /// format never changes mid-stream.
     let formatDescription: CMFormatDescription
 
-    // Decoders like TrueHD emit tiny frames (40 samples per access unit);
-    // coalesce into ~2048-sample buffers so the renderer queue holds
-    // seconds, not thousands of slivers.
-    // Mutable storage swresample fills in place and emit copies out of.
-    // TrueHD commonly yields 40-sample frames, so avoiding a temporary
-    // allocation + append for every one matters far more than it would for
-    // codecs that already produce large frames. The buffer is reused across
-    // emits: only its length is reset, never its allocation.
+    // TrueHD emits 40-sample frames; coalesce into ~2048-sample buffers.
+    // swresample writes straight into this reused buffer, so a tiny frame
+    // costs no allocation.
     private var pendingSamples = NSMutableData()
     private var pendingSampleCount = 0
     private var pendingStartSeconds: Double?
-    /// Sample-accurate end of everything emitted so far. Successive
-    /// buffers anchor here, NOT to container pts: Matroska stamps at 1 ms
-    /// precision while TrueHD frames are 0.83 ms, so trusting each pts
-    /// would jitter every buffer boundary by up to half a millisecond —
-    /// audible as steady clicking (found in the first 7.1 TrueHD sim pass).
+    /// Sample-accurate end of everything emitted. Buffers anchor here, not to
+    /// container pts: 1 ms Matroska stamps on 0.83 ms TrueHD frames jitter
+    /// every boundary, heard as clicking.
     private var continuationSeconds: Double?
 
     init?(codecpar: UnsafeMutablePointer<AVCodecParameters>, timeBase: AVRational) {
@@ -111,9 +101,8 @@ nonisolated final class AudioDecoder {
         continuationSeconds = nil
     }
 
-    /// End of stream: pull the decoder's remaining frames and the
-    /// coalescing tail so the last fraction of a second isn't dropped.
-    /// Flushes afterwards, so a later seek can reuse the decoder.
+    /// End of stream: emits the remaining frames, then flushes so a later
+    /// seek can reuse the decoder.
     func drain() -> [CMSampleBuffer] {
         var buffers: [CMSampleBuffer] = []
         avcodec_send_packet(codecContext, nil)
@@ -133,9 +122,7 @@ nonisolated final class AudioDecoder {
             ? nil
             : Double(frame.pointee.pts) * Double(timeBase.num) / Double(max(timeBase.den, 1))
 
-        // A real pts jump means a gap (or a seek landed mid-stream): emit
-        // what we have and re-anchor to the container's clock. Anything
-        // within the tolerance is timestamp quantization, not a gap.
+        // A pts jump beyond quantization is a gap: emit and re-anchor.
         let expected = pendingStartSeconds.map { $0 + Double(pendingSampleCount) / Double(sampleRate) }
             ?? continuationSeconds
         if let frameSeconds, let expected, abs(frameSeconds - expected) > 0.05 {
@@ -154,8 +141,7 @@ nonisolated final class AudioDecoder {
         }
     }
 
-    /// Converts directly into the coalescing buffer. This removes the old
-    /// per-decoded-frame temporary Data allocation and its append copy.
+    /// Converts directly into the coalescing buffer.
     private func appendConvertedFrame() -> Int? {
         let inputFormat = AVSampleFormat(rawValue: frame.pointee.format)
         if resampler == nil || resamplerInputFormat != inputFormat {
@@ -201,8 +187,7 @@ nonisolated final class AudioDecoder {
 
     private func emitPending(into buffers: inout [CMSampleBuffer]) {
         defer {
-            // Length only — NSMutableData keeps the allocation, so the
-            // steady state costs no allocation per emitted buffer.
+            // Length only: keeps the allocation.
             pendingSamples.length = 0
             pendingSampleCount = 0
             pendingStartSeconds = nil
@@ -219,15 +204,9 @@ nonisolated final class AudioDecoder {
         buffers.append(buffer)
     }
 
-    /// The LPCM payload is copied into a CoreMedia-owned block rather than
-    /// handed over zero-copy. An earlier attempt tried the handoff (this
-/// buffer behind a
-    /// CMBlockBufferCustomBlockSource) and it leaked the entire decoded
-    /// stream — ~2.3 MB/s on TrueHD 7.1, which walked the app into the 2 GB
-    /// per-process limit and got it jetsam-killed mid-playback. The copy that
-    /// bought is 1.5 MB/s on the demux queue, ~0.03% of a core. The video
-    /// path keeps its zero-copy AVBufferRef handoff: that one is both far
-    /// larger (8.65 MB/s on a 4K remux) and measured leak-free.
+    /// Copies the LPCM into a CoreMedia-owned block. A zero-copy handoff via
+    /// CMBlockBufferCustomBlockSource leaked the whole stream (~2.3 MB/s on
+    /// TrueHD 7.1) until jetsam killed the app. The copy costs ~0.03% of a core.
     private func makeSampleBuffer(data: NSMutableData, samples: Int, startSeconds: Double?) -> CMSampleBuffer? {
         var blockBuffer: CMBlockBuffer?
         guard CMBlockBufferCreateWithMemoryBlock(
@@ -248,9 +227,8 @@ nonisolated final class AudioDecoder {
             dataLength: data.length
         ) == noErr else { return nil }
 
-        // Timescale = the stream's own rate, so consecutive buffers land
-        // exactly sample-adjacent (90 kHz can't represent 48 kHz sample
-        // boundaries — the rounding error alone is audible as clicks).
+        // Timescale is the sample rate so buffers are exactly adjacent;
+        // 90 kHz rounding is audible as clicks.
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: sampleRate),
             presentationTimeStamp: startSeconds.map {
@@ -308,10 +286,9 @@ nonisolated final class AudioDecoder {
         return status == noErr ? description : nil
     }
 
-    /// FFmpeg's native channel-bit order and CoreAudio's channel bitmap
-    /// agree bit-for-bit on the first 18 positions (FL…TBR), and both
-    /// order samples by ascending bit — so a native mask under 1<<18 maps
-    /// straight across. Anything else falls back to discrete channels.
+    /// FFmpeg's native mask and CoreAudio's bitmap agree on the first 18
+    /// bits (FL…TBR), so a mask under 1<<18 maps straight across. Anything
+    /// else falls back to discrete channels.
     private static func coreAudioLayout(for layout: AVChannelLayout, channels: Int32) -> AudioChannelLayout {
         var result = AudioChannelLayout()
         let mask: UInt64 = layout.order == AV_CHANNEL_ORDER_NATIVE ? layout.u.mask : 0

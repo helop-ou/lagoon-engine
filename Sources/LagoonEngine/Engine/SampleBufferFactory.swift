@@ -6,31 +6,21 @@ import Libavutil
 
 nonisolated private let avNoPTS = Int64.min // AV_NOPTS_VALUE
 nonisolated private let eac3AtmosProfile: Int32 = 30 // AV_PROFILE_EAC3_DDP_ATMOS
-// The media subtype Apple's own format descriptions show for E-AC3 JOC
-// tracks ("Enhanced AC-3 with JOC") — no public CoreAudio constant.
+// Apple's media subtype for E-AC3 JOC; there is no public constant.
 nonisolated private let ec3JOCFormatID = AudioFormatID(0x6563_2B33) // 'ec+3'
 
-/// Turns FFmpeg codec parameters and packets into the CoreMedia objects the
-/// AVSampleBuffer* renderers eat.
+/// Turns FFmpeg codec parameters and packets into CoreMedia objects for the
+/// AVSampleBuffer* renderers.
 ///
-/// The trick that makes the whole architecture cheap: Matroska stores
-/// h264/hevc exactly like mp4 (avcC/hvcC extradata, length-prefixed NALs),
-/// so demuxed packets can be wrapped as compressed CMSampleBuffers without a
-/// payload copy. The display layer decodes H.264; Lagoon's VideoToolbox stage
-/// decodes HEVC and hardware-supported AV1 ahead. Same for aac/ac3/eac3 audio:
-/// CoreAudio decodes the
-/// compressed packets handed to AVSampleBufferAudioRenderer.
+/// Matroska stores H.264/HEVC like MP4 (avcC/hvcC, length-prefixed NALs), so
+/// packets wrap as compressed CMSampleBuffers without copying. The same goes
+/// for AAC/AC-3/E-AC-3, which CoreAudio decodes.
 nonisolated enum SampleBufferFactory {
-    /// Whether an HEVC `hvcC` carries the VPS/SPS/PPS a decoder has to be
-    /// configured with.
+    /// Whether an HEVC `hvcC` carries the VPS/SPS/PPS.
     ///
-    /// hev1-style muxing is legal and leaves the arrays empty, repeating the
-    /// parameter sets in-band instead. Nothing complains at the time:
-    /// `CMVideoFormatDescriptionCreate` builds a description around such a
-    /// record and returns `noErr`, and the refusal only arrives later, when
-    /// `VTDecompressionSessionCreate` declines the session with -4. That
-    /// reads as a hardware fault rather than a container one, which is
-    /// exactly how it was first misread.
+    /// hev1-style muxing leaves them empty and sends them in-band. The format
+    /// description still builds, but `VTDecompressionSessionCreate` then fails
+    /// with -4, which looks like a hardware fault but is the container.
     static func hevcExtradataCarriesParameterSets(_ hvcc: Data) -> Bool {
         // 22 bytes of fixed header, then numOfArrays and the arrays.
         guard hvcc.count > 22 else { return false }
@@ -55,13 +45,9 @@ nonisolated enum SampleBufferFactory {
         return sawSPS && sawPPS
     }
 
-    /// Parameter sets that supersede the container's record, in decoder
-    /// order, together with the framing of the samples they describe.
-    ///
-    /// Two containers need this and for different reasons: one that declares
-    /// no parameter sets at all and repeats them in-band, and one
-    /// that declares them in a framing Apple's decoders do not read, which is
-    /// every MPEG-TS the disc reader opens.
+    /// Parameter sets that replace the container's record, in decoder order,
+    /// with the framing of their samples. For containers that declare none
+    /// (in-band only) or declare them in Annex B (MPEG-TS).
     nonisolated struct BitstreamParameterSets {
         let sets: [Data]
         /// Bytes prefixing each NAL in the samples, not in these sets.
@@ -99,8 +85,7 @@ nonisolated enum SampleBufferFactory {
         } else {
             nil
         }
-        // A container that describes nothing is still openable when the
-        // parameter sets arrive from the bitstream instead.
+        // Openable from bitstream parameter sets alone.
         guard containerRecord != nil || parameterSets != nil else { return nil }
         var atoms: [String: Data] = [:]
         if let containerRecord {
@@ -108,9 +93,7 @@ nonisolated enum SampleBufferFactory {
         }
         var extensions: [CFString: Any] = [:]
 
-        // Colorimetry tags. The display pipeline only engages
-        // HDR/EDR when the format description declares what the bitstream
-        // carries — untagged BT.2020+PQ renders as washed-out SDR.
+        // Colorimetry. Untagged BT.2020 PQ renders as washed-out SDR.
         if let primaries = colorPrimaries(codecpar.pointee.color_primaries) {
             extensions[kCMFormatDescriptionExtension_ColorPrimaries] = primaries
         }
@@ -138,13 +121,10 @@ nonisolated enum SampleBufferFactory {
             extensions[kCMFormatDescriptionExtension_ContentLightLevelInfo] = contentLight
         }
         if let ambient = ambientViewingEnvironment(codecpar) {
-            // Apple TN3145 requires custom sample-buffer playback to carry
-            // `amve` through to presentation for correct HDR adaptation.
+            // TN3145: carry `amve` to presentation for HDR adaptation.
             extensions[kCMFormatDescriptionExtension_AmbientViewingEnvironment] = ambient
         }
-        // Non-square pixels. Without this a 720x576 PAL DVD rip with a
-        // 16:15 pixel aspect renders squished to its coded 5:4 box instead
-        // of the 4:3 it was authored as.
+        // Non-square pixels, e.g. a PAL DVD's 16:15, or it renders squished.
         if let aspect = pixelAspectRatio(codecpar.pointee.sample_aspect_ratio) {
             extensions[kCMFormatDescriptionExtension_PixelAspectRatio] = [
                 kCMFormatDescriptionKey_PixelAspectRatioHorizontalSpacing: aspect.horizontal,
@@ -152,18 +132,11 @@ nonisolated enum SampleBufferFactory {
             ]
         }
 
-        // Dolby Vision, single-layer profiles only. Profile 5 (IPTPQc2) is
-        // meaningless without the DoVi decode path, so the sample entry
-        // itself becomes dvh1; profile 8 keeps hvc1 with a supplementary
-        // dvvC so non-DoVi displays fall back to the base layer's
-        // HDR10/HLG/SDR tags. Dual-layer profile 4 gets no atom — nothing
-        // rewrites it, so it plays as HDR10 via the tags above. Profile 7
-        // (UHD Blu-ray remuxes) is tagged the same way as profile 8
-        // whenever the demuxer hands in `dolbyVisionOverride` — its RPUs
-        // have been rewritten to profile 8.1 in flight — and
-        // otherwise gets no atom, same as profile 4, which is the debug
-        // HDR10 fallback (Settings → Advanced → Playback Diagnostics →
-        // "Dolby Vision Compatibility Mode").
+        // Dolby Vision, single-layer only. Profile 5 needs the DoVi path, so
+        // it becomes dvh1. Profile 8 keeps hvc1 plus dvvC, so other displays
+        // fall back to the base layer's tags. Profile 7 is tagged as 8 when
+        // converted (`dolbyVisionOverride`); otherwise it and profile 4 get
+        // no atom and play as HDR10.
         if let dolbyVisionOverride {
             atoms["dvvC"] = doviConfigurationBox(dolbyVisionOverride)
         } else if codecpar.pointee.codec_id == AV_CODEC_ID_HEVC,
@@ -179,17 +152,9 @@ nonisolated enum SampleBufferFactory {
             }
         }
 
-        // Built from the bitstream's own parameter sets, which carry the
-        // geometry and profile the empty container record could not. The
-        // colorimetry above still applies and is passed through; the Dolby
-        // Vision atoms — `dolbyVisionOverride` included — are not, because
-        // this path only runs for a container that failed to describe its
-        // own bitstream and its DoVi signalling is not worth more trust
-        // than its parameter sets were. In practice this never carries a
-        // profile 7 override anyway: it's MPEG-TS discs that need the
-        // bitstream harvest, and those never have a DoVi configuration
-        // record to convert in the first place. The base layer
-        // still presents as HDR10 off the tags either way.
+        // From bitstream parameter sets. Colorimetry passes through; the
+        // Dolby Vision atoms do not, since this container already failed to
+        // describe its bitstream. (MPEG-TS discs carry no DoVi record anyway.)
         if let parameterSets, !parameterSets.sets.isEmpty {
             switch codecpar.pointee.codec_id {
             case AV_CODEC_ID_HEVC:
@@ -222,9 +187,8 @@ nonisolated enum SampleBufferFactory {
         return status == noErr ? description : nil
     }
 
-    /// Runs `body` with the parameter sets flattened into one contiguous
-    /// buffer: CoreMedia takes pointers into memory it does not own, so they
-    /// have to outlive the call and sit next to each other.
+    /// Runs `body` with the parameter sets in one contiguous buffer that
+    /// outlives the CoreMedia call.
     private static func withFlattened<T>(
         _ parameterSets: [Data],
         _ body: (UnsafeBufferPointer<UnsafePointer<UInt8>>, UnsafeBufferPointer<Int>) -> T?
@@ -251,11 +215,8 @@ nonisolated enum SampleBufferFactory {
         }
     }
 
-    /// A copy of `description` carrying `extensions` alongside its own.
-    ///
-    /// The H.264 creator takes no extensions of its own, and colorimetry that
-    /// never reaches the description renders BT.2020 PQ as washed-out SDR, so
-    /// it is grafted on rather than dropped.
+    /// A copy of `description` with `extensions` added. The H.264 creator
+    /// takes none, and losing colorimetry washes out HDR.
     private static func withExtensions(
         _ description: CMFormatDescription,
         _ extensions: [CFString: Any]
@@ -275,8 +236,7 @@ nonisolated enum SampleBufferFactory {
             extensions: merged as CFDictionary,
             formatDescriptionOut: &updated
         )
-        // Keeping the untagged description beats losing the decoder over a
-        // colour tag.
+        // Untagged beats no decoder.
         return status == noErr ? updated : description
     }
 
@@ -296,14 +256,10 @@ nonisolated enum SampleBufferFactory {
                 formatDescriptionOut: &description
             )
             guard status == noErr, let description else { return nil }
-            // CMVideoFormatDescriptionCreateFromH264ParameterSets takes no
-            // extensions, so the colorimetry has to be grafted on afterwards.
             return withExtensions(description, extensions)
         }
     }
 
-    /// Flattened so the parameter sets stay alive, and contiguous, for the
-    /// duration of the call.
     private static func hevcFormatDescription(
         parameterSets: [Data],
         nalUnitHeaderLength: Int32,
@@ -341,19 +297,12 @@ nonisolated enum SampleBufferFactory {
         return status == noErr ? description : nil
     }
 
-    /// The stream's non-square pixel geometry, or nil when it is square, near
-    /// enough to be invisible, or unknown (libavformat reports 0/1).
+    /// The non-square pixel aspect, or nil when square, within 1%, or unknown
+    /// (0/1).
     ///
-    /// nil rather than 1:1 keeps every format description that works today
-    /// byte-identical: this is on the path of every h264/hevc title, and the
-    /// same description goes to `AVDisplayCriteria` and
-    /// `VTDecompressionSessionCreate`.
-    ///
-    /// The 1% tolerance matters as much. Real files carry rounding artifacts —
-    /// 1744:1745 on a 4K remux, 180224:180219 on an AVI — and honouring those
-    /// would change those descriptions to correct a hundredth of a percent.
-    /// Genuine anamorphic PARs are far coarser: 16:15, 12:11, 32:27 and 64:45
-    /// are all at least 6% off square.
+    /// nil keeps square-pixel descriptions unchanged. The 1% tolerance skips
+    /// rounding noise (1744:1745 on a 4K remux); real anamorphic PARs are at
+    /// least 6% off square.
     static func pixelAspectRatio(_ sar: AVRational) -> (horizontal: Int32, vertical: Int32)? {
         guard sar.num > 0, sar.den > 0 else { return nil }
         // Exact integer form of |num/den - 1| >= 1%.
@@ -363,9 +312,8 @@ nonisolated enum SampleBufferFactory {
         return (sar.num, sar.den)
     }
 
-    /// Returns the description plus the codec's frames-per-packet (for
-    /// fallback durations). aac needs its AudioSpecificConfig as the magic
-    /// cookie; ac3/eac3 are self-describing.
+    /// The description plus frames per packet (for fallback durations). AAC
+    /// needs its AudioSpecificConfig as the magic cookie.
     static func audioFormatDescription(codecpar: UnsafeMutablePointer<AVCodecParameters>) -> (CMFormatDescription, framesPerPacket: Int)? {
         var formatID: AudioFormatID
         var cookie: Data?
@@ -381,14 +329,10 @@ nonisolated enum SampleBufferFactory {
             formatID = kAudioFormatAC3
         case AV_CODEC_ID_EAC3:
             formatID = kAudioFormatEnhancedAC3
-            // M2, settled on hardware (2026-08-17) after three failed
-            // signalling attempts: what engages Atmos is the 'ec+3' media
-            // subtype plus the 16-channel "16/JOC" presentation — the
-            // exact shape of Apple's own JOC format descriptions. The
-            // dec3 box rides along as the codec config; an Atmos channel
-            // layout tag is NOT part of the recipe (with it, or with the
-            // plain ec-3 subtype, the system decodes only the DD+ core
-            // and reports "Multichannel").
+            // Atmos needs the 'ec+3' subtype plus the 16-channel "16/JOC"
+            // presentation, as Apple's own descriptions have, with dec3 as
+            // the config. No Atmos channel layout tag: with it, or with plain
+            // ec-3, the system decodes only the DD+ core.
             let isAtmos = codecpar.pointee.profile == eac3AtmosProfile
             cookie = dec3Payload(codecpar: codecpar, atmos: isAtmos)
             atoms = cookie.map { ["dec3": $0] }
@@ -443,8 +387,8 @@ nonisolated enum SampleBufferFactory {
         return (description, framesPerPacket)
     }
 
-    /// Prefer FFmpeg's parsed frame size (including 960-sample AAC), then
-    /// fall back to the codec's packet cadence when the container omitted it.
+    /// FFmpeg's parsed frame size (960-sample AAC included), else the codec's
+    /// standard cadence.
     static func audioFramesPerPacket(
         codecID: AVCodecID,
         sampleRate: Int32,
@@ -466,10 +410,9 @@ nonisolated enum SampleBufferFactory {
         }
     }
 
-    /// EC3SpecificBox (dec3) payload per ETSI TS 102 366 Annex F —
-    /// synthesized from codec parameters the way FFmpeg's mp4 muxer does
-    /// when remuxing E-AC3 out of MKV. One independent substream; 7.1
-    /// adds the dependent-substream channel location for the back pair.
+    /// EC3SpecificBox (dec3) per ETSI TS 102 366 Annex F, built as FFmpeg's
+    /// mp4 muxer does. One independent substream; 7.1 adds the dependent
+    /// substream's back pair.
     private static func dec3Payload(codecpar: UnsafeMutablePointer<AVCodecParameters>, atmos: Bool) -> Data? {
         let fscod: UInt32 = switch codecpar.pointee.sample_rate {
         case 44_100: 1
@@ -549,10 +492,8 @@ nonisolated enum SampleBufferFactory {
         }
     }
 
-    /// Wraps one demuxed packet as a compressed CMSampleBuffer. Video keeps
-    /// decode timestamps (packets arrive in decode order; the downstream
-    /// decoder uses them for B-frame dependencies) and marks non-keyframes
-    /// NotSync so post-seek behavior is correct.
+    /// Wraps one packet as a compressed CMSampleBuffer. Video keeps decode
+    /// timestamps (for B-frames) and marks non-keyframes NotSync.
     static func sampleBuffer(
         packet: UnsafeMutablePointer<AVPacket>,
         formatDescription: CMFormatDescription,
@@ -567,9 +508,7 @@ nonisolated enum SampleBufferFactory {
         let size: Int
         let blockBuffer: CMBlockBuffer?
         if let payloadOverride {
-            // A rewritten payload (the DoVi EL strip) no longer
-            // aliases FFmpeg's allocation, so it is copied into a
-            // CoreMedia-owned block instead of retained.
+            // A rewritten payload is not FFmpeg's allocation: copy it.
             size = payloadOverride.count
             blockBuffer = copiedBlockBuffer(payloadOverride)
         } else {
@@ -585,9 +524,7 @@ nonisolated enum SampleBufferFactory {
             if !scaled.overflow {
                 return CMTime(value: scaled.partialValue, timescale: timeScale)
             }
-            // Media timestamps should never approach Int64 overflow in a
-            // real file, but preserve the old floating-point fallback for a
-            // malformed/extreme stream instead of rejecting the sample.
+            // Overflow: fall back to floating point, not rejection.
             let seconds = Double(value) * Double(timeBase.num) / Double(timeScale)
             return CMTime(seconds: seconds, preferredTimescale: 90_000)
         }
@@ -624,20 +561,11 @@ nonisolated enum SampleBufferFactory {
             sampleBufferOut: &sampleBuffer
         ) == noErr, let sampleBuffer else { return nil }
 
-        // Frame dependencies.
-        //
-        // CMSampleBuffer.h: "A frame is considered droppable if and only if
-        // kCMSampleAttachmentKey_IsDependedOnByOthers is present and set to
-        // kCFBooleanFalse." Absent means NOT droppable — the opposite of what
-        // 4e2ad5f assumed. Setting it false on AV_PKT_FLAG_DISPOSABLE frames
-        // licenses the renderer's pre-decode dropper for every non-reference
-        // frame: 67% of the stream on the title measuring 10.7% steady loss at
-        // a matched display rate with full queues. The sim A/B showing no
-        // difference ran where that dropper never engages.
-        //
-        // So it is opt-in (debug.markDroppableFrames). By default NotSync and
-        // DependsOnOthers stay — decode dependencies, not droppability — and
-        // IsDependedOnByOthers is set true for reference frames only.
+        // Frame dependencies. IsDependedOnByOthers = false marks a frame
+        // droppable (absent does not), and lets the renderer drop every
+        // non-reference frame: 67% of one stream, with 10.7% visible loss.
+        // So false is opt-in (debug.markDroppableFrames); by default it is
+        // set true on reference frames only.
         if isVideo,
            let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
            CFArrayGetCount(attachments) > 0 {
@@ -663,12 +591,9 @@ nonisolated enum SampleBufferFactory {
         return sampleBuffer
     }
 
-    /// Whether a sample can start a decoder, as the sample itself says it.
-    ///
-    /// The answer to the question `PlaybackRendererStartPolicy` asks, read
-    /// back out of the attachment written above. Absent means sync, which is
-    /// also the right reading for a decoded frame carrying no attachments at
-    /// all: nothing the renderer has to decode, nothing it can refuse.
+    /// Whether a sample can start a decoder, from its NotSync attachment,
+    /// for `PlaybackRendererStartPolicy`. Absent means sync, which also suits
+    /// decoded frames.
     static func isSyncSample(_ buffer: CMSampleBuffer) -> Bool {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
             buffer,
@@ -678,9 +603,8 @@ nonisolated enum SampleBufferFactory {
         return first[kCMSampleAttachmentKey_NotSync] as? Bool != true
     }
 
-    /// The payload copied into a CoreMedia-owned block (same shape as
-    /// `AudioDecoder.makeSampleBuffer` uses for LPCM — see the leak note
-    /// there before ever "optimizing" this into a handoff).
+    /// The payload copied into a CoreMedia-owned block. Read the leak note
+    /// on `AudioDecoder.makeSampleBuffer` before making this a handoff.
     private static func copiedBlockBuffer(_ data: Data) -> CMBlockBuffer? {
         var blockBuffer: CMBlockBuffer?
         guard CMBlockBufferCreateWithMemoryBlock(
@@ -713,11 +637,8 @@ nonisolated enum SampleBufferFactory {
         size: Int
     ) -> CMBlockBuffer? {
         guard size > 0 else { return nil }
-        // Keep only a reference to FFmpeg's underlying payload allocation.
-        // Cloning the whole AVPacket is already zero-copy for its main data,
-        // but still allocates a packet object and copies all packet side data
-        // for every frame. CoreMedia needs the bytes and their lifetime, not
-        // that metadata, so an AVBufferRef is the narrowest ownership token.
+        // Hold just an AVBufferRef: cloning the packet would also allocate
+        // and copy its side data every frame.
         if packet.pointee.buf == nil, av_packet_make_refcounted(packet) < 0 {
             return nil
         }
@@ -751,8 +672,7 @@ nonisolated enum SampleBufferFactory {
             blockBufferOut: &blockBuffer
         )
         guard blockStatus == noErr, let blockBuffer else {
-            // Ownership transfers to CoreMedia only after successful block
-            // creation; balance the reference on the failure path.
+            // CoreMedia owns it only on success.
             av_buffer_unref(&ownedBuffer)
             return nil
         }
@@ -808,17 +728,13 @@ nonisolated enum SampleBufferFactory {
         }
     }
 
-    /// The stream's Dolby Vision configuration, when the container carries
-    /// one — the demuxer uses it to decide whether a profile 7 stream gets
-    /// converted to profile 8.1 or stripped to the HDR10 fallback (formerly
-    /// a strip-only experiment).
+    /// The stream's Dolby Vision configuration, if the container has one.
     static func doviConfiguration(codecpar: UnsafeMutablePointer<AVCodecParameters>) -> AVDOVIDecoderConfigurationRecord? {
         sideData(codecpar, type: AV_PKT_DATA_DOVI_CONF)
     }
 
-    /// Reads one typed side-data entry off the codec parameters (FFmpeg
-    /// stores container-level HDR/DoVi metadata there after
-    /// avformat_find_stream_info).
+    /// One typed side-data entry from the codec parameters, where FFmpeg
+    /// keeps container HDR/DoVi metadata.
     static func sideData<T>(_ codecpar: UnsafeMutablePointer<AVCodecParameters>, type: AVPacketSideDataType) -> T? {
         guard let entry = av_packet_side_data_get(
             codecpar.pointee.coded_side_data,
@@ -830,10 +746,8 @@ nonisolated enum SampleBufferFactory {
         return UnsafeRawPointer(data).loadUnaligned(as: T.self)
     }
 
-    /// Serializes AVMasteringDisplayMetadata as the 24-byte big-endian
-    /// payload CoreMedia expects (SEI mastering_display_colour_volume /
-    /// mdcv box): primaries in G,B,R order at 0.00002 steps, luminance at
-    /// 0.0001 cd/m².
+    /// The 24-byte big-endian mdcv payload: primaries in G,B,R order at
+    /// 0.00002 steps, luminance at 0.0001 cd/m².
     static func masteringDisplayColorVolume(_ codecpar: UnsafeMutablePointer<AVCodecParameters>) -> Data? {
         guard let metadata: AVMasteringDisplayMetadata = sideData(codecpar, type: AV_PKT_DATA_MASTERING_DISPLAY_METADATA),
               metadata.has_primaries != 0, metadata.has_luminance != 0 else {
@@ -892,9 +806,8 @@ nonisolated enum SampleBufferFactory {
         return payload
     }
 
-    /// The 24-byte DOVIDecoderConfigurationRecord (dvcC/dvvC payload),
-    /// bit-for-bit the layout FFmpeg's own muxers emit in
-    /// ff_isom_put_dvcc_dvvc.
+    /// The 24-byte dvcC/dvvC payload, as FFmpeg's ff_isom_put_dvcc_dvvc
+    /// writes it.
     private static func doviConfigurationBox(_ record: AVDOVIDecoderConfigurationRecord) -> Data {
         var payload = Data(count: 24)
         payload[0] = record.dv_version_major

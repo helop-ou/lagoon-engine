@@ -3,18 +3,12 @@ import Foundation
 import Libavcodec
 import Libavutil
 
-/// One compressed video access unit, detached from the demuxer's reusable
-/// packet so it can outlive the read that produced it.
-///
-/// `av_packet_clone` shares FFmpeg's existing reference-counted buffer rather
-/// than copying the payload, so handing a 4K access unit to another thread
-/// costs an atomic increment and one small allocation.
+/// A compressed video access unit detached from the demuxer's reusable
+/// packet. `av_packet_clone` shares the refcounted payload, so it is cheap.
 nonisolated final class SoftwareVideoPacket: @unchecked Sendable {
     let packet: UnsafeMutablePointer<AVPacket>
-    /// Container time (already origin-corrected) of this access unit, and
-    /// where it ends. The demux loop keeps the same stall/end bookkeeping it
-    /// kept when it held the decoded frame itself; decoded output carries its
-    /// own grid-snapped stamps and never consults these.
+    /// Origin-corrected container time and end, for the demux loop's
+    /// bookkeeping only. Decoded frames carry their own snapped stamps.
     let presentationSeconds: Double?
     let endSeconds: Double?
 
@@ -42,17 +36,10 @@ nonisolated final class SoftwareVideoPacket: @unchecked Sendable {
 }
 
 /// Runs `SoftwareVideoDecoder` on its own queue so reading and decoding
-/// overlap.
+/// overlap, which 4K AV1 needs.
 ///
-/// `FFmpegDemuxer.readNext()` used to call the decoder inline, so the demux
-/// loop stopped reading for as long as a frame took and both queues drained.
-/// That cost nothing visible while the software path carried only SD and HD
-/// MPEG-2, VC-1 and MPEG-4, which decode in a fraction of a frame period. 4K
-/// AV1 is the first content where the serialisation itself is the problem.
-///
-/// Shaped like `VideoToolboxDecoder`: the demux loop submits and moves on,
-/// frames arrive through an output handler, failures through an error
-/// handler. Backpressure stays with the demux loop, which counts
+/// Shaped like `VideoToolboxDecoder`: submit and move on; frames and errors
+/// come back through handlers. The demux loop owns backpressure and counts
 /// `pendingCount` as video already asked for (`DemuxBackpressurePolicy`).
 nonisolated final class SoftwareVideoDecodeStage: @unchecked Sendable {
     typealias OutputHandler = @Sendable (CMSampleBuffer) -> Void
@@ -65,18 +52,16 @@ nonisolated final class SoftwareVideoDecodeStage: @unchecked Sendable {
     )
     private let outputHandler: OutputHandler
     private let errorHandler: ErrorHandler
-    /// Called after every packet leaves the stage, so whoever is blocked on
-    /// the combined "video already asked for" count can re-evaluate it.
+    /// Called as each packet leaves, so a waiter on the pending count can
+    /// re-check it.
     private let packetCompletionHandler: @Sendable () -> Void
 
-    /// A condition rather than a plain lock: priming has to be able to wait
-    /// for the decoder to catch up, and teardown has to be able to end that
-    /// wait.
+    /// A condition so priming can wait for the decoder and teardown can end
+    /// that wait.
     private let condition = NSCondition()
     private var mailbox: [SoftwareVideoPacket] = []
     private var inFlight = false
-    /// Bumped by every seek and by teardown. Work dispatched before the bump
-    /// discards itself rather than publishing frames from the old position.
+    /// Bumped by seek and teardown; older work discards its frames.
     private var generation: UInt64 = 0
     private var accepting = true
     private var failed = false
@@ -98,18 +83,14 @@ nonisolated final class SoftwareVideoDecodeStage: @unchecked Sendable {
         decoder.resetDetailedTimings()
     }
 
-    /// Packets submitted but not yet decoded, including the one in the
-    /// decoder right now. The demux loop adds this to the decoded queue's
-    /// depth: both are video it has read and the renderer has not shown.
+    /// Packets submitted but not yet decoded, including the one in flight.
     var pendingCount: Int {
         condition.withLock { mailbox.count + (inFlight ? 1 : 0) } + decoder.pendingOutputCount
     }
 
-    /// Blocks until fewer than `target` packets are outstanding, or until the
-    /// stage can no longer make progress (a decode failure, or teardown).
-    /// Only the priming pass uses this: it may not start playback on an empty
-    /// renderer, and with decode running off the demux queue the cushion it
-    /// is waiting for can be entirely inside the decoder.
+    /// Blocks until fewer than `target` packets are outstanding, or the stage
+    /// fails or is torn down. For priming, whose cushion may be entirely
+    /// inside the decoder.
     func waitUntilPendingBelow(_ target: Int) {
         condition.lock()
         while mailbox.count + (inFlight ? 1 : 0) >= target, accepting, !failed {
@@ -144,10 +125,9 @@ nonisolated final class SoftwareVideoDecodeStage: @unchecked Sendable {
         }
     }
 
-    /// A seek discards everything queued and resets libavcodec's reference
-    /// frames, so the next keyframe starts a clean dependency chain. Returns
-    /// once the decoder is quiet, which is what lets the caller flush the
-    /// render queues behind it without racing a frame still in flight.
+    /// Seek: discards queued packets and flushes libavcodec. Returns once the
+    /// decoder is quiet, so the caller can flush render queues without racing
+    /// a frame in flight.
     func reset() {
         condition.withLock {
             generation &+= 1
@@ -158,10 +138,8 @@ nonisolated final class SoftwareVideoDecodeStage: @unchecked Sendable {
         queue.sync { decoder.flush() }
     }
 
-    /// End of file: everything submitted has to be decoded, and then the
-    /// frames libavcodec is still holding (frame threading always retains
-    /// some) have to come out, before the video queue may be declared
-    /// finished.
+    /// End of file: decodes everything submitted and drains the frames
+    /// libavcodec's frame threading still holds.
     func finish() throws {
         var thrown: Error?
         queue.sync {
@@ -177,8 +155,8 @@ nonisolated final class SoftwareVideoDecodeStage: @unchecked Sendable {
         if let thrown { throw thrown }
     }
 
-    /// Teardown. Stops accepting work and waits out the frame being decoded,
-    /// so the decoder is not released underneath it.
+    /// Teardown: stops accepting work and waits out the frame in flight, so
+    /// the decoder is not released under it.
     func invalidate() {
         condition.withLock {
             accepting = false
@@ -198,13 +176,11 @@ nonisolated final class SoftwareVideoDecodeStage: @unchecked Sendable {
             return mailbox.removeFirst()
         }
         guard let packet else { return }
-        // The queue is long-lived, so per-frame Core Media temporaries need
-        // an inner pool for the same reason the demux loop's step does.
+        // Long-lived queue: per-frame Core Media temporaries need a pool.
         autoreleasepool {
             do {
-                // A seek that lands while a frame is in libavcodec, or on
-                // the GPU, makes it the old position's picture. Drop it at
-                // delivery, whenever that is.
+                // A seek during decode or GPU work makes this frame stale;
+                // drop it at delivery.
                 try decoder.decode(packet: packet.packet) { [weak self] frame in
                     guard let self,
                           self.condition.withLock({ generation == self.generation }) else { return }
