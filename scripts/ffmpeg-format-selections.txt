@@ -1,0 +1,161 @@
+# Which muxers, demuxers, encoders and decoders libavformat is built with.
+#
+# Read by scripts/build-ffmpeg-format.py and passed to configure verbatim,
+# after the --disable-* lines have switched the whole category off. Order is
+# significant: a --disable-*s line must precede the --enable-* lines it scopes.
+#
+# Provenance: this is FFmpeg n8.1.2's set as selected by MPVKit 1.0.0, which is
+# where Libavcodec, Libavutil and Libswresample still come from. Matching it
+# keeps this build ABI-compatible with those three. It was captured by parsing
+# FFMPEG_CONFIGURATION out of MPVKit's own Libavformat build, which is what
+# this script used to download on every run; committing it is what lets the
+# build stand on its own. The two libdav1d/libuavs3d decoder flags in that set
+# are deliberately absent: this repository builds dav1d itself, and both are
+# wired up through Package.swift rather than through libavformat.
+#
+# To regenerate after an FFmpeg bump, build once and read the list back out of
+# the artifact, which records every flag it was configured with:
+#
+#   python3 - <<'EOF'
+#   import re, shlex
+#   from pathlib import Path
+#   p = "Artifacts/Libavformat.xcframework/ios-arm64/Libavformat.framework/Headers/config.h"
+#   c = re.search(r'^#define FFMPEG_CONFIGURATION "(.*)"$', Path(p).read_text(), re.M)[1]
+#   print("\n".join(f for f in shlex.split(c) if f.startswith((
+#       "--disable-muxers", "--enable-muxer=", "--disable-demuxers", "--enable-demuxer=",
+#       "--disable-encoders", "--enable-encoder=", "--disable-decoders", "--enable-decoder="))))
+#   EOF
+#
+# Adding a codec here is not enough on its own to play it: see docs/codec-support.md.
+
+--disable-muxers
+--enable-muxer=flac
+--enable-muxer=dash
+--enable-muxer=hevc
+--enable-muxer=m4v
+--enable-muxer=matroska
+--enable-muxer=mov
+--enable-muxer=mp4
+--enable-muxer=mpegts
+--enable-muxer=webm*
+--disable-encoders
+--enable-encoder=aac
+--enable-encoder=alac
+--enable-encoder=flac
+--enable-encoder=pcm*
+--enable-encoder=movtext
+--enable-encoder=mpeg4
+--enable-encoder=h264_videotoolbox
+--enable-encoder=hevc_videotoolbox
+--enable-encoder=prores
+--enable-encoder=prores_videotoolbox
+--disable-demuxers
+--enable-demuxer=aac
+--enable-demuxer=ac3
+--enable-demuxer=aiff
+--enable-demuxer=amr
+--enable-demuxer=ape
+--enable-demuxer=asf
+--enable-demuxer=ass
+--enable-demuxer=av1
+--enable-demuxer=avi
+--enable-demuxer=caf
+--enable-demuxer=concat
+--enable-demuxer=dash
+--enable-demuxer=data
+--enable-demuxer=dv
+--enable-demuxer=eac3
+--enable-demuxer=flac
+--enable-demuxer=flv
+--enable-demuxer=h264
+--enable-demuxer=hevc
+--enable-demuxer=hls
+--enable-demuxer=live_flv
+--enable-demuxer=loas
+--enable-demuxer=m4v
+--enable-demuxer=matroska
+--enable-demuxer=mov
+--enable-demuxer=mp3
+--enable-demuxer=mpeg*
+--enable-demuxer=ogg
+--enable-demuxer=rm
+--enable-demuxer=rtsp
+--enable-demuxer=rtp
+--enable-demuxer=srt
+--enable-demuxer=webvtt
+--enable-demuxer=vc1
+--enable-demuxer=wav
+--enable-demuxer=webm_dash_manifest
+--disable-decoders
+--enable-decoder=av1
+--enable-decoder=dca
+--enable-decoder=dxv
+--enable-decoder=ffv1
+--enable-decoder=ffvhuff
+--enable-decoder=flv
+--enable-decoder=h263
+--enable-decoder=h263i
+--enable-decoder=h263p
+--enable-decoder=h264
+--enable-decoder=hap
+--enable-decoder=hevc
+--enable-decoder=huffyuv
+--enable-decoder=indeo5
+--enable-decoder=mjpeg
+--enable-decoder=mjpegb
+--enable-decoder=mpeg*
+--enable-decoder=mts2
+--enable-decoder=prores
+--enable-decoder=mpeg4
+--enable-decoder=mpegvideo
+--enable-decoder=rv10
+--enable-decoder=rv20
+--enable-decoder=rv30
+--enable-decoder=rv40
+--enable-decoder=snow
+--enable-decoder=svq3
+--enable-decoder=tscc
+--enable-decoder=txd
+--enable-decoder=wmv1
+--enable-decoder=wmv2
+--enable-decoder=wmv3
+--enable-decoder=vc1
+--enable-decoder=vp6
+--enable-decoder=vp6a
+--enable-decoder=vp6f
+--enable-decoder=vp7
+--enable-decoder=vp8
+--enable-decoder=vp9
+--enable-decoder=aac*
+--enable-decoder=ac3*
+--enable-decoder=adpcm*
+--enable-decoder=alac*
+--enable-decoder=amr*
+--enable-decoder=ape
+--enable-decoder=cook
+--enable-decoder=dca
+--enable-decoder=dolby_e
+--enable-decoder=eac3*
+--enable-decoder=flac
+--enable-decoder=mp1*
+--enable-decoder=mp2*
+--enable-decoder=mp3*
+--enable-decoder=opus
+--enable-decoder=pcm*
+--enable-decoder=sonic
+--enable-decoder=truehd
+--enable-decoder=tta
+--enable-decoder=vorbis
+--enable-decoder=wma*
+--enable-decoder=ass
+--enable-decoder=ccaption
+--enable-decoder=dvbsub
+--enable-decoder=dvdsub
+--enable-decoder=mpl2
+--enable-decoder=movtext
+--enable-decoder=pgssub
+--enable-decoder=srt
+--enable-decoder=ssa
+--enable-decoder=subrip
+--enable-decoder=xsub
+--enable-decoder=webvtt
