@@ -17,12 +17,12 @@ implementation. Some describe experiments on a specific build, and the code
 may have moved on since. Read them for reasoning and evidence; read the guides
 for the contract.
 
-`Artifacts/` carries the vendored native libraries and their provenance. Each
-records where it came from and how to rebuild it:
-[libavformat](../Artifacts/Libavformat.README.md) and
-[libdovi](../Artifacts/Libdovi.README.md). libavformat and dav1d are built by
-this repository; libdovi is vendored, because rebuilding it needs a Rust
-toolchain this repository does not carry.
+`Artifacts/` carries the native libraries and their provenance. Each records
+where it came from and how to rebuild it: [FFmpeg](../Artifacts/FFmpeg.README.md),
+[libdovi](../Artifacts/Libdovi.README.md), and the header comment of each
+`scripts/build-*` script. Everything is built by this repository except
+libdovi, which is vendored because rebuilding it needs a Rust toolchain this
+repository does not carry.
 
 ## Keeping this clean
 
