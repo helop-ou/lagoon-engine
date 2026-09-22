@@ -8,7 +8,9 @@ public nonisolated struct MediaRequestAuthorization: Sendable, Equatable {
     /// Scheme, host and effective port are what matter; path and query are
     /// ignored when comparing against a request's URL.
     public let origin: URL
+    /// The header to send, usually `Authorization`.
     public let headerName: String
+    /// What to send in it. Never logged, and never put in a URL.
     public let headerValue: String
     /// Query item names (compared lowercased) that carry the same credential in the URL.
     public let queryNames: Set<String>

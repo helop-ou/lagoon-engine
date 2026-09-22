@@ -47,7 +47,7 @@ public nonisolated enum PlaybackRestartPointPolicy {
 /// So the pump asks this first. What the container calls a keyframe is
 /// admitted — keeping the open-GOP I picture the demuxer hands over —
 /// and anything else waits for one.
-public nonisolated enum PlaybackRendererStartPolicy {
+nonisolated enum PlaybackRendererStartPolicy {
     /// How many samples may be dropped looking for a start point before the
     /// pump gives up and enqueues what it has.
     ///

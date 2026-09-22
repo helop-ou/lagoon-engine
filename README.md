@@ -44,6 +44,74 @@ iOS 26 and tvOS 26, Xcode 26.6. Apple silicon to build the native libraries.
 The package carries its own FFmpeg build, so there is nothing else to fetch or
 configure.
 
+## Using it
+
+Make an engine, give it somewhere to draw, tell it what to open, and play.
+
+```swift
+import AVFoundation
+import LagoonEngine
+
+let engine = SampleBufferPlayerEngine()
+
+// The engine draws into a layer you own and place in your view hierarchy.
+let displayLayer = AVSampleBufferDisplayLayer()
+engine.attach(displayLayer: displayLayer)
+
+// Called once the first frame is on screen.
+engine.onPlaybackStarted = { print("playing") }
+
+// Called when the engine gives up. `cause` is either .undecodable — this
+// device cannot decode these samples, only a re-encode would help — or
+// .delivery, meaning the same media might play if fetched another way.
+engine.onError = { failure in
+    print(failure.cause, failure.message)
+}
+
+engine.prepare(
+    url: url,
+    startSeconds: 0,
+    initialAudioOrdinal: nil   // nil lets the container decide
+)
+engine.play()
+```
+
+`prepare` returns immediately; opening and decoding happen on their own
+queues. Everything else is what you would expect: `pause()`, `seek(to:)`,
+`setRate(_:)`, `selectAudioTrack(id:)`, `selectSubtitleTrack(id:)`, and
+`shutdown()` when you are done. Read `audioTracks` and `subtitleTracks`
+once playback has started to see what the file offers.
+
+### Fetching media that needs a credential
+
+Pass a `MediaRequestAuthorization` and the engine sends the header with
+every request it makes, including HLS playlists and segments. Credentials
+never go into a URL and are never logged.
+
+```swift
+engine.prepare(
+    url: url,
+    startSeconds: 0,
+    initialAudioOrdinal: nil,
+    authorization: MediaRequestAuthorization(
+        origin: serverURL,
+        headerName: "Authorization",
+        headerValue: token
+    )
+)
+```
+
+### Talking to it through the protocol
+
+`SampleBufferPlayerEngine` conforms to `PlayerEngine`, which is everything
+a player UI needs and nothing about FFmpeg. Bind your controls to that
+rather than to the class. If you are also drawing a HUD or collecting
+crash reports, `PlayerEngineDiagnostics` is the optional second surface
+carrying queue depths, frame counters and decode details.
+
+Diagnostics are off unless you ask for them — install a sink with
+`EngineDiagnostics.use(_:)`. The default discards everything.
+
 ## Building
 
 ```

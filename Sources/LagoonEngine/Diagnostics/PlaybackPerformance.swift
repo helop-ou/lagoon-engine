@@ -15,7 +15,7 @@ public enum PlaybackPerformance {
 /// Resource-level playback accounting. A process footprint by itself cannot
 /// distinguish allocator caching from a player that is still decoding after
 /// its cover disappeared, so lifecycle benchmarks use both signals.
-public nonisolated struct PlaybackLifecycleSnapshot: Sendable {
+nonisolated public struct PlaybackLifecycleSnapshot: Sendable {
     public let liveEngines: Int
     public let liveControllers: Int
     public let activeDemuxLoops: Int
@@ -303,7 +303,7 @@ public nonisolated enum DecodedFrameMemory {
     }
 }
 
-public nonisolated struct VideoPerformanceSnapshot {
+nonisolated public struct VideoPerformanceSnapshot {
     public let totalFrames: Int
     public let droppedFrames: Int
     public let corruptedFrames: Int

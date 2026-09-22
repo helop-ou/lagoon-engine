@@ -50,7 +50,7 @@ public nonisolated enum PlaybackBufferPolicy {
 }
 
 /// A half-open byte interval stored in a playback cache file.
-public nonisolated struct PlaybackByteRange: Equatable, Sendable {
+nonisolated public struct PlaybackByteRange: Equatable, Sendable {
     public let lowerBound: Int64
     public let upperBound: Int64
 
@@ -198,7 +198,7 @@ public nonisolated struct PlaybackBufferedRange: Equatable, Hashable, Sendable {
 /// Direct files are commonly variable bitrate, so this anchor is required
 /// to project sparse byte ranges onto the scrubber without putting the hot
 /// cache island visibly ahead of (or behind) the playhead.
-public nonisolated struct PlaybackTimelineAnchor: Equatable, Sendable {
+nonisolated public struct PlaybackTimelineAnchor: Equatable, Sendable {
     public let byteOffset: Int64
     public let timeFraction: Double
 }
@@ -370,7 +370,7 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
 /// Shared accounting for caches made of multiple sparse files. Reservations
 /// happen before a write, so aggregate stored bytes cannot cross the cap even
 /// when FFmpeg opens or prefetches several HLS resources concurrently.
-public nonisolated final class PlaybackCacheStorageBudget: @unchecked Sendable {
+nonisolated public final class PlaybackCacheStorageBudget: @unchecked Sendable {
     private let byteLimit: Int64
     private let lock = NSLock()
     private var usedBytes: Int64 = 0
@@ -400,7 +400,7 @@ public nonisolated final class PlaybackCacheStorageBudget: @unchecked Sendable {
     }
 }
 
-public nonisolated struct PlaybackRangeResponse: Sendable {
+nonisolated public struct PlaybackRangeResponse: Sendable {
     public let data: Data
     public let offset: Int64
     public let totalLength: Int64?
@@ -414,7 +414,7 @@ public nonisolated struct PlaybackRangeResponse: Sendable {
     }
 }
 
-public nonisolated protocol PlaybackRangeLoading: AnyObject, Sendable {
+nonisolated public protocol PlaybackRangeLoading: AnyObject, Sendable {
     func load(url: URL, range: PlaybackByteRange, priority: Float) throws -> PlaybackRangeResponse
     func cancelAll()
     /// A foreground read has caught up with an in-flight low-priority
@@ -432,7 +432,7 @@ extension PlaybackRangeLoading {
 /// failed (and should be retried after a backoff) from one that found
 /// nothing left to fetch (the file is complete under the cap, or the
 /// window is full); a Boolean collapsed both into "stop".
-public nonisolated enum PlaybackPrefetchOutcome: Equatable, Sendable {
+nonisolated public enum PlaybackPrefetchOutcome: Equatable, Sendable {
     /// A chunk landed: the bytes the request returned and how long that one
     /// request took, so pacing measures the prefetch itself rather than the
     /// cache's aggregate including foreground traffic.
@@ -806,7 +806,7 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
 /// One item's sparse, discardable cache file. Reads happen on FFmpeg's demux
 /// queue. File/range bookkeeping is serialized, while low-priority prefetch
 /// and a foreground seek may fetch independently when foreground must win.
-public nonisolated final class PlaybackCacheScope: @unchecked Sendable {
+nonisolated public final class PlaybackCacheScope: @unchecked Sendable {
     public let itemID: String
     public let sourceURL: URL
     public let fileURL: URL
@@ -1431,7 +1431,7 @@ public nonisolated final class PlaybackCacheScope: @unchecked Sendable {
 /// at once; a lease prevents the bounded LRU from evicting an AVIO context
 /// that is still reading. Playlists never enter this cache because Jellyfin
 /// can update them while a transcode is still being produced.
-public nonisolated final class HLSPlaybackCacheLease: @unchecked Sendable {
+nonisolated public final class HLSPlaybackCacheLease: @unchecked Sendable {
     public let scope: PlaybackCacheScope
 
     private weak var owner: HLSPlaybackCacheScope?
@@ -1472,7 +1472,7 @@ public nonisolated final class HLSPlaybackCacheLease: @unchecked Sendable {
 /// inactive file handles are closed so a long movie cannot exhaust tvOS file
 /// descriptors. Closed entries are evicted LRU; active AVIO leases are never
 /// removed underneath FFmpeg.
-public nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
+nonisolated public final class HLSPlaybackCacheScope: @unchecked Sendable {
     public let itemID: String
     public let sourceURL: URL
 

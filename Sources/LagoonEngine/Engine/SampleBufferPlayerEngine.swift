@@ -3833,7 +3833,7 @@ nonisolated enum PlaybackEndBoundary {
     }
 }
 
-public nonisolated enum DemuxBackpressureDecision: Equatable {
+nonisolated public enum DemuxBackpressureDecision: Equatable {
     case read
     case waitForVideo(below: Int)
     case waitForAudio(below: Int)

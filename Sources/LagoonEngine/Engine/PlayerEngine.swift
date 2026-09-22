@@ -9,6 +9,9 @@ import Observation
 /// room for a second implementation.
 @MainActor
 public protocol PlayerEngine: AnyObject, Observable {
+    /// Where playback is, in seconds. Moves the instant a scrub commits,
+    /// before anything has been demuxed — use `clockPosition` if you need the
+    /// position actually being presented.
     var timePosition: Double { get }
     /// The media clock as the synchronizer actually reports it. Unlike
     /// `timePosition`, which `seek(to:)` moves optimistically the instant a
@@ -16,8 +19,11 @@ public protocol PlayerEngine: AnyObject, Observable {
     /// group transport reports where playback *is* rather than where the
     /// viewer just asked it to go.
     var clockPosition: Double { get }
+    /// How long the media is, in seconds. Zero until the container says.
     var duration: Double { get }
+    /// Whether the viewer has paused. A stall is not a pause; see `isBuffering`.
     var isPaused: Bool { get }
+    /// Whether playback is stopped waiting for data rather than for the viewer.
     var isBuffering: Bool { get }
     /// Requested media-time rate. Pausing stops the clock without discarding
     /// this value, so Play resumes at the viewer's selected speed.
@@ -28,8 +34,12 @@ public protocol PlayerEngine: AnyObject, Observable {
     /// AVFoundation audio lifecycle recoveries, exposed to the launch-gated
     /// integration probe so route and media-service events are measurable.
     var audioRendererRecoveryCount: Int { get }
+    /// How many times the engine has rebuilt itself after the system reset
+    /// its media services. A rising count on one playback means trouble.
     var mediaServicesResetRecoveryCount: Int { get }
+    /// The picture's size in pixels, or nil before the first frame is decoded.
     var videoSize: CGSize? { get }
+    /// Every audio track the container offers, in the order it lists them.
     var audioTracks: [PlayerTrack] { get }
     /// Debug/regression label for the renderer input, not a user-facing
     /// codec name. Implementations without a distinct path may use unknown.
@@ -52,21 +62,32 @@ public protocol PlayerEngine: AnyObject, Observable {
     /// Off by default (Settings → Advanced → Playback Diagnostics →
     /// Buffer on Audio Starvation). Read once when the engine is created.
     var buffersOnAudioStarvation: Bool { get }
+    /// How far ahead of the clock the audio renderer is holding samples.
+    /// Falling toward zero is the early sign of a starving audio path.
     var audioDeliveryLeadSeconds: Double { get }
+    /// Whether the audio renderer has enough to start without stuttering.
     var audioRendererReadyForPlayback: Bool { get }
     #if DEBUG
     /// Off-by-default fault-injection state exposed to the regression probe.
     var audioDeliverySuspendedForDiagnostics: Bool { get }
+    /// Whether delivery to the demuxer is held. Test hook; false in normal use.
     var demuxDeliverySuspendedForDiagnostics: Bool { get }
     #endif
+    /// Decoded video frames waiting to be shown.
     var videoQueueCountDiagnostic: Int { get }
+    /// The largest that backlog has been during this playback.
     var maximumVideoBacklogDiagnostic: Int { get }
+    /// Where the backlog is capped. Reaching it means the demuxer is told
+    /// to wait.
     var videoQueueHardLimitDiagnostic: Int { get }
     /// Compressed video parked past the decoded limit while the demuxer
     /// reads on for audio: current count and the session peak.
     var videoIntakeCountDiagnostic: Int { get }
+    /// The largest that intake has been during this playback.
     var maximumVideoIntakeDiagnostic: Int { get }
+    /// How many times playback has restarted itself after a stall.
     var stallReprimeCount: Int { get }
+    /// Every subtitle track on offer, embedded and side-loaded together.
     var subtitleTracks: [PlayerTrack] { get }
     var subtitleLoadState: SubtitleLoadState { get }
     /// Changes on every selection intent, even while a sidecar is loading.
@@ -243,13 +264,24 @@ public nonisolated struct PlayerTrack: Identifiable, Equatable {
         case subtitle
     }
 
+    /// The engine's own handle for this track. Pass it back to select the
+    /// track; it means nothing outside this playback.
     public let engineID: Int
+    /// Whether this is audio or subtitles.
     public let kind: Kind
+    /// What to show a viewer. Already disambiguated, so two tracks in the
+    /// same language read differently.
     public let displayName: String
+    /// Whether this track is the one currently playing.
     public let isSelected: Bool
+    /// The track's language, or nil when the container does not say.
     public let languageTag: String?
+    /// Whether the track is marked as forced — signs and songs rather than
+    /// dialogue.
     public let isForced: Bool
+    /// Whether the track is marked for viewers who are deaf or hard of hearing.
     public let isHearingImpaired: Bool
+    /// Where the track came from: inside the file, side-loaded, or downloaded.
     public let source: Source
 
     public enum Source: String, Equatable {
@@ -295,8 +327,12 @@ public nonisolated struct PlayerTrackMetadata: Equatable, Sendable {
         self.isHearingImpaired = isHearingImpaired
     }
 
+    /// The track's language, or nil when the container does not say.
     public let languageTag: String?
+    /// Whether the track is marked as forced — signs and songs rather than
+    /// dialogue.
     public let isForced: Bool
+    /// Whether the track is marked for viewers who are deaf or hard of hearing.
     public let isHearingImpaired: Bool
 }
 
@@ -359,7 +395,9 @@ public nonisolated struct PlayerChapter: Identifiable, Equatable {
 
     /// Position in the chapter list, which is also its display number.
     public let id: Int
+    /// What to call the chapter, if the container named it.
     public let name: String?
+    /// Where the chapter begins, in seconds.
     public let start: Double
 }
 
@@ -447,6 +485,7 @@ public nonisolated struct PlayerItemInfo: Equatable {
     public let title: String
     /// Small line above the headline, e.g. "S1 E1 · Freedom Day".
     public let subtitle: String?
+    /// A synopsis to show while the picture is loading, if there is one.
     public let overview: String?
     /// Infuse-style spaced tokens: runtime, year, size, "HEVC (4K DV)",
     /// "Dolby Digital+ 5.1", bitrate, fps, genres, rating.
@@ -454,6 +493,7 @@ public nonisolated struct PlayerItemInfo: Equatable {
     /// The Video tab's single read-only line, e.g.
     /// "HEVC · 4K DV · 3840×1600 · 23.976 fps".
     public let videoSummary: String?
+    /// Artwork for the system's Now Playing panel, if there is any.
     public let posterURL: URL?
     /// Empty whenever the server has no chapters for the item — the ticks
     /// and chapter jumps simply don't appear.
@@ -490,16 +530,23 @@ public nonisolated struct NextUpEpisode: Equatable {
 /// A subtitle that lives outside the media file (Jellyfin external stream)
 /// for the engine to side-load at start.
 public nonisolated struct ExternalSubtitleTrack {
+    /// Where to fetch the subtitle file.
     public let url: URL
     /// Provider downloads can be played even while Jellyfin's asynchronous
     /// library refresh has not produced a persistent DeliveryUrl yet.
     public let preloadedData: Data?
+    /// What to call it in a track list.
     public let title: String?
+    /// Its language, if known.
     public let language: String?
     /// Jellyfin's default-subtitle choice pointed at this external stream.
     public let select: Bool
+    /// Whether the track is marked as forced — signs and songs rather than
+    /// dialogue.
     public let isForced: Bool
+    /// Whether the track is marked for viewers who are deaf or hard of hearing.
     public let isHearingImpaired: Bool
+    /// Whether the file is already on disk rather than to be fetched.
     public let isDownloaded: Bool
 
     public init(
