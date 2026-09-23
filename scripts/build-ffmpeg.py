@@ -35,6 +35,10 @@ PATCHES = sorted((ROOT / "Patches").glob("*.patch"))
 VERSION = "8.1.2"
 SOURCE_URL = "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2"
 SOURCE_SHA = "9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7"
+# FFmpeg embeds its configure line in every library (avformat_configuration),
+# so the prefix must not name the build machine's work directory. Headers are
+# installed under DESTDIR instead.
+PREFIX = "/lagoon-ffmpeg"
 SELECTIONS = Path(__file__).resolve().parent / "ffmpeg-selections.txt"
 # Framework name -> FFmpeg's directory for it. One configure builds all four,
 # so they share one config.h and cannot drift from each other.
@@ -283,7 +287,7 @@ def main():
             triple = f"{arch}-apple-{target_os}"
             flags = f"-target {triple} -isysroot {sysroot}"
             options = [
-                f"--prefix={build / 'install'}",
+                f"--prefix={PREFIX}",
                 "--target-os=darwin", f"--arch={'aarch64' if arch == 'arm64' else arch}",
                 "--enable-cross-compile", "--cc=clang", "--cxx=clang++", "--host-cc=clang",
                 "--host-ld=clang", "--enable-static", "--disable-shared",
@@ -310,7 +314,7 @@ def main():
                 targets = [f"{directory}/{directory}.a" for directory in LIBRARIES.values()]
                 subprocess.run(["make", f"-j{min(os.cpu_count() or 4, 12)}", *targets],
                                cwd=build, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
-                subprocess.run(["make", "install-headers"],
+                subprocess.run(["make", "install-headers", f"DESTDIR={build / 'install'}"],
                                cwd=build, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
             check_license((build / "config.h").read_text(), f"{group} {arch} config.h")
             builds.append(build)
@@ -326,7 +330,8 @@ def main():
                  "-output", framework / name])
             # Upstream's public headers as `make install-headers` lays them
             # out; their cross-includes resolve across the four frameworks.
-            shutil.copytree(primary / "install/include" / directory, framework / "Headers")
+            shutil.copytree(primary / "install" / PREFIX.lstrip("/") / "include" / directory,
+                            framework / "Headers")
             shutil.copyfile(primary / "config.h", framework / "Headers/config.h")
             shutil.copyfile(primary / "config_components.h", framework / "Headers/config_components.h")
             (framework / "Modules").mkdir()
