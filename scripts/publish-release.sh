@@ -85,9 +85,10 @@ slug="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" \
     || die "this checkout has no GitHub remote gh can resolve"
 ok "releasing into ${slug}"
 
-# 5. The licence requires the source to be obtainable, and the vendored
-#    frameworks carry their own terms. GitHub's release source archive
-#    satisfies that, so the materials must be in the tree.
+# 5. The vendored frameworks carry their own terms, so the materials must be
+#    in the tree. GitHub's source archive holds them, but not FFmpeg's source,
+#    which the LGPL wants offered from the same place as the binaries: the
+#    release attaches that bundle (step 8).
 missing=""
 for material in LICENSE Artifacts/FFmpeg.README.md Artifacts/Libdovi.README.md; do
     git -C "$root" cat-file -e "${sha}:${material}" 2>/dev/null || missing="${missing} ${material}"
@@ -121,8 +122,15 @@ else
     note "skipping the build and test gate"
 fi
 
+# 8. FFmpeg's corresponding source, attached to the release it belongs to.
+bundle_dir="$(mktemp -d)"
+trap 'rm -rf "$bundle_dir"' EXIT
+bundle="$("$root/scripts/ffmpeg-source-bundle.sh" "$tag" "$bundle_dir" --rev "$sha")" \
+    || die "could not assemble the FFmpeg source bundle"
+ok "FFmpeg source bundle: $(basename "$bundle")"
+
 # Below 1.0 is a pre-release, so an unfinished API is never served as Latest.
-set -- gh release create "$tag" --repo "$slug" --target "$sha" \
+set -- gh release create "$tag" "$bundle" --repo "$slug" --target "$sha" \
     --title "$tag" --notes-file -
 case "$tag" in 0.*) set -- "$@" --prerelease ;; esac
 
