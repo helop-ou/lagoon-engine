@@ -35,6 +35,16 @@ Xcode project); nothing it runs on is an Intel Mac.
 `dovi.h` SHA-256: `772414183763c6ab234789f38fd6850168faf6b288a1763b6bb19370b14af7be` (identical in every slice; the module map exposes it
 as `import Dovi`).
 
+## Licence
+
+The `dolby_vision` crate is MIT. A Rust static library also carries its crate
+dependencies and the Rust standard library (toolchain 1.96.0, read from the
+`/rustc/` paths in the binary), so `Libdovi.xcframework/LICENSE` lists every
+one with its copyright line, taken from `dolby_vision/Cargo.lock` at
+`libdovi-3.4.0` with the `capi` feature and checked against the crates named
+in the tvOS slice. A rebuild on a different lockfile or toolchain needs that
+list redone.
+
 ## Rebuilding
 
 Not built by this repository, which carries no Rust toolchain. A from-source
