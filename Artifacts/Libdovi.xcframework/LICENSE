@@ -1,0 +1,63 @@
+libdovi (dovi_tool's dolby_vision crate, C API) 3.4.0
+Source: https://github.com/quietvoid/dovi_tool/tree/libdovi-3.4.0
+Prebuilt by https://github.com/superuser404notfound/LibDovi at tag 2.1.0 (see
+Artifacts/Libdovi.README.md).
+
+libdovi is a Rust static library, so it carries the crates it depends on and
+the Rust standard library (toolchain 1.96.0). Each component below is used
+under the MIT License, or under the MIT option of a dual licence, and the full
+text follows once. memchr, tinyvec, miniz_oxide and adler2 are used under
+their Unlicense, Zlib or 0BSD options, which ask for no notice in a binary;
+they are listed for completeness.
+
+dolby_vision 3.4.0 -- Copyright (c) 2026 quietvoid
+bitvec_helpers 4.0.2 -- Copyright (c) 2026 quietvoid
+anyhow 1.0.102 -- Copyright (c) David Tolnay
+serde 1.0.228, serde_core 1.0.228, serde_json 1.0.149 -- Copyright (c) Erick Tryzelaar and David Tolnay
+itoa 1.0.18 -- Copyright (c) David Tolnay
+zmij 1.0.21 -- Copyright (c) David Tolnay; a port of zmij, Copyright (c) 2025 Victor Zverovich
+bitvec 1.0.1 -- Copyright (c) 2018 myrrlyn (Alexander Payne)
+funty 2.0.0 -- Copyright (c) 2020 myrrlyn (Alexander Payne)
+wyz 0.5.1 -- Copyright (c) 2018 myrrlyn (Alexander Payne)
+radium 0.7.0 -- Copyright (c) 2019 kneecaw (Nika Layzell)
+tap 1.0.1 -- Copyright (c) 2017 Elliot Linder <darfink@gmail.com>
+bitstream-io 4.10.0 -- Copyright (c) 2017 Brian Langenberger
+no_std_io2 0.9.4 -- Copyright (c) 2020-2021 Brendan Molloy <brendan@bbqsrc.net>
+crc 3.4.0 -- Copyright (c) 2017 crc-rs Developers
+crc-catalog 2.5.0 -- Copyright (c) 2019 Akhil Velagapudi
+libc 0.2.186, 0.2.183 -- Copyright (c) The Rust Project Developers
+indexmap 2.14.0 -- Copyright (c) 2016--2017
+equivalent 1.0.2 -- Copyright (c) 2016--2023
+hashbrown 0.17.1, 0.16.1 -- Copyright (c) 2016 Amanieu d'Antras
+memchr 2.8.0, 2.7.6 -- Copyright (c) 2015 Andrew Gallant
+tinyvec 1.11.0 -- Copyright (c) 2019 Daniel "Lokathor" Gee.
+Rust standard library (core, alloc, std, std_detect, unwind, panic_abort,
+  compiler_builtins) -- Copyright (c) The Rust Project Contributors
+addr2line 0.25.1 -- Copyright (c) 2016-2018 The gimli Developers
+gimli 0.32.3 -- Copyright (c) 2015 The Rust Project Developers
+object 0.37.3 -- Copyright (c) 2015 The Gimli Developers
+rustc-demangle 0.1.27, cfg-if 1.0.4 -- Copyright (c) 2014 Alex Crichton
+miniz_oxide 0.8.9 -- Copyright 2013-2014 RAD Game Tools and Valve Software;
+  Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC;
+  Copyright (c) 2017 Frommi; Copyright (c) 2017-2024 oyvindln
+adler2 2.0.1 -- Copyright (C) Jonas Schievink <jonasschievink@gmail.com>
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
