@@ -70,11 +70,17 @@ resolved, so `EngineVersion.current` carries the same number for a host to
 report. The two move together:
 
 ```sh
-# 1. set EngineVersion.current to the new version, and commit it
-# 2. tag that commit, and push both
-git tag 1.2.0
-git push origin main 1.2.0
+# 1. set EngineVersion.current and add a CHANGELOG.md entry; commit and push
+# 2. tag and release that commit
+scripts/publish-release.sh 1.2.0 --dry-run
+scripts/publish-release.sh 1.2.0
 ```
+
+The script refuses a release it cannot stand behind: a version or changelog
+mismatch, an unpushed commit, missing licence materials, a stale codec table,
+or a package that does not build and test. It attaches FFmpeg's corresponding
+source to the release (`scripts/ffmpeg-source-bundle.sh`), which the LGPL
+asks for wherever the binaries are offered.
 
 Real semantic versioning: a breaking change to anything `public` is a major
 bump. Public means a host names the type or can reach it from one it does; a
