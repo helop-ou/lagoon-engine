@@ -74,6 +74,12 @@ decode only the DD+ core and report "Multichannel".
   accuracy, **not** a frame-loss fix: hardware A/Bs dropped at the same rate
   either way, so do not blame frame loss on timestamp jitter. The HUD's
   `Vtime: grid N/D` line is the check.
+- **A rate rounded to the millisecond.** Some mkvmerge files declare 23.976
+  fps as a 42 ms default duration, which FFmpeg reports as 500/21 (23.81).
+  Trusting it kept the display at 60 Hz and pushed the grid out of tolerance
+  every ~17 frames: judder with zero dropped frames. The demuxer corrects it
+  to the standard rate when the `NUMBER_OF_FRAMES`/`DURATION` statistics
+  agree. A `grid 500/21` or `1000/33` in the HUD means a file without them.
 
 ### HEVC decode-ahead and presentation order
 
