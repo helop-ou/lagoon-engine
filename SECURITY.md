@@ -11,7 +11,9 @@ ones.
 Please report privately rather than opening an issue, and give the fix a
 chance to ship before describing the problem publicly.
 
-- Email **support@helop.dev**.
+- Use GitHub's [private vulnerability
+  reporting](https://github.com/helop-ou/lagoon-engine/security/advisories/new),
+  or email **support@helop.dev**.
 - Include the library version (the tag, or the commit if you are on main),
   the platform and OS version, the device or simulator, what an attacker
   could achieve, and the steps to reproduce it.
