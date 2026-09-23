@@ -77,6 +77,17 @@ Source SHA-256: `9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb
 
 FFmpeg's `COPYING.LGPLv2.1` and `LICENSE.md` accompany each artifact.
 
+Every GitHub release carries the complete corresponding source as
+`lagoon-engine-<version>-ffmpeg-8.1.2-source.tar.gz`: upstream's tarball,
+`changes.diff` with the patch, and this revision's build script and
+`BUILD.json` records. `scripts/ffmpeg-source-bundle.sh` makes it, and
+`scripts/publish-release.sh` attaches it.
+
+libavcodec includes the Independent JPEG Group's DCT code (`jrevdct.c`,
+`jfdctint_template.c`, `jfdctfst.c`), and FFmpeg's `LICENSE.md` asks that an
+executable's documentation credit it: "this software is based in part on the
+work of the Independent JPEG Group".
+
 ## What changed against MPVKit's build
 
 Checked at the switch, against MPVKit 1.0.0's libraries and the previous
