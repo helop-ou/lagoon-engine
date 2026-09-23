@@ -264,6 +264,60 @@ nonisolated final class FFmpegDemuxer {
         }
     }
 
+    /// Rates a display can match. A header that rounds one of these to the
+    /// millisecond is corrected back to it.
+    private static let standardFrameRates: [AVRational] = [
+        AVRational(num: 24_000, den: 1001), AVRational(num: 24, den: 1),
+        AVRational(num: 25, den: 1), AVRational(num: 30_000, den: 1001),
+        AVRational(num: 30, den: 1), AVRational(num: 48_000, den: 1001),
+        AVRational(num: 48, den: 1), AVRational(num: 50, den: 1),
+        AVRational(num: 60_000, den: 1001), AVRational(num: 60, den: 1),
+    ]
+
+    /// The rate to snap timestamps to and ask the display for.
+    ///
+    /// Some Matroska muxers write the default frame duration rounded to the
+    /// millisecond, so 23.976 fps is declared as 42 ms, 23.81 fps, and
+    /// FFmpeg's guess trusts it. The display refuses a 23.81 Hz mode and
+    /// stays at 60 Hz, and the frame grid drifts off the real stamps. When a
+    /// whole-millisecond duration on a 1 ms time base is what a standard
+    /// rate rounds to, and the frame count and duration statistics mkvmerge
+    /// writes agree with that rate, the standard rate wins. Without the
+    /// statistics nothing tells 23.976 from 24, so the guess stands.
+    static func correctedFrameRate(
+        guessed: AVRational,
+        timeBase: AVRational,
+        frameCountTag: String?,
+        durationTag: String?
+    ) -> AVRational {
+        guard guessed.num > 0, guessed.den > 0,
+              timeBase.num == 1, timeBase.den == 1000 else { return guessed }
+        let declaredMilliseconds = 1000 * Double(guessed.den) / Double(guessed.num)
+        guard abs(declaredMilliseconds - declaredMilliseconds.rounded()) < 1e-9,
+              let frameCount = frameCountTag.flatMap({ Double($0) }), frameCount > 0,
+              let duration = durationTag.flatMap(Self.seconds(statisticsDuration:)), duration > 0 else {
+            return guessed
+        }
+        let measured = frameCount / duration
+        // 23.976 and 24 differ by 0.1%; the tolerance must stay under half that.
+        let match = standardFrameRates
+            .map { (rate: $0, fps: Double($0.num) / Double($0.den)) }
+            .filter { (1000 / $0.fps).rounded() == declaredMilliseconds.rounded() }
+            .filter { abs(measured - $0.fps) / $0.fps < 0.0004 }
+            .min { abs(measured - $0.fps) < abs(measured - $1.fps) }
+        return match?.rate ?? guessed
+    }
+
+    /// Seconds in a Matroska statistics `DURATION` tag, `HH:MM:SS.nnnnnnnnn`.
+    static func seconds(statisticsDuration tag: String) -> Double? {
+        let parts = tag.split(separator: ":")
+        guard parts.count == 3,
+              let hours = Double(parts[0]),
+              let minutes = Double(parts[1]),
+              let seconds = Double(parts[2]) else { return nil }
+        return hours * 3600 + minutes * 60 + seconds
+    }
+
     func outputsDecodedAudio(streamIndex: Int32) -> Bool {
         audioDecoders[streamIndex] != nil
     }
@@ -405,7 +459,14 @@ nonisolated final class FFmpegDemuxer {
         let videoPar = stream.pointee.codecpar!
         videoStreamIndex = bestVideo
         videoTimeBase = stream.pointee.time_base
-        let guessedRate = av_guess_frame_rate(ctx, stream, nil)
+        let guessedRate = Self.correctedFrameRate(
+            guessed: av_guess_frame_rate(ctx, stream, nil),
+            timeBase: stream.pointee.time_base,
+            frameCountTag: Self.metadata(stream, key: "NUMBER_OF_FRAMES")
+                ?? Self.metadata(stream, key: "NUMBER_OF_FRAMES-eng"),
+            durationTag: Self.metadata(stream, key: "DURATION")
+                ?? Self.metadata(stream, key: "DURATION-eng")
+        )
         if guessedRate.num > 0, guessedRate.den > 0 {
             videoFrameRate = Double(guessedRate.num) / Double(guessedRate.den)
         }
