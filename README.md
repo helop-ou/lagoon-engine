@@ -166,8 +166,14 @@ The Lagoon name is not part of that grant. Give a fork its own name:
 The native libraries carry their own licence texts with the artifacts:
 
 - FFmpeg's four libraries: LGPL-2.1-or-later, built here without their network
-  stack.
-- dav1d and uavs3d: BSD. lcms2 and libdovi: MIT.
+  stack. Every release attaches their complete corresponding source
+  (`lagoon-engine-<version>-ffmpeg-8.1.2-source.tar.gz`), and libavcodec's
+  Independent JPEG Group code asks an app to credit the IJG.
+- dav1d and uavs3d: BSD. lcms2 and libdovi: MIT. libdovi's licence file also
+  lists the Rust crates and standard library it links.
+
+An app that statically links these libraries takes on the LGPL's relinking
+terms for FFmpeg. Lagoon meets them by publishing its own source.
 
 Everything but libdovi is built here from checksum-pinned upstream source, and
 nothing is downloaded when the package resolves. Provenance and rebuild steps
