@@ -8,6 +8,25 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.0.5
+
+September 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Added
+
+- Every release attaches FFmpeg's complete corresponding source: upstream's
+  tarball, the patch and the build script with its configure records.
+  Releases from 1.0.0 on carry it too.
+
+### Fixed
+
+- `Libdav1d.xcframework` ships dav1d's licence, and `Libdovi.xcframework`
+  ships a notice covering libdovi, the Rust crates it links and the Rust
+  standard library.
+- The FFmpeg build script no longer records its work directory in the
+  configure line the libraries embed.
+
 ## 1.0.4
 
 September 2026. No API change; upgrading is a version bump.
