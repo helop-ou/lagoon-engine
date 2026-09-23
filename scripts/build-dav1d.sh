@@ -238,6 +238,7 @@ mkdir -p "$output"
 rm -rf "$output/Libdav1d.xcframework"
 xcodebuild -create-xcframework "${frameworks[@]}" \
     -output "$output/Libdav1d.xcframework" > /dev/null
+cp "$src/COPYING" "$output/Libdav1d.xcframework/COPYING"
 
 verify_asm "$output/Libdav1d.xcframework"
 echo
