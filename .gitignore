@@ -11,18 +11,18 @@ xcuserdata/
 .build/
 .swiftpm/
 
+# Python bytecode from the build scripts
+__pycache__/
+
 # Claude Code
 .claude/settings.local.json
 
-# Supplied artwork sources (see docs/design-system.md)
-art/
-
-# Sentry CLI auth token, if a wizard ever writes one again (HEL-159)
+# Sentry CLI auth token, if a wizard ever writes one
 .sentryclirc
 
 # Credentials, as a backstop rather than a rule anyone relies on. Nothing of
 # this kind has ever been tracked here and a device build's signing changes
-# are meant to stay local; this is so a mistake costs nothing (HEL-158).
+# are meant to stay local; this is so a mistake costs nothing.
 *.p12
 *.p8
 *.pem
