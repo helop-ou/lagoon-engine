@@ -8,6 +8,16 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.0.4
+
+September 2026. No API change; upgrading is a version bump.
+
+### Fixed
+
+- A Matroska file whose header rounds the frame duration to the millisecond
+  (23.976 fps written as 42 ms) plays at the standard rate: the display
+  matches it and frames keep an even cadence, instead of judder at 60 Hz.
+
 ## 1.0.3
 
 September 2026. No API change; upgrading is a version bump.
