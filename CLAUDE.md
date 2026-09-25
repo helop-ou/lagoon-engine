@@ -3,7 +3,7 @@
 A sample-buffer playback engine for iOS 26 and tvOS 26, as one Swift package
 over vendored FFmpeg static libraries. There is no AVPlayer path and no
 third-party Swift dependency. Extracted from the Lagoon app, which is now one
-host among any others.
+host among others.
 
 ## Where the rules live
 
@@ -22,6 +22,8 @@ right and this file needs fixing.
 | [Coding standards](docs/standards.md) | Folder structure, the package boundary, concurrency, the hot path, verification |
 | [The engine](docs/engine.md) | Pipeline, transport, lifecycle, memory, failure verdicts, external clock hooks, diagnostics |
 | [Engineering notes](docs/reference/README.md) | The mechanism and the measurements behind each contract |
+| [Codec support](docs/codec-support.md) | What decodes, and by which path. Generated from `EngineCodecSupport` |
+| [Contributing](CONTRIBUTING.md) | Tests, commits, releasing and versioning |
 
 ## Session workflow
 
@@ -35,6 +37,20 @@ right and this file needs fixing.
   Never run the two at once. They share derived data, and one fails with exit
   65 and no useful diagnosis.
 
+- Test on a simulator. `swift test` cannot work: SwiftPM builds the tests for
+  macOS, where `os_proc_available_memory()` is unavailable.
+
+  ```
+  xcodebuild test -scheme LagoonEngine -destination 'platform=tvOS Simulator,name=Apple TV 4K (3rd generation)'
+  ```
+
+- `docs/codec-support.md` is generated. After changing `EngineCodecSupport`,
+  run `scripts/generate-codec-support.sh`, or `CodecSupportDocTests` fails.
+- Versions are real semver: a breaking change to anything `public` is a major
+  bump. A release moves the git tag, `EngineVersion.current` and
+  `CHANGELOG.md` together through `scripts/publish-release.sh`; see
+  [Contributing](CONTRIBUTING.md#releasing). The app pins a tag, so an
+  unreleased change here reaches it only through a local override.
 - The native libraries are the only dependency, and they are vendored here. Do
   not add a Swift dependency without serious deliberation.
 - Report only what was verified. Before saying a change is done, run the
@@ -89,8 +105,8 @@ you know to read that guide before touching the area.
   the Release coverage override on `LagoonPixelOps`.
 - **Measurement** — [engineering notes](docs/reference/README.md#measurement).
   Never trust a casual frame-loss comparison. Same scene, same media-time
-  window, untouched, three or more runs. Two fixes that skipped this were
-  later retracted.
+  window, device or simulator untouched, three or more runs. Two fixes that
+  skipped this were later retracted.
 
 ## Working with subagents
 
