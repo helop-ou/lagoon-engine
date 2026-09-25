@@ -78,6 +78,24 @@ software-decoded streams never show this, and HLS fMP4 segments start on IDRs.
 It is decoder-dependent too: the A15 played the same seek clean, and only the
 simulator refused the leading pictures.
 
+### Pictures VideoToolbox rejects mid-stream
+
+Some files carry a run of pictures VideoToolbox refuses with `-12909`,
+`kVTVideoDecoderBadDataErr`, while libavcodec decodes them cleanly. A 4K
+HEVC film did it at the same two positions on every play, 47 pictures ending
+at the next keyframe. Reporting that as `.undecodable` threw direct play away
+for a server transcode: a black screen and a reload for a sub-second fault.
+
+**Rule: a damaged run in a stream that decodes is dropped, not judged.**
+`PlaybackCorruptFramePolicy`: once a session has decoded 48 pictures since
+its last reset, a bad-data picture is dropped, from the decode call or the
+callback. The run closes after 48 clean pictures. A run longer than 300
+pictures, more than a ten-second group of pictures at 24 fps, is a verdict,
+and so is bad data before the session has proven itself, so a stream that
+cannot decode here still reaches the ladder. On the Apple TV 4K (3rd gen),
+the film held its last good picture for about two seconds at each spot and
+played on through direct play.
+
 ### A decode session the system took back
 
 VideoToolbox `-12903`, `kVTInvalidSessionErr`, means the decode *session* is
