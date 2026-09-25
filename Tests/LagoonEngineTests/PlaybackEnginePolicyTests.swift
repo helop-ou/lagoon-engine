@@ -148,6 +148,57 @@ struct PlaybackEnginePolicyTests {
         #expect(DemuxError.unsupportedVideo("av1").cause == .undecodable)
     }
 
+    @Test func aDamagedRunInAStreamThatDecodesIsDroppedNotJudged() {
+        // A real film's shape: minutes of clean pictures, then 47 that
+        // VideoToolbox rejects until the next keyframe.
+        var state = PlaybackCorruptFramePolicy.State()
+        for _ in 0..<4_000 { state.recordDecoded() }
+        for _ in 0..<47 { #expect(absorbs(&state)) }
+        for _ in 0..<PlaybackCorruptFramePolicy.recoveryFrames { state.recordDecoded() }
+        // A later damaged run gets the whole allowance again.
+        for _ in 0..<PlaybackCorruptFramePolicy.toleratedRun { #expect(absorbs(&state)) }
+        #expect(state.dropped == 47 + PlaybackCorruptFramePolicy.toleratedRun)
+    }
+
+    @Test func aStreamThatFailsFromItsFirstPicturesStillReachesTheLadder() {
+        var state = PlaybackCorruptFramePolicy.State()
+        #expect(!absorbs(&state))
+        for _ in 0..<(PlaybackCorruptFramePolicy.proofFrames - 1) { state.recordDecoded() }
+        #expect(!absorbs(&state))
+        state.recordDecoded()
+        #expect(absorbs(&state))
+    }
+
+    @Test func aRunTooLongForOneDamagedGroupIsAVerdict() {
+        var state = PlaybackCorruptFramePolicy.State()
+        for _ in 0..<PlaybackCorruptFramePolicy.proofFrames { state.recordDecoded() }
+        for _ in 0..<PlaybackCorruptFramePolicy.toleratedRun { #expect(absorbs(&state)) }
+        #expect(!absorbs(&state))
+        // Clean pictures between damaged ones do not close the run early.
+        var interleaved = PlaybackCorruptFramePolicy.State()
+        for _ in 0..<PlaybackCorruptFramePolicy.proofFrames { interleaved.recordDecoded() }
+        var judged = false
+        for _ in 0..<1_000 {
+            guard absorbs(&interleaved) else { judged = true; break }
+            interleaved.recordDecoded()
+        }
+        #expect(judged)
+    }
+
+    @Test func aResetMakesTheNewSessionProveTheStreamAgain() {
+        var state = PlaybackCorruptFramePolicy.State()
+        for _ in 0..<4_000 { state.recordDecoded() }
+        #expect(absorbs(&state))
+        state.reset()
+        #expect(!absorbs(&state))
+        #expect(state.dropped == 1)
+    }
+
+    /// `#expect` cannot take a mutating call.
+    private func absorbs(_ state: inout PlaybackCorruptFramePolicy.State) -> Bool {
+        state.absorbsDamagedFrame()
+    }
+
     @Test func aDemuxErrorReportsItsStageAndCodeAndNothingElse() {
         let opened = DemuxError.openFailed("moov atom not found", code: -1094995529).diagnosticDetail
         #expect(opened.stage == .open)
