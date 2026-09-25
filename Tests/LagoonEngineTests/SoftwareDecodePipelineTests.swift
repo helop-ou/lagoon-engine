@@ -27,7 +27,7 @@ struct SoftwareDecodePipelineTests {
             videoIsSoftwareDecoded: true,
             decodedFrameBytes: fourKP010Bytes
         )
-        #expect(capped == 30)
+        #expect(capped == 12)
         #expect(Int64(capped) * fourKP010Bytes == DemuxBackpressurePolicy.decodedQueueByteBudget)
     }
 
@@ -90,7 +90,9 @@ struct SoftwareDecodePipelineTests {
             hasAudio: false,
             decodedFrameBytes: frameBytes
         )
-        #expect(queuedPlusPending == .waitForVideo(below: 23))
+        // At 4K the byte budget caps the hard limit at 12, so high water is
+        // 11 and low water keeps the six-frame drain batch: 5.
+        #expect(queuedPlusPending == .waitForVideo(below: 5))
     }
 
     @Test func av1IsAlwaysOfferedToVideoToolboxAndSettledAtRuntime() {
