@@ -3619,11 +3619,20 @@ nonisolated enum DemuxBackpressurePolicy {
         deliveryIsCached ? audioHighWater : uncachedAudioHighWater
     }
 
-    /// Byte ceiling for the decoded queue, which is also bounded by count.
-    /// 42 frames is 250 MB at 1080p 10-bit but 1.05 GB at 4K, in a process
-    /// jetsam has killed at 2.1 GB. This is 30 frames of 4K P010, the
-    /// hardware path's ceiling, so only 4K software decode is affected.
-    static let decodedQueueByteBudget: Int64 = 30 * 24_883_200
+    /// Byte ceiling for the software-decoded queue, which is also bounded by
+    /// count. 42 frames is 250 MB at 1080p 10-bit but 1.05 GB at 4K, in a
+    /// process jetsam has killed at 2.1 GB. Twelve 4K P010 frames, about
+    /// 300 MB: dav1d decodes a 4K frame in a tenth of its period, so a deeper
+    /// queue costs headroom and buys no smoothness. 1080p keeps its count
+    /// limit. The measurement is in docs/reference/frame-loss-bench.md.
+    static let decodedQueueByteBudget: Int64 = Int64(
+        SoftwareDecodeThreadPolicy.commandLineInteger(forKey: decodedQueueFramesDefaultsKey)
+            .map { max($0, 1) } ?? 12
+    ) * 24_883_200
+
+    /// Launch argument for device sweeps: the budget in 4K P010 frames,
+    /// `-debug.softwareDecodedQueueFrames 20`.
+    static let decodedQueueFramesDefaultsKey = "debug.softwareDecodedQueueFrames"
 
     /// Floor however large a frame is: reorder depth plus a cushion.
     private static let decodedQueueFrameFloor = 8
@@ -3634,7 +3643,7 @@ nonisolated enum DemuxBackpressurePolicy {
         decodedFrameBytes: Int64 = 0
     ) -> Int {
         let byCount = videoIsSoftwareDecoded ? 42 : (videoIsDecoded ? 30 : 120)
-        guard decodedFrameBytes > 0 else { return byCount }
+        guard videoIsSoftwareDecoded, decodedFrameBytes > 0 else { return byCount }
         let byBytes = Int(decodedQueueByteBudget / decodedFrameBytes)
         return max(min(byCount, byBytes), decodedQueueFrameFloor)
     }
