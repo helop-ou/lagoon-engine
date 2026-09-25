@@ -16,15 +16,29 @@ on-screen overlay off (an overlay changes the video path). The console line
 carries the dimensions and whether VideoToolbox or libavcodec decoded, so a
 result identifies itself.
 
-**Above about 24 MB a frame, the limit is bytes, not frames.**
-`DemuxBackpressurePolicy.videoHardLimit` switches to
-`decodedQueueByteBudget`, set to what the hardware path already allowed:
-30 frames of 4K P010, 746 MB. The software path's 42-frame limit meant 250 MB
-at 1080p 10-bit but 1.05 GB at 4K, in a process jetsam has killed at 2100 MB.
-Configurations measured before the byte budget keep their frame limits; only
-4K software decode is pulled under it. A floor of 8 frames still applies
-however large a frame is, because the queue must hold the codec's reorder
-depth plus a cushion.
+**On the software path, above about 25 MB a frame, the limit is bytes, not
+frames.** `DemuxBackpressurePolicy.videoHardLimit` switches to
+`decodedQueueByteBudget`: twelve frames of 4K P010, 299 MB. The software
+path's 42-frame limit meant 250 MB at 1080p 10-bit but 1.05 GB at 4K, in a
+process jetsam has killed at 2100 MB. 1080p keeps its count limit, 4K 8-bit
+gets 24 frames and 4K 10-bit 12. A floor of 8 frames still applies however
+large a frame is, because the queue must hold the codec's reorder depth plus
+a cushion. The hardware path keeps its 30-frame count; VideoToolbox's
+surfaces are not bounded by this budget.
+
+The budget was 30 frames (746 MB) until 2026-09-25. On the Apple TV 4K (3rd
+gen), tvOS 27.0, Release, The Dinosaurs S1E1 (4K HDR10+ AV1, tone-mapped to
+SDR, dav1d) over the same 60 s window, three runs each with thermals nominal
+throughout:
+
+| Budget | Dropped / frames | Peak footprint | Minimum headroom | Lowest queue |
+| --- | --- | --- | --- | --- |
+| 30 frames | 2/1458 · 2/1439 · 1/1454 | 1680–1681 MB | 417–418 MB | 27 |
+| 12 frames | 0/1438 · 1/1460 · 0/1458 | 1251–1253 MB | 845–847 MB | 9–10 |
+
+dav1d decoded a frame in 1–5 ms against a 42 ms period, so the deeper queue
+bought nothing. `-debug.softwareDecodedQueueFrames <n>` overrides the budget,
+in 4K P010 frames, for sweeps like this one.
 
 The arithmetic: a 4:2:0 P010 surface is `3840 × 2160 × 3 = 24,883,200` bytes
 (23.73 MiB): luma plus half as many chroma samples, in 16-bit words. At the
