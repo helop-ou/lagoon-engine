@@ -55,6 +55,7 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
     private let stateLock = NSLock()
     private var acceptingOutput = true
     private var recoverableFrameErrorCount = 0
+    private var corruptFrames = PlaybackCorruptFramePolicy.State()
     private var presentationQueue: VideoPresentationOrderQueue<CMSampleBuffer>
     private var session: VTDecompressionSession?
     /// Six covers common HEVC B-pyramids; a larger container-reported depth
@@ -66,6 +67,12 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
     /// playable titles after scrubs and track changes.
     var droppedFrameCount: Int {
         stateLock.withLock { recoverableFrameErrorCount }
+    }
+
+    /// Pictures dropped as damage in a stream that otherwise decodes; see
+    /// `PlaybackCorruptFramePolicy`.
+    var corruptFrameCount: Int {
+        stateLock.withLock { corruptFrames.dropped }
     }
 
     /// Whether VideoToolbox can create a session for this stream at all,
@@ -89,6 +96,13 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
 
     static func isRecoverableFrameError(_ status: OSStatus) -> Bool {
         status == kVTVideoDecoderReferenceMissingErr
+    }
+
+    /// VideoToolbox reports a damaged picture either from the decode call or
+    /// in the callback, so both ask here.
+    private func absorbsDamagedFrame(_ status: OSStatus) -> Bool {
+        guard status == kVTVideoDecoderBadDataErr else { return false }
+        return stateLock.withLock { corruptFrames.absorbsDamagedFrame() }
     }
 
     /// Whether a status is about the decode *session*, not the samples. The
@@ -146,7 +160,7 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
             frameRefcon: nil,
             infoFlagsOut: &infoFlags
         )
-        guard status == noErr else { throw DecoderError.decode(status) }
+        guard status == noErr || absorbsDamagedFrame(status) else { throw DecoderError.decode(status) }
     }
 
     /// Seek: recreates the session so the next keyframe starts clean.
@@ -154,6 +168,7 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
         stateLock.withLock {
             acceptingOutput = false
             presentationQueue.reset()
+            corruptFrames.reset()
         }
         discardSession()
         session = try Self.makeSession(
@@ -264,12 +279,14 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
                 stateLock.withLock { recoverableFrameErrorCount += 1 }
                 return
             }
+            if absorbsDamagedFrame(status) { return }
             errorHandler(.decode(status))
             return
         }
         // Nil with no error is suppressed output (e.g. a leading frame after
         // a seek), not a failure.
         guard let imageBuffer else { return }
+        stateLock.withLock { corruptFrames.recordDecoded() }
         var outputFormat: CMVideoFormatDescription?
         let formatStatus = CMVideoFormatDescriptionCreateForImageBuffer(
             allocator: kCFAllocatorDefault,
