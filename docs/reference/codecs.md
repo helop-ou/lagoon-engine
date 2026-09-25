@@ -11,7 +11,7 @@ Per-codec behaviour, timestamp handling and subtitles. The generated
   sample buffer with no repacking.
 - CoreAudio takes aac, mp3, ac3 and eac3 compressed. ac3 and eac3 describe
   themselves; aac needs its AudioSpecificConfig as the magic cookie.
-- Packet cadence prefers FFmpeg's parsed `frame_size`, falling back by codec,
+- Packet cadence prefers FFmpeg's parsed `frame_size` and falls back by codec,
   including 576 samples for MPEG-2/2.5 Layer III at 24 kHz and below.
 - The CoreMedia block holds the packet's `AVBufferRef` (`av_buffer_ref`) and
   releases it after decode: no clone, no second allocation, no payload copy.
@@ -237,7 +237,7 @@ A device profile cannot say "interlaced only", so the demuxer splits it:
   42 were rounding artifacts (1744:1745, 180224:180219).
 - Every genuine case there was h264 or mpeg4; all 27 hevc items were
   artifacts. Whether VideoToolbox carries the attachment onto its output is
-  untested, and matters only for genuinely anamorphic HEVC.
+  untested, and matters only for genuine anamorphic HEVC.
 - A host's device profile need not exclude `IsAnamorphic`, interlaced MPEG-2
   or interlaced H.264. Interlaced HEVC still needs a transcode.
 

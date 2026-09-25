@@ -75,7 +75,7 @@ can balance it, or the lifecycle bench can no longer see a leak.
 - The KVO observation hops to the main actor rather than using
   `MainActor.assumeIsolated`, because KVO fires on whichever thread changed
   the property, and CoreMedia does not change it on the main thread.
-- Recovery means replacement, sharing one path with the media-services reset.
+- Recovery means replacement. It shares one path with the media-services reset.
   `AudioRendererReplacement` encodes the difference: after a reset playback
   stays paused (Apple requires a viewer action to resume); after a
   self-failure it resumes. Neither un-pauses a viewer who paused on purpose:
@@ -114,7 +114,7 @@ the background.
   as a finished video queue, so a stall while suspended recovers on audio
   alone.
 - Lifting the suspension seeks to the current position, which restarts video
-  on a keyframe with a fresh VideoToolbox session, replacing any the system
+  on a keyframe with a fresh VideoToolbox session that replaces any the system
   invalidated meanwhile.
 - A successor engine started while the previous one was suspended inherits
   the suspension.

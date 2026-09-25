@@ -1,8 +1,8 @@
 # Coding standards
 
 Read this before adding a feature or reorganizing code. These are conventions
-built on Apple and Swift guidance, not an Apple template. [The engine
-guide](engine.md) describes how the code behaves.
+built on Apple and Swift guidance. [The engine guide](engine.md) describes how
+the code behaves.
 
 ## Guidance from Apple and Swift
 

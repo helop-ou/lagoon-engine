@@ -190,7 +190,7 @@ Three rules:
 
 For backlogs that grow over an hour, which a 60-second bench cannot see. The
 lane forces a subtitle track, then pauses, resumes and exits at set points in
-an unattended run, printing how long each call took. With `debug.decodeTrace`
+an unattended run and prints how long each call took. With `debug.decodeTrace`
 on, `DecodeTrace` adds `mainLateMs` (how late the trace's 2 s sleep resumed,
 which tracks main-actor availability), `pumpMs` (a ping through the pump
 queue), the cost and cadence of the 10 Hz `observeTime`, the subtitle store
@@ -218,7 +218,7 @@ Frame-loss bench, same scene at 600 s, three interleaved runs per arm, Release:
   a bare surface. HDR10 without Dolby Vision: 0.14–0.21%. Each cue view is now
   a drawing group, rendered once per change; `debug.benchFlatCues` keeps the
   flat path for an A/B (5 · 3 · 3 drops against 9 · 4, about 40% fewer). What
-  remains does not line up with cue arrivals.
+  is left does not line up with cue arrivals.
 
 Both isolation hooks are needed: `debug.benchSubtitleLanguage off`, because the
 system caption preference otherwise turns a track on by itself, and
@@ -294,8 +294,8 @@ kernel (`SoftwareFrameConversion.metal`):
   pooled 4K allocations are page-aligned on Darwin; the simulator's driver
   traps on that, so the simulator copies instead.
 - The kernel repacks to P010 and, for PQ BT.2020 sources, tone-maps to BT.709
-  SDR with the BT.2390 EETF at 203 nits reference white, writing straight into
-  an IOSurface the renderer takes.
+  SDR with the BT.2390 EETF at 203 nits reference white. It writes straight
+  into an IOSurface the renderer takes.
 - **The dispatch is asynchronous on purpose.** The decode queue returns to
   libavcodec at once, and the dav1d picture stays referenced until the kernel
   has read it.
@@ -363,7 +363,7 @@ Regression coverage:
   simulator.
 - `testSoftwareDecodedPlaybackSurvivesPauseSeeksAndSubtitles` drives a
   software-decoded fixture through pause, seeks both ways and a subtitle
-  switch, asserting that the GPU stage is live, playback continues, the
+  switch. It asserts that the GPU stage is live, playback continues, the
   request blocks stay quiet and teardown is clean. Run it on a paired Apple
   TV, in Release, against a title the hardware decoder cannot take:
 

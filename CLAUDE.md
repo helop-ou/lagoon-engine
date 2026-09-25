@@ -78,7 +78,7 @@ you know to read that guide before touching the area.
   libavformat is built here without its network stack, and every HTTP open
   goes through `FFmpegNetworkTransport` over URLSession; keep the build script
   and the artifact in sync. dav1d is built here and must keep its arm64
-  assembly — run `scripts/build-dav1d.sh --verify-only
+  assembly: run `scripts/build-dav1d.sh --verify-only
   Artifacts/Libdav1d.xcframework` after touching it, because without the
   assembly nothing fails, everything just decodes about ten times slower.
   libdovi is vendored rather than built, for the Dolby Vision profile 7 → 8.1

@@ -89,7 +89,7 @@ decoder was taken away: `kVTInvalidSessionErr`, `kVTVideoDecoderMalfunctionErr`,
 `kVTVideoDecoderNotAvailableNowErr`. `PlaybackDecodeSessionPolicy` decides,
 bounded like `PlaybackRestartPointPolicy`: one rebuild per playback
 generation, recorded against the generation the re-seek starts. A session
-that genuinely cannot be made is reported as `.undecodable` one seek later.
+that actually cannot be made is reported as `.undecodable` one seek later.
 While video output is suspended, the fault is ignored: there is nothing to
 rebuild for, and the resume seek makes a fresh session anyway.
 

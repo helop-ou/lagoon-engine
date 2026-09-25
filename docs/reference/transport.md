@@ -13,12 +13,12 @@ makes a trust decision. Dropping the stack also dropped GnuTLS, GMP, nettle and
 hogweed and the `--enable-version3` flag GnuTLS needed, so all four FFmpeg
 libraries are LGPL-2.1-or-later, and libavformat shrank from 19 MB to 15 MB.
 
-One patch remains: `Patches/0001-hls-scheme-without-network-protocols.patch`.
-hls.c refuses a child URL whose scheme has no registered protocol, which
-without a network stack is every http(s) URL. The patch classifies the scheme
-from the URL text and hands the open to `io_open`. Without it, a transcode
-fails with "Invalid data found when processing input" before the transport is
-asked.
+One patch is still needed:
+`Patches/0001-hls-scheme-without-network-protocols.patch`. hls.c refuses a
+child URL whose scheme has no registered protocol, which without a network
+stack is every http(s) URL. The patch classifies the scheme from the URL text
+and hands the open to `io_open`. Without it, a transcode fails with "Invalid
+data found when processing input" before the transport is asked.
 
 ## The URLSession transport
 
@@ -72,8 +72,8 @@ every failed segment fetch.
   mean anything without network protocols.
 - **It does set `http_persistent` to 0.** hls.c's keepalive only reuses
   connections through FFmpeg's own HTTP protocol. Left on, it falls back to
-  `io_open` per segment while keeping the previous context alive, leaking one
-  `AVIOContext` per segment.
+  `io_open` per segment while keeping the previous context alive. It leaks
+  one `AVIOContext` per segment.
 
 ## Verification
 

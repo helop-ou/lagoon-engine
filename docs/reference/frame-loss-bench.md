@@ -22,9 +22,9 @@ result identifies itself.
 30 frames of 4K P010, 746 MB. The software path's 42-frame limit meant 250 MB
 at 1080p 10-bit but 1.05 GB at 4K, in a process jetsam has killed at 2100 MB.
 Configurations measured before the byte budget keep their frame limits; only
-4K software decode is pulled under it. A floor of 8 frames remains however
-large a frame is, because the queue must hold the codec's reorder depth plus
-a cushion.
+4K software decode is pulled under it. A floor of 8 frames still applies
+however large a frame is, because the queue must hold the codec's reorder
+depth plus a cushion.
 
 The arithmetic: a 4:2:0 P010 surface is `3840 × 2160 × 3 = 24,883,200` bytes
 (23.73 MiB): luma plus half as many chroma samples, in 16-bit words. At the
