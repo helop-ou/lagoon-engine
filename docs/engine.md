@@ -115,9 +115,10 @@ to try it, is the host's call; the ladder a host descends on `.delivery` is a
 host concern.
 
 The ladder descends only on a verdict about the samples. A lost VideoToolbox
-session is rebuilt, not reported as undecodable, and while video output is
-suspended a decode failure is ignored. [Stream
-recovery](reference/stream-recovery.md) has both.
+session is rebuilt, not reported as undecodable, a damaged run of pictures in
+a stream that decodes is dropped, and while video output is suspended a
+decode failure is ignored. [Stream recovery](reference/stream-recovery.md)
+has all three.
 
 ## Driving the clock from outside
 
