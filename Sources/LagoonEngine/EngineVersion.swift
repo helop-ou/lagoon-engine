@@ -6,7 +6,7 @@ import Libavformat
 /// must move with the release tag: see "Releasing" in the contributing guide.
 public nonisolated enum EngineVersion {
     /// This package's own version, as its tag spells it.
-    public static let current = "1.0.5"
+    public static let current = "1.0.6"
 
     /// The linked libavformat, as `lavf<major>.<minor>.<micro>`. The same
     /// engine version can be built against a different FFmpeg, so reports name
