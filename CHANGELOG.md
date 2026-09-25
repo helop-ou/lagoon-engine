@@ -8,6 +8,27 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.0.6
+
+September 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Changed
+
+- 4K software decode (AV1, VP9) queues at most twelve decoded 10-bit frames,
+  about 300 MB, down from thirty. On an Apple TV 4K (3rd generation) a 4K
+  AV1 title peaks about 430 MB lower, with no more dropped frames. 1080p and
+  hardware decode are unchanged. `-debug.softwareDecodedQueueFrames <n>`
+  overrides it for measurement.
+
+### Fixed
+
+- A run of pictures VideoToolbox rejects in the middle of a stream that
+  otherwise decodes is dropped instead of being reported as `.undecodable`.
+  The picture holds briefly and direct play continues, where a host's ladder
+  used to fall back to a transcode. Bad data from the first pictures, or a
+  run longer than a ten-second group of pictures, is still a verdict.
+
 ## 1.0.5
 
 September 2026. No API change and no change to the libraries; upgrading is a
