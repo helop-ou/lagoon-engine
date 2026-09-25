@@ -24,6 +24,58 @@ nonisolated enum PlaybackRestartPointPolicy {
     }
 }
 
+/// Whether a VideoToolbox bad-data error (`kVTVideoDecoderBadDataErr`) is a
+/// damaged run in a stream that decodes, or a verdict on the stream.
+///
+/// Some files carry pictures VideoToolbox rejects that libavcodec decodes
+/// cleanly, and decoding resumes at the next keyframe. Descending for that is
+/// a reload, a black screen and a server transcode; dropping the run is a
+/// stutter. So once a session has produced pictures on this stream it drops
+/// damaged ones, up to a run too long to be one damaged group of pictures. A
+/// stream that fails from its first pictures, or keeps failing, still reaches
+/// the ladder.
+nonisolated enum PlaybackCorruptFramePolicy {
+    /// Pictures a session must decode after a reset before a bad-data error
+    /// reads as damage, not as the stream: two seconds at 24 fps.
+    static let proofFrames = 48
+    /// Clean pictures after damage that close the run.
+    static let recoveryFrames = 48
+    /// The longest damaged run dropped: longer than a ten-second group of
+    /// pictures at 24 fps.
+    static let toleratedRun = 300
+
+    struct State: Equatable {
+        private(set) var decodedSinceReset = 0
+        private(set) var run = 0
+        private(set) var cleanSinceDamage = 0
+        /// Every picture dropped as damage, across resets.
+        private(set) var dropped = 0
+
+        mutating func recordDecoded() {
+            decodedSinceReset += 1
+            cleanSinceDamage += 1
+            if cleanSinceDamage >= PlaybackCorruptFramePolicy.recoveryFrames { run = 0 }
+        }
+
+        /// True drops the picture; false makes the error a verdict.
+        mutating func absorbsDamagedFrame() -> Bool {
+            guard decodedSinceReset >= PlaybackCorruptFramePolicy.proofFrames,
+                  run < PlaybackCorruptFramePolicy.toleratedRun else { return false }
+            run += 1
+            dropped += 1
+            cleanSinceDamage = 0
+            return true
+        }
+
+        /// A new session must prove the stream again.
+        mutating func reset() {
+            decodedSinceReset = 0
+            run = 0
+            cleanSinceDamage = 0
+        }
+    }
+}
+
 /// Whether a sample may be the *first* one a flushed renderer is given.
 ///
 /// A read in flight during `flush()` returns a packet from the old position,
