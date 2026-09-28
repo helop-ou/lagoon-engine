@@ -8,6 +8,19 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.0.9
+
+September 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Fixed
+
+- A native Dolby Vision profile 5 or 8 frame without its RPU gets the previous
+  frame's, as converted profile 7 frames already did. VideoToolbox refused such
+  a frame and every picture referencing it, and a clip missing one RPU in four
+  for ten seconds lost 223 of 755 pictures; it now shows all of them. The HUD
+  and the bench line count the repeats.
+
 ## 1.0.8
 
 September 2026. No API change and no change to the libraries; upgrading is a
