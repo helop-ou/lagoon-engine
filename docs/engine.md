@@ -116,10 +116,11 @@ host concern.
 
 The ladder descends only on a verdict about the samples. A lost VideoToolbox
 session is rebuilt, not reported as undecodable, a damaged run of pictures in
-a stream that decodes is dropped, a converted Dolby Vision frame that lost its
+a stream that decodes is dropped, a damaged picture the renderer plays through
+is counted rather than judged, a converted Dolby Vision frame that lost its
 RPU is given the previous one, and while video output is suspended a decode
 failure is ignored. [Stream recovery](reference/stream-recovery.md) has all
-four.
+five.
 
 ## Driving the clock from outside
 
