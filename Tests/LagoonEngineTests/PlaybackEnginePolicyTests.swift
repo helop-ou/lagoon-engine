@@ -185,13 +185,32 @@ struct PlaybackEnginePolicyTests {
         #expect(judged)
     }
 
-    @Test func aResetMakesTheNewSessionProveTheStreamAgain() {
+    /// A seek, the viewer's or the engine's own recovery, must not turn the
+    /// next damaged picture into a verdict on a stream that already decoded.
+    @Test func aSeekKeepsTheStreamsProofButJudgesSoonerBeforeTheFirstPicture() {
         var state = PlaybackCorruptFramePolicy.State()
         for _ in 0..<4_000 { state.recordDecoded() }
         #expect(absorbs(&state))
         state.reset()
+        for _ in 0..<PlaybackCorruptFramePolicy.proofFrames { #expect(absorbs(&state)) }
         #expect(!absorbs(&state))
-        #expect(state.dropped == 1)
+        #expect(state.dropped == 1 + PlaybackCorruptFramePolicy.proofFrames)
+    }
+
+    @Test func onceTheNewSessionDecodesTheFullAllowanceReturns() {
+        var state = PlaybackCorruptFramePolicy.State()
+        for _ in 0..<PlaybackCorruptFramePolicy.proofFrames { state.recordDecoded() }
+        state.reset()
+        state.recordDecoded()
+        for _ in 0..<PlaybackCorruptFramePolicy.toleratedRun { #expect(absorbs(&state)) }
+        #expect(!absorbs(&state))
+    }
+
+    @Test func aSeekDoesNotProveAStreamThatNeverDecoded() {
+        var state = PlaybackCorruptFramePolicy.State()
+        for _ in 0..<(PlaybackCorruptFramePolicy.proofFrames - 1) { state.recordDecoded() }
+        state.reset()
+        #expect(!absorbs(&state))
     }
 
     /// `#expect` cannot take a mutating call.
