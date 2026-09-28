@@ -2430,9 +2430,28 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 return state.pendingSeekSeconds
             }) {
                 if hasPrimedPlayback || target > 0 {
-                    do {
-                        try demuxer.seek(toSeconds: target)
-                    } catch {
+                    var seekError: Error?
+                    do { try demuxer.seek(toSeconds: target) } catch { seekError = error }
+                    if let first = seekError as? DemuxError, first.cause == .delivery {
+                        // The transport has already ridden out a network fault;
+                        // one more try covers a server that refused the one
+                        // request. A newer seek replaces this one instead.
+                        if NetworkRetryPolicy.pause(0.5, unless: {
+                            shared.withLock { $0.cancelled || $0.pendingSeekSeconds != nil }
+                        }) {
+                            do {
+                                try demuxer.seek(toSeconds: target)
+                                seekError = nil
+                            } catch {
+                                seekError = error
+                            }
+                        } else if shared.withLock({ $0.cancelled }) {
+                            break
+                        } else {
+                            continue
+                        }
+                    }
+                    if let error = seekError {
                         let demuxError = error as? DemuxError
                         let failure = PlaybackEngineFailure(
                             cause: demuxError?.cause ?? .delivery,
