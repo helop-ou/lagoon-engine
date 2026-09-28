@@ -14,7 +14,15 @@ nonisolated final class AudioDecoder {
     private let sampleRate: Int32
     private let channels: Int32
     private var resampler: OpaquePointer?
+    /// What the resampler was built for. A stream can change any of the three
+    /// mid-way (a TV recording joining a stereo advert to a 5.1 programme),
+    /// and a resampler built for six planes reads past a two-plane frame.
     private var resamplerInputFormat = AV_SAMPLE_FMT_NONE
+    private var resamplerInputRate: Int32 = 0
+    private var resamplerInputLayout = AVChannelLayout()
+    /// The declared layout `formatDescription` promises; every rebuild
+    /// resamples to it, never to what the decoder reports now.
+    private var outputLayout = AVChannelLayout()
 
     /// Fixed from the stream's declared rate and layout, so the renderer
     /// format never changes mid-stream.
@@ -68,6 +76,10 @@ nonisolated final class AudioDecoder {
         sampleRate = rate
         channels = channelCount
         formatDescription = description
+        if codecpar.pointee.ch_layout.order == AV_CHANNEL_ORDER_UNSPEC
+            || av_channel_layout_copy(&outputLayout, &codecpar.pointee.ch_layout) < 0 {
+            av_channel_layout_default(&outputLayout, channelCount)
+        }
         pendingSamples = NSMutableData(
             capacity: 2048 * Int(channelCount) * MemoryLayout<Float32>.size
         ) ?? NSMutableData()
@@ -77,6 +89,8 @@ nonisolated final class AudioDecoder {
         if resampler != nil {
             swr_free(&resampler)
         }
+        av_channel_layout_uninit(&resamplerInputLayout)
+        av_channel_layout_uninit(&outputLayout)
         var framePtr: UnsafeMutablePointer<AVFrame>? = frame
         av_frame_free(&framePtr)
         var ctx: UnsafeMutablePointer<AVCodecContext>? = codecContext
@@ -87,7 +101,7 @@ nonisolated final class AudioDecoder {
         guard avcodec_send_packet(codecContext, packet) >= 0 else { return [] }
         var buffers: [CMSampleBuffer] = []
         while avcodec_receive_frame(codecContext, frame) >= 0 {
-            accumulate(into: &buffers)
+            accumulate(frame, into: &buffers)
             av_frame_unref(frame)
         }
         return buffers
@@ -107,7 +121,7 @@ nonisolated final class AudioDecoder {
         var buffers: [CMSampleBuffer] = []
         avcodec_send_packet(codecContext, nil)
         while avcodec_receive_frame(codecContext, frame) >= 0 {
-            accumulate(into: &buffers)
+            accumulate(frame, into: &buffers)
             av_frame_unref(frame)
         }
         emitPending(into: &buffers)
@@ -115,9 +129,18 @@ nonisolated final class AudioDecoder {
         return buffers
     }
 
+    /// A decoded frame from elsewhere, as `decode` would pass one on. Tests
+    /// feed synthetic frames here: libavcodec here has no encoders to make a
+    /// stream that changes shape.
+    func append(decodedFrame: UnsafeMutablePointer<AVFrame>) -> [CMSampleBuffer] {
+        var buffers: [CMSampleBuffer] = []
+        accumulate(decodedFrame, into: &buffers)
+        return buffers
+    }
+
     // MARK: - Frame → coalesced LPCM
 
-    private func accumulate(into buffers: inout [CMSampleBuffer]) {
+    private func accumulate(_ frame: UnsafeMutablePointer<AVFrame>, into buffers: inout [CMSampleBuffer]) {
         let frameSeconds: Double? = frame.pointee.pts == Int64.min
             ? nil
             : Double(frame.pointee.pts) * Double(timeBase.num) / Double(max(timeBase.den, 1))
@@ -130,7 +153,7 @@ nonisolated final class AudioDecoder {
             continuationSeconds = nil
         }
 
-        guard let convertedSamples = appendConvertedFrame() else { return }
+        guard let convertedSamples = appendConverted(frame) else { return }
         if pendingStartSeconds == nil {
             pendingStartSeconds = continuationSeconds ?? frameSeconds
         }
@@ -141,31 +164,38 @@ nonisolated final class AudioDecoder {
         }
     }
 
-    /// Converts directly into the coalescing buffer.
-    private func appendConvertedFrame() -> Int? {
+    /// Converts directly into the coalescing buffer, rebuilding the resampler
+    /// whenever the input's format, rate or layout moves.
+    private func appendConverted(_ frame: UnsafeMutablePointer<AVFrame>) -> Int? {
         let inputFormat = AVSampleFormat(rawValue: frame.pointee.format)
-        if resampler == nil || resamplerInputFormat != inputFormat {
+        let inputRate = frame.pointee.sample_rate
+        let layoutChanged = av_channel_layout_compare(&frame.pointee.ch_layout, &resamplerInputLayout) != 0
+        if resampler == nil || resamplerInputFormat != inputFormat || resamplerInputRate != inputRate || layoutChanged {
             if resampler != nil {
                 swr_free(&resampler)
             }
+            resamplerInputFormat = AV_SAMPLE_FMT_NONE
+            av_channel_layout_uninit(&resamplerInputLayout)
             var context: OpaquePointer?
-            let status = withUnsafePointer(to: codecContext.pointee.ch_layout) { outLayout in
-                withUnsafePointer(to: frame.pointee.ch_layout) { inLayout in
-                    swr_alloc_set_opts2(
-                        &context,
-                        outLayout, AV_SAMPLE_FMT_FLT, sampleRate,
-                        inLayout, inputFormat, frame.pointee.sample_rate,
-                        0, nil
-                    )
-                }
+            let status = swr_alloc_set_opts2(
+                &context,
+                &outputLayout, AV_SAMPLE_FMT_FLT, sampleRate,
+                &frame.pointee.ch_layout, inputFormat, inputRate,
+                0, nil
+            )
+            guard status >= 0, swr_init(context) >= 0 else {
+                swr_free(&context)
+                return nil
             }
-            guard status >= 0, swr_init(context) >= 0 else { return nil }
             resampler = context
             resamplerInputFormat = inputFormat
+            resamplerInputRate = inputRate
+            av_channel_layout_copy(&resamplerInputLayout, &frame.pointee.ch_layout)
         }
 
         let inSamples = Int(frame.pointee.nb_samples)
-        let capacity = inSamples + 256
+        // Upsampling a lower-rate stretch needs more room than it came in.
+        let capacity = Int(swr_get_out_samples(resampler, Int32(inSamples))) + 256
         let bytesPerFrame = Int(channels) * MemoryLayout<Float32>.size
         let previousLength = pendingSamples.length
         pendingSamples.length = previousLength + capacity * bytesPerFrame
