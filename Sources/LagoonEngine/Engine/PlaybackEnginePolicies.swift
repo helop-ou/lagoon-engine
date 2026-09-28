@@ -34,6 +34,11 @@ nonisolated enum PlaybackRestartPointPolicy {
 /// damaged ones, up to a run too long to be one damaged group of pictures. A
 /// stream that fails from its first pictures, or keeps failing, still reaches
 /// the ladder.
+///
+/// The proof belongs to the stream, not the session: a seek, including the
+/// engine's own recovery seeks, keeps it. Until the new session decodes a
+/// picture, only `proofFrames` damaged ones are dropped, so a seek into data
+/// that cannot decode is judged in about two seconds, not ten.
 nonisolated enum PlaybackCorruptFramePolicy {
     /// Pictures a session must decode after a reset before a bad-data error
     /// reads as damage, not as the stream: two seconds at 24 fps.
@@ -46,6 +51,8 @@ nonisolated enum PlaybackCorruptFramePolicy {
 
     struct State: Equatable {
         private(set) var decodedSinceReset = 0
+        /// Some session decoded `proofFrames` pictures of this stream.
+        private(set) var proven = false
         private(set) var run = 0
         private(set) var cleanSinceDamage = 0
         /// Every picture dropped as damage, across resets.
@@ -53,21 +60,24 @@ nonisolated enum PlaybackCorruptFramePolicy {
 
         mutating func recordDecoded() {
             decodedSinceReset += 1
+            if decodedSinceReset >= PlaybackCorruptFramePolicy.proofFrames { proven = true }
             cleanSinceDamage += 1
             if cleanSinceDamage >= PlaybackCorruptFramePolicy.recoveryFrames { run = 0 }
         }
 
         /// True drops the picture; false makes the error a verdict.
         mutating func absorbsDamagedFrame() -> Bool {
-            guard decodedSinceReset >= PlaybackCorruptFramePolicy.proofFrames,
-                  run < PlaybackCorruptFramePolicy.toleratedRun else { return false }
+            let limit = decodedSinceReset > 0
+                ? PlaybackCorruptFramePolicy.toleratedRun
+                : PlaybackCorruptFramePolicy.proofFrames
+            guard proven, run < limit else { return false }
             run += 1
             dropped += 1
             cleanSinceDamage = 0
             return true
         }
 
-        /// A new session must prove the stream again.
+        /// A new session. The stream stays proven; the run starts over.
         mutating func reset() {
             decodedSinceReset = 0
             run = 0
