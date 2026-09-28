@@ -8,6 +8,31 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.0.11
+
+September 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Fixed
+
+- A short network drop no longer ends playback. Transient faults (a dropped
+  link, a 5xx, 408 or 429, the idle timeout) are retried for up to 30 s from
+  the first failure, at 0.25, 0.5, 1 and then 2 s apart, while buffered media
+  plays; three retries used to run out in under two seconds. Proven against a
+  scripted outage, not a real one on hardware.
+- A read that gave up left its failed request behind, so the demuxer's own
+  retries rethrew at once instead of reaching the network again. Each retry
+  now starts a fresh request.
+- The playback cache retries a busy server (a 5xx, 408 or 429) instead of
+  reporting it as a server without range support.
+- A failed seek is tried once more before it is reported, unless playback
+  closed or a newer seek replaced it.
+- Audio the engine decodes itself (TrueHD, DTS, FLAC, Opus and the like) keeps
+  its format and duration when the stream changes sample rate or channel
+  layout mid-way. A 5.1-to-stereo change used to crash, and a lower-rate
+  stretch played fast. AAC, AC-3 and E-AC-3 pass through to CoreAudio and are
+  unchanged.
+
 ## 1.0.10
 
 September 2026. No API change; the FFmpeg libraries are rebuilt from a newer
