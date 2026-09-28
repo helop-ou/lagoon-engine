@@ -2241,18 +2241,31 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 // hardware only where the silicon has it.
                 let requiresHardware = codecName != "av1"
                     || PlaybackCapabilities.current.hardwareAV1
-                videoDecoder = try VideoToolboxDecoder(
-                    formatDescription: description,
-                    recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
-                    reportedReorderDepth: demuxer.videoStream?.videoReorderDepth ?? 0,
-                    requiresHardware: requiresHardware,
-                    outputHandler: { [weak self] buffer in
-                        self?.acceptDecodedVideo(buffer)
-                    },
-                    errorHandler: { [weak self] error in
-                        self?.failVideoDecode(error)
-                    }
-                )
+                let reorderDepth = demuxer.videoStream?.videoReorderDepth ?? 0
+                let makeDecoder = {
+                    try VideoToolboxDecoder(
+                        formatDescription: description,
+                        recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
+                        reportedReorderDepth: reorderDepth,
+                        requiresHardware: requiresHardware,
+                        outputHandler: { [weak self] buffer in
+                            self?.acceptDecodedVideo(buffer)
+                        },
+                        errorHandler: { [weak self] error in
+                            self?.failVideoDecode(error)
+                        }
+                    )
+                }
+                do {
+                    videoDecoder = try makeDecoder()
+                } catch let failure as VideoToolboxDecoder.DecoderError
+                    where VideoToolboxDecoder.isSessionFault(failure.status) {
+                    // The decoder was busy or being torn down, as right after
+                    // another title's engine let go of it: one more try
+                    // before the stream is judged.
+                    Thread.sleep(forTimeInterval: 0.25)
+                    videoDecoder = try makeDecoder()
+                }
             } catch {
                 // No demux loop yet to run a rebuild's seek, so report it.
                 failVideoDecode(error, allowSessionRecovery: false)
