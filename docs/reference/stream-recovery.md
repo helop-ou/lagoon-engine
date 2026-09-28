@@ -96,6 +96,26 @@ cannot decode here still reaches the ladder. On the Apple TV 4K (3rd gen),
 the film held its last good picture for about two seconds at each spot and
 played on through direct play.
 
+### A Dolby Vision frame without its RPU
+
+Symptom: a profile 7 remux direct-plays for most of a film, then falls back
+to a transcode at the same point on every play, reported as
+`VideoToolbox.decode -12704`. That code is CoreMedia's
+`kCMBlockBufferBadLengthParameterErr`, returned by the decode call itself.
+
+The profile 7 conversion tags the stream Dolby Vision 8.1, and VideoToolbox
+refuses a frame of such a stream that carries no RPU. Some remuxes lose the
+RPU and enhancement layer of scattered frames within a scene: a 4K film
+dropped both from about one frame in four from 47:47. With the HDR10 strip
+the same frames played, since nothing expects an RPU there.
+
+**Rule: once an RPU has converted, every frame leaves with one.**
+`DolbyVisionProfileConverter` appends the last converted RPU to a frame that
+has none, and to one whose own RPU failed to convert, which used to leave
+the same hole. The repeat is kept across seeks: a stale RPU is a brief
+tone-mapping mismatch, a missing one a verdict. The HUD and the decode trace
+count them as `RPU repeated` and `rpuRepeat`.
+
 ### A decode session the system took back
 
 VideoToolbox `-12903`, `kVTInvalidSessionErr`, means the decode *session* is
