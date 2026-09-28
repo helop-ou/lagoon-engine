@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Libavcodec
 import Testing
 @testable import LagoonEngine
 
@@ -263,6 +264,24 @@ struct PlaybackEnginePolicyTests {
         _ samplesSinceFlush: Int
     ) -> Bool {
         state.absorbs(refusedSeconds: refusedSeconds, samplesSinceFlush: samplesSinceFlush)
+    }
+
+    /// ADTS AAC, as MPEG-TS carries it, has no AudioSpecificConfig; handed
+    /// to CoreAudio it never played and the clock waited on it forever.
+    @Test func aacWithoutACodecConfigurationIsDecodedHere() {
+        #expect(AudioDecodePolicy.requiresLocalPCM(
+            codecID: AV_CODEC_ID_AAC, softwareVideoDecoded: false, hasCodecConfiguration: false
+        ))
+        #expect(!AudioDecodePolicy.requiresLocalPCM(
+            codecID: AV_CODEC_ID_AAC, softwareVideoDecoded: false, hasCodecConfiguration: true
+        ))
+        // AC-3 and E-AC-3 carry their configuration in every frame.
+        #expect(!AudioDecodePolicy.requiresLocalPCM(
+            codecID: AV_CODEC_ID_AC3, softwareVideoDecoded: false, hasCodecConfiguration: false
+        ))
+        #expect(!AudioDecodePolicy.requiresLocalPCM(
+            codecID: AV_CODEC_ID_EAC3, softwareVideoDecoded: true, hasCodecConfiguration: false
+        ))
     }
 
     /// `#expect` cannot take a mutating call.
