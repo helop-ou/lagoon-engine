@@ -83,6 +83,42 @@ struct ApplePlaybackAlignmentTests {
         #expect(!VideoToolboxDecoder.isSessionFault(kVTVideoDecoderUnsupportedDataFormatErr))
     }
 
+    /// The out-of-process decoder going away, and memory pressure, are the
+    /// session's too.
+    @Test func aRemovedOrUnreachableDecoderIsASessionFault() {
+        #expect(VideoToolboxDecoder.isSessionFault(kVTVideoDecoderRemovedErr))
+        #expect(VideoToolboxDecoder.isSessionFault(kVTSessionMalfunctionErr))
+        #expect(VideoToolboxDecoder.isSessionFault(kVTVideoDecoderCallbackMessagingErr))
+        #expect(VideoToolboxDecoder.isSessionFault(kVTAllocationFailedErr))
+    }
+
+    /// One picture's fault is dropped under the damaged-run policy; the rest
+    /// stay verdicts.
+    @Test func onlyOnePicturesFaultsAreFrameFaults() {
+        for status in [
+            kVTVideoDecoderBadDataErr,
+            kVTVideoDecoderReferenceMissingErr,
+            kVTVideoDecoderUnknownErr,
+            OSStatus(kCMBlockBufferBadLengthParameterErr),
+            OSStatus(kCMBlockBufferBadOffsetParameterErr),
+            OSStatus(kCMBlockBufferBadPointerParameterErr),
+            OSStatus(kCMBlockBufferEmptyBBufErr),
+            OSStatus(kCMSampleBufferError_InvalidSampleData),
+        ] {
+            #expect(VideoToolboxDecoder.isFrameFault(status))
+            #expect(!VideoToolboxDecoder.isSessionFault(status))
+        }
+        for status in [
+            kVTVideoDecoderUnsupportedDataFormatErr,
+            kVTCouldNotFindVideoDecoderErr,
+            kVTParameterErr,
+            kVTInvalidSessionErr,
+            kVTFormatDescriptionChangeNotSupportedErr,
+        ] {
+            #expect(!VideoToolboxDecoder.isFrameFault(status))
+        }
+    }
+
     /// Every case carries the status, or the classification above is
     /// unreachable.
     @Test func decoderErrorsCarryTheirStatus() {
