@@ -95,6 +95,29 @@ nonisolated enum HEVCNALUnitRewriter {
         }
     }
 
+    /// `payload` with `unit` appended under a fresh length prefix, or nil if
+    /// the unit does not fit the prefix width.
+    static func appending(unit: Data, to payload: Data, lengthSize: Int) -> Data? {
+        guard let prefixed = lengthPrefixed(unit, lengthSize: lengthSize) else { return nil }
+        return payload + prefixed
+    }
+
+    /// A copy of `payload` if its length prefixes walk it exactly, else nil.
+    static func copyIfWellFormed(payload: UnsafeRawBufferPointer, lengthSize: Int) -> Data? {
+        guard (1...4).contains(lengthSize) else { return nil }
+        var offset = 0
+        while offset < payload.count {
+            guard offset + lengthSize <= payload.count else { return nil }
+            var nalLength = 0
+            for index in 0..<lengthSize {
+                nalLength = nalLength << 8 | Int(payload[offset + index])
+            }
+            guard nalLength > 0, offset + lengthSize + nalLength <= payload.count else { return nil }
+            offset += lengthSize + nalLength
+        }
+        return Data(payload)
+    }
+
     /// `unit` with a big-endian length prefix, or nil if it does not fit.
     private static func lengthPrefixed(_ unit: Data, lengthSize: Int) -> Data? {
         let maxLength = (1 << (8 * lengthSize)) - 1
