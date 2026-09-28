@@ -2780,13 +2780,38 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// reset); dropping here starved stall re-priming.
     nonisolated private func acceptSoftwareDecodedVideo(_ buffer: CMSampleBuffer) {
         guard !shared.withLock({ $0.cancelled }) else { return }
+        publishVideoSizeIfChanged(buffer)
         videoQueue.enqueue(buffer)
         kickPumps()
+    }
+
+    /// A decoded stream that changes size mid-way (SD to HD, 4:3 to 16:9)
+    /// hands frames a new description, and a host lays subtitles out against
+    /// `videoSize`. Published as the frame is decoded, a queue's depth ahead
+    /// of the picture. Progressive H.264 reaches the renderer compressed, so
+    /// its size stays the one read at open.
+    nonisolated private func publishVideoSizeIfChanged(_ buffer: CMSampleBuffer) {
+        guard let description = CMSampleBufferGetFormatDescription(buffer) else { return }
+        let size = CMVideoFormatDescriptionGetPresentationDimensions(
+            description,
+            usePixelAspectRatio: true,
+            useCleanAperture: true
+        )
+        let changed = shared.withLock { state -> Bool in
+            guard state.decodedVideoSize != size else { return false }
+            // The first frame sets the baseline; the open published its size.
+            let isFirst = state.decodedVideoSize == nil
+            state.decodedVideoSize = size
+            return !isFirst
+        }
+        guard changed else { return }
+        Task { @MainActor in self.videoSize = size }
     }
 
     nonisolated private func acceptDecodedVideo(_ buffer: CMSampleBuffer) {
         let shouldDrop = shared.withLock { $0.cancelled || $0.pendingSeekSeconds != nil }
         guard !shouldDrop else { return }
+        publishVideoSizeIfChanged(buffer)
         videoQueue.enqueue(buffer)
         kickPumps()
     }
@@ -3583,6 +3608,9 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// Presentation stamp of the last sample a renderer refused, in
         /// media milliseconds.
         var lastRefusedSampleMs: Int?
+        /// Presentation size of the last decoded frame, to notice a stream
+        /// changing size mid-way.
+        var decodedVideoSize: CGSize?
         /// One VideoToolbox session rebuild per generation, and whether one
         /// is in flight: every sample in a dead decoder reports the same
         /// fault.
