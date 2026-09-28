@@ -142,10 +142,13 @@ nonisolated final class FFmpegDemuxer {
     var dolbyVisionProfile7Mode: DolbyVisionProfile7Mode = .convert
     /// Armed by the open-time gate in `.convert` mode; demux-queue use only.
     private var profile7Converter: DolbyVisionProfileConverter?
+    /// Native profile 5 or 8: frames without an RPU get the previous one.
+    private var rpuRepeater: DolbyVisionRPURepeater?
     /// Marks disposable frames droppable; see the attachment comment in
     /// `SampleBufferFactory.sampleBuffer`. Set before `open`.
     var markDroppableFrames = false
-    /// Non-nil when a profile 7 rewrite is armed. Demux queue only.
+    /// Non-nil when a Dolby Vision rewrite is armed: profile 7, or the RPU
+    /// repeat for 5 and 8. Demux queue only.
     private var videoNALLengthSize: Int?
     /// Set when video is start-code delimited (MPEG-TS).
     private var videoUsesStartCodes = false
@@ -161,6 +164,12 @@ nonisolated final class FFmpegDemuxer {
     // Convert mode reports the converter's own instead.
     private let stripStatsLock = NSLock()
     nonisolated(unsafe) private var stripStats: DolbyVisionRewriteStats?
+
+    /// Native profile 5 or 8 frames given the previous RPU, or nil when the
+    /// stream is not one.
+    var dolbyVisionRepeatedRPUs: Int? {
+        rpuRepeater?.repeatedCount
+    }
 
     /// This playback's profile 7 rewrite, or nil when none is armed.
     var dolbyVisionRewriteStats: DolbyVisionRewriteStats? {
@@ -513,6 +522,13 @@ nonisolated final class FFmpegDemuxer {
                 stripStats = DolbyVisionRewriteStats(mode: .stripToHDR10)
                 stripStatsLock.unlock()
             }
+        } else if videoPar.pointee.codec_id == AV_CODEC_ID_HEVC,
+                  let dovi = SampleBufferFactory.doviConfiguration(codecpar: videoPar),
+                  DolbyVisionRPURepeater.applies(toProfile: dovi.dv_profile),
+                  dovi.rpu_present_flag != 0,
+                  let lengthSize = filterNALLengthSize {
+            videoNALLengthSize = lengthSize
+            rpuRepeater = DolbyVisionRPURepeater()
         }
         var videoDescription: CMFormatDescription? = if usesCompressedVideo {
             SampleBufferFactory.videoFormatDescription(
@@ -983,6 +999,9 @@ nonisolated final class FFmpegDemuxer {
     ) -> Data? {
         if let profile7Converter {
             return profile7Converter.convert(payload: payload, lengthSize: lengthSize)
+        }
+        if let rpuRepeater {
+            return rpuRepeater.fill(payload: payload, lengthSize: lengthSize)
         }
         var rpuDropped = 0
         var enhancementDropped = 0
