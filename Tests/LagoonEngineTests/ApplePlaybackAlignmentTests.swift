@@ -621,6 +621,53 @@ struct ApplePlaybackAlignmentTests {
         #expect(decodedFrames >= 100, "decoded \(decodedFrames)")
     }
 
+    /// A stream that changes size mid-way, as broadcast MPEG-2 and H.264 do
+    /// between SD and HD, decodes whole: the output is rebuilt for each size
+    /// instead of the new size being a verdict. Opt-in: set
+    /// `LAGOON_RESOLUTION_CHANGE_FIXTURE_URLS` to comma-separated software-path
+    /// files that change size (recipe in codecs.md).
+    @Test func aStreamThatChangesSizeDecodesAtEachSize() throws {
+        guard let paths = ProcessInfo.processInfo.environment["LAGOON_RESOLUTION_CHANGE_FIXTURE_URLS"],
+              !paths.isEmpty else { return }
+        for path in paths.split(separator: ",").map(String.init) {
+            let demuxer = FFmpegDemuxer(
+                capabilities: PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: true)
+            )
+            defer { demuxer.close() }
+            try demuxer.open(url: path, recommendedPixelBufferAttributes: CVPixelBufferAttributes())
+            let decoder = try #require(demuxer.takeSoftwareVideoDecoder(), "\(path) is not on the software path")
+            var sizes: [String] = []
+            var frames = 0
+            func record(_ buffers: [CMSampleBuffer]) throws {
+                for buffer in buffers {
+                    let image = try #require(CMSampleBufferGetImageBuffer(buffer))
+                    let size = "\(CVPixelBufferGetWidth(image))x\(CVPixelBufferGetHeight(image))"
+                    if sizes.last != size { sizes.append(size) }
+                    let described = try #require(CMSampleBufferGetFormatDescription(buffer))
+                    let dimensions = CMVideoFormatDescriptionGetDimensions(described)
+                    #expect("\(dimensions.width)x\(dimensions.height)" == size)
+                    frames += 1
+                }
+            }
+            readLoop: while true {
+                switch demuxer.readNext() {
+                case .videoPacket(let packet):
+                    try record(try decoder.decode(packet: packet.packet))
+                case .failed(let message):
+                    Issue.record("\(path) failed to read: \(message)")
+                    break readLoop
+                case .endOfFile:
+                    break readLoop
+                default:
+                    continue
+                }
+            }
+            try record(try decoder.drain())
+            #expect(sizes.count == 3, "\(path): \(sizes)")
+            #expect(frames >= 140, "\(path): \(frames) frames")
+        }
+    }
+
     /// Mean difference between adjacent luma rows over that between rows two
     /// apart. Above one, rows alternate like a woven field pair.
     private static func combingRatio(luma image: CVPixelBuffer) -> Double {
