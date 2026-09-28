@@ -8,6 +8,20 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.0.7
+
+September 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Fixed
+
+- A Dolby Vision profile 7 remux whose frames lose their RPU partway through
+  keeps playing. Such a frame, or one whose RPU fails to convert, is given the
+  previous frame's converted RPU. VideoToolbox used to refuse it with -12704,
+  which was reported as `.undecodable`, and a host's ladder fell back to a
+  transcode at the same point on every play. The HUD and the bench line count
+  the repeats.
+
 ## 1.0.6
 
 September 2026. No API change and no change to the libraries; upgrading is a
