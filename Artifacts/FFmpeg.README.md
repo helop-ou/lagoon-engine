@@ -1,8 +1,8 @@
 # The engine's FFmpeg build
 
 `Libavutil`, `Libavcodec`, `Libavformat` and `Libswresample` are FFmpeg
-**n8.1.2** (libavutil 60.26.102, libavcodec 62.28.102, libavformat 62.12.102,
-libswresample 6.3.102), built by `scripts/build-ffmpeg.py` from one configure,
+**n8.1.3** (libavutil 60.26.103, libavcodec 62.28.103, libavformat 62.12.103,
+libswresample 6.3.103), built by `scripts/build-ffmpeg.py` from one configure,
 so all four share one `config.h`. The network stack is compiled out
 (`--disable-network --disable-protocols`, re-enabling only the `file` and
 `data` protocols libavformat needs). All four are **LGPL-2.1-or-later**.
@@ -71,14 +71,14 @@ architecture, and every file's checksum. Absolute toolchain paths are
 recorded for provenance; byte-identical output across Xcode versions is not
 promised.
 
-Source: https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2
+Source: https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.3
 
-Source SHA-256: `9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7`.
+Source SHA-256: `09f990289327d3ebfedf4fc15cae3f884a65dab7a5aac7bbb5b01ff83900efd9`.
 
 FFmpeg's `COPYING.LGPLv2.1` and `LICENSE.md` accompany each artifact.
 
 Every GitHub release carries the complete corresponding source as
-`lagoon-engine-<version>-ffmpeg-8.1.2-source.tar.gz`: upstream's tarball,
+`lagoon-engine-<version>-ffmpeg-8.1.3-source.tar.gz`: upstream's tarball,
 `changes.diff` with the patch, and this revision's build script and
 `BUILD.json` records. `scripts/ffmpeg-source-bundle.sh` makes it, and
 `scripts/publish-release.sh` attaches it.
@@ -114,7 +114,7 @@ libavformat (symbols on the iOS device slice, output in the tvOS simulator):
   headers (`libavutil/internal.h` and friends, `libavcodec/mathops.h`,
   `libavformat/os_support.h`), which the engine does not use. `config.h` and
   `config_components.h` are vended in all four, because `verify()` reads them.
-- `av_version_info()` reads `8.1.2`, not `n8.1.2`: FFmpeg takes it from git
+- `av_version_info()` reads `8.1.3`, not `n8.1.3`: FFmpeg takes it from git
   when it can, and this builds from the release tarball.
 
 ## The codec selection list
