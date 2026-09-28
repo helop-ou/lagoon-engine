@@ -87,14 +87,44 @@ at the next keyframe. Reporting that as `.undecodable` threw direct play away
 for a server transcode: a black screen and a reload for a sub-second fault.
 
 **Rule: a damaged run in a stream that decodes is dropped, not judged.**
-`PlaybackCorruptFramePolicy`: once a session has decoded 48 pictures since
-its last reset, a bad-data picture is dropped, from the decode call or the
-callback. The run closes after 48 clean pictures. A run longer than 300
-pictures, more than a ten-second group of pictures at 24 fps, is a verdict,
-and so is bad data before the session has proven itself, so a stream that
-cannot decode here still reaches the ladder. On the Apple TV 4K (3rd gen),
-the film held its last good picture for about two seconds at each spot and
-played on through direct play.
+`PlaybackCorruptFramePolicy`: once a session has decoded 48 pictures of the
+stream, a damaged picture is dropped, from the decode call or the callback.
+The run closes after 48 clean pictures. A run longer than 300 pictures, more
+than a ten-second group of pictures at 24 fps, is a verdict, and so is damage
+before the stream has proven itself, so a stream that cannot decode here
+still reaches the ladder. On the Apple TV 4K (3rd gen), the film held its last
+good picture for about two seconds at each spot and played on through direct
+play.
+
+The proof belongs to the stream, not the session. A seek, including the
+engine's own recovery seeks, used to make the new session prove the stream
+again, so a damaged picture in the first two seconds after one was a verdict.
+It keeps the proof now; until the new session decodes a picture, only 48
+damaged ones are dropped, so a seek into data that cannot decode is still
+judged in about two seconds.
+
+`VideoToolboxDecoder.isFrameFault` names what counts as one picture's damage.
+Apple documents these codes by name only:
+
+- `-12909` `kVTVideoDecoderBadDataErr` and `-17694`
+  `kVTVideoDecoderReferenceMissingErr`, the decoder's own. The callback drops
+  a missing reference without counting it, as it always has.
+- `-17696` `kVTVideoDecoderUnknownErr`.
+- CoreMedia's malformed-sample errors from the decode call: `-12703` to
+  `-12706` (block buffer offset, length, pointer, empty) and `-12742`
+  (`kCMSampleBufferError_InvalidSampleData`). A Dolby Vision frame without its
+  RPU was `-12704`; see below.
+
+The software decoder applies the same policy to a packet libavcodec rejects
+with `AVERROR_INVALIDDATA` from `avcodec_send_packet`. FFmpeg's own players skip
+such a packet and decode on; the engine used to latch the decode stage as
+failed and report `.undecodable`. Any other libavcodec error is still a
+verdict. The opt-in test
+`aDamagedPacketInASoftwareDecodedStreamIsDropped` reads
+`LAGOON_DAMAGED_VP9_FIXTURE_URL` (`TEST_RUNNER_`-prefixed under `xcodebuild`).
+The fixture is a 6 s `testsrc2` clip encoded with `libvpx-vp9 -g 48`, with 40
+bytes of one packet's payload after 2.5 s overwritten with `0xFF`; `ffmpeg -i`
+on it must report "Error submitting packet to decoder: Invalid data".
 
 ### A Dolby Vision frame without its RPU
 
@@ -122,9 +152,12 @@ VideoToolbox `-12903`, `kVTInvalidSessionErr`, means the decode *session* is
 gone and needs remaking, not that the samples were refused.
 
 **Rule: a session fault is rebuilt, not reported as undecodable.**
-`VideoToolboxDecoder.isSessionFault` names the three statuses that mean the
-decoder was taken away: `kVTInvalidSessionErr`, `kVTVideoDecoderMalfunctionErr`,
-`kVTVideoDecoderNotAvailableNowErr`. `PlaybackDecodeSessionPolicy` decides,
+`VideoToolboxDecoder.isSessionFault` names the statuses that mean the decoder
+was taken away: `kVTInvalidSessionErr`, `kVTVideoDecoderMalfunctionErr`,
+`kVTVideoDecoderNotAvailableNowErr`, and, because VideoToolbox decodes out of
+process, `kVTVideoDecoderRemovedErr`, `kVTSessionMalfunctionErr` and
+`kVTVideoDecoderCallbackMessagingErr`. `kVTAllocationFailedErr` joins them:
+memory pressure says nothing about the samples. `PlaybackDecodeSessionPolicy` decides,
 bounded like `PlaybackRestartPointPolicy`: one rebuild per playback
 generation, recorded against the generation the re-seek starts. A session
 that actually cannot be made is reported as `.undecodable` one seek later.
@@ -148,8 +181,10 @@ fault on a path that is about to stop the loop turns a reported failure into
 a spinner that never resolves, which is worse. So absorption is opted out with
 `allowSessionRecovery: false` wherever the loop is stopping or never started:
 
-- **Decoder construction at open**, before the loop runs. A decoder the system
-  will not hand out at open is `.undecodable`.
+- **Decoder construction at open**, before the loop runs. A session fault
+  there gets one more attempt a quarter of a second later, since the decoder
+  may still be leaving the previous title's engine. A decoder the system will
+  not hand out on the second try is `.undecodable`.
 - **The seek branch**, where returning false breaks the loop. It retries
   `reset()` in place and reports `.undecodable` only if that fails too.
 - **Cancelled playback**, through the policy's `tooLate`: samples draining out
