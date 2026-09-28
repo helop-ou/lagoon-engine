@@ -418,11 +418,13 @@ nonisolated enum PlaybackPrefetchOutcome: Equatable, Sendable {
     }
 }
 
-nonisolated enum PlaybackCacheError: LocalizedError {
+nonisolated enum PlaybackCacheError: LocalizedError, Equatable {
     case cancelled
     case invalidResponse
     case rangeUnsupported
     case storageUnavailable
+    /// A status another attempt could change: a 5xx, 408 or 429.
+    case serverStatus(Int)
 
     var errorDescription: String? {
         switch self {
@@ -430,6 +432,7 @@ nonisolated enum PlaybackCacheError: LocalizedError {
         case .invalidResponse: "The media server returned an invalid byte-range response."
         case .rangeUnsupported: "The media server does not support the requested byte range."
         case .storageUnavailable: "The playback cache could not be opened."
+        case .serverStatus(let code): "The media server answered \(code)."
         }
     }
 }
@@ -518,7 +521,11 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
             && Self.responseOffset(response: http) == requestedRange.lowerBound
         guard validPartial else {
             completionHandler(.cancel)
-            finish(.failure(PlaybackCacheError.rangeUnsupported), cancelTask: true)
+            // A restarting server is not a server without ranges.
+            let error: PlaybackCacheError = NetworkRetryPolicy.isTransient(httpStatus: http.statusCode)
+                ? .serverStatus(http.statusCode)
+                : .rangeUnsupported
+            finish(.failure(error), cancelTask: true)
             return
         }
         lock.lock()
@@ -659,6 +666,8 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
     private var active: [Int: PlaybackRangeRequest] = [:]
     private var cancelled = false
     private let authorization: MediaRequestAuthorization?
+    /// Internal so tests can shorten it; see `NetworkRetryPolicy`.
+    var retryPolicy = NetworkRetryPolicy.playback
 
     public init(configuration: URLSessionConfiguration = .ephemeral, authorization: MediaRequestAuthorization? = nil) {
         delegateProxy = PlaybackRangeSessionDelegate()
@@ -679,8 +688,9 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
     }
 
     func load(url: URL, range: PlaybackByteRange, priority: Float) throws -> PlaybackRangeResponse {
-        var lastError: Error = PlaybackCacheError.invalidResponse
-        for attempt in 0..<3 {
+        var attempt = 0
+        var firstFailureAt: Date?
+        while true {
             let request = PlaybackRangeRequest(
                 url: url,
                 range: range,
@@ -712,13 +722,25 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
                 throw PlaybackCacheError.rangeUnsupported
             } catch {
                 removeActive(identifier)
-                lastError = error
-                if attempt < 2 {
-                    Thread.sleep(forTimeInterval: 0.2 * Double(attempt + 1))
+                // A network or server fault is ridden out on the time budget;
+                // anything else keeps its two quick retries.
+                let started = firstFailureAt ?? Date()
+                firstFailureAt = started
+                let pause: TimeInterval? = if NetworkRetryPolicy.isTransient(error) {
+                    retryPolicy.delay(
+                        beforeAttempt: attempt,
+                        elapsedSinceFirstFailure: Date().timeIntervalSince(started)
+                    )
+                } else {
+                    attempt < 2 ? 0.2 * Double(attempt + 1) : nil
+                }
+                guard let pause else { throw error }
+                attempt += 1
+                guard NetworkRetryPolicy.pause(pause, unless: { lock.withLock { cancelled } }) else {
+                    throw PlaybackCacheError.cancelled
                 }
             }
         }
-        throw lastError
     }
 
     func cancelAll() {
