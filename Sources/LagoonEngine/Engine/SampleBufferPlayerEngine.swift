@@ -372,6 +372,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     @ObservationIgnored private var rendererRecoveryInProgress = false
     /// The playback generation that has spent its one restart-point retry.
     @ObservationIgnored private var restartPointRetryGeneration: Int?
+    @ObservationIgnored private var rendererDamage = PlaybackRendererDamagePolicy.State()
     @ObservationIgnored private var audioRendererRecoveryInProgress = false
     /// Non-nil while a fresh audio renderer is swapped in, so a flush
     /// notification cannot start a second swap on top of the first.
@@ -1679,12 +1680,23 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 String(describing: underlying?.userInfo ?? [:])
             ))
         }
-        // A failure this soon after a flush is about the restart point, not
-        // the bitstream: one flush-and-re-seek before the ladder descends.
-        // Once per generation, so it cannot loop.
         let (samplesSinceFlush, generation) = shared.withLock {
             ($0.videoSamplesSinceFlush, $0.playbackGeneration)
         }
+        // A damaged picture the renderer plays through: it keeps rendering and
+        // decodes on from the next keyframe. See `PlaybackRendererDamagePolicy`.
+        if renderer.status != .failed,
+           Self.isRendererFrameFault(notificationError ?? renderer.error),
+           rendererDamage.absorbs(
+               refusedSeconds: Self.refusedSampleMilliseconds(notificationError ?? renderer.error)
+                   .map { Double($0) / 1_000 },
+               samplesSinceFlush: samplesSinceFlush
+           ) {
+            return
+        }
+        // A failure this soon after a flush is about the restart point, not
+        // the bitstream: one flush-and-re-seek before the ladder descends.
+        // Once per generation, so it cannot loop.
         if PlaybackRestartPointPolicy.shouldRetryInPlace(
             videoSamplesSinceFlush: samplesSinceFlush,
             alreadyRetriedThisGeneration: restartPointRetryGeneration == generation
@@ -1726,6 +1738,16 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     /// The stamp of the sample a renderer refused, in media milliseconds.
     /// The only `userInfo` field read: a number, never a name or URL.
+    /// `AVErrorDecodeFailed` over one picture's VideoToolbox fault, as
+    /// `VideoToolboxDecoder.isFrameFault` names them.
+    nonisolated static func isRendererFrameFault(_ error: Error?) -> Bool {
+        guard let error = error as? NSError,
+              error.domain == AVFoundationErrorDomain,
+              error.code == AVError.Code.decodeFailed.rawValue,
+              let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError else { return false }
+        return VideoToolboxDecoder.isFrameFault(OSStatus(underlying.code))
+    }
+
     nonisolated private static func refusedSampleMilliseconds(_ error: Error?) -> Int? {
         guard let value = (error as? NSError)?
             .userInfo[AVErrorPresentationTimeStampKey] as? NSValue else { return nil }
