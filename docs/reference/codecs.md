@@ -33,6 +33,22 @@ FFmpeg's native channel order matches CoreAudio's channel bitmap on the first
 18 positions, so a native layout mask maps straight into the
 `AudioChannelLayout`.
 
+The renderer's format is fixed at open from the stream's declared rate and
+layout, and every resampler resamples to that. A stream can change shape
+mid-way: a TV recording that joins a stereo advert to a 5.1 programme, or a
+44.1 kHz stretch in 48 kHz, which ADTS AAC in MPEG-TS carries per frame. So
+`AudioDecoder` rebuilds its resampler whenever the input's sample format,
+rate or channel layout changes, and sizes each conversion from
+`swr_get_out_samples`, since upsampling needs more room than came in. It
+used to rebuild only for a new sample format: a resampler kept for six planes
+read past a stereo frame's two and crashed, and a 44.1 kHz stretch played at
+48 kHz, fast and sharp.
+
+`AudioDecoderResampleTests` feeds synthetic frames that change shape; its
+opt-in test reads `LAGOON_LAYOUT_CHANGE_TS_FIXTURE_URL`. The fixture is three
+two-second MPEG-TS clips joined with `cat`: `sine` encoded with `-c:a aac -f
+mpegts` as stereo 48 kHz, 5.1 48 kHz (`pan=5.1|c0=c0|…`) and stereo 44.1 kHz.
+
 ### Atmos from E-AC3 JOC
 
 Verified on hardware. When FFmpeg reports `AV_PROFILE_EAC3_DDP_ATMOS`, the
