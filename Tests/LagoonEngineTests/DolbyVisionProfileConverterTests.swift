@@ -277,6 +277,60 @@ struct DolbyVisionProfileConverterTests {
         #expect(stats.rpusDropped == 1)
     }
 
+    /// A remux that lost a frame's metadata: tagged 8.1, VideoToolbox
+    /// refuses that frame (-12704), so it takes the previous frame's RPU.
+    @Test(arguments: fixtures)
+    func aFrameWithoutAnRPUGetsThePreviousOne(_ fixture: RPUFixture) throws {
+        let original = try decodeFixture(fixture.originalBase64)
+        let vclUnit = Data([0x02, 0x01]) + Data(repeating: 0xAB, count: 40)
+        let nextVCLUnit = Data([0x02, 0x01]) + Data(repeating: 0xCD, count: 40)
+        let converter = try #require(DolbyVisionProfileConverter(record: profileSevenRecord()))
+
+        let first = lengthPrefixed(units: [vclUnit, try nal62(from: original)], lengthSize: 4)
+        _ = try #require(first.withUnsafeBytes { converter.convert(payload: $0, lengthSize: 4) })
+        let bare = lengthPrefixed(units: [nextVCLUnit], lengthSize: 4)
+        let result = try #require(bare.withUnsafeBytes { converter.convert(payload: $0, lengthSize: 4) })
+
+        let units = parseLengthPrefixedUnits(result, lengthSize: 4)
+        #expect(units == [nextVCLUnit, try convertedNal62(from: original)])
+        #expect(converter.stats.rpusRepeated == 1)
+        #expect(converter.stats.rpusConverted == 1)
+    }
+
+    @Test(arguments: fixtures)
+    func aFailedRPUIsReplacedByThePreviousOne(_ fixture: RPUFixture) throws {
+        let original = try decodeFixture(fixture.originalBase64)
+        let vclUnit = Data([0x02, 0x01]) + Data(repeating: 0xAB, count: 40)
+        let malformedRPU62 = Data([0x7C, 0x01]) + Data(repeating: 0xFF, count: 20)
+        let converter = try #require(DolbyVisionProfileConverter(record: profileSevenRecord()))
+
+        let first = lengthPrefixed(units: [vclUnit, try nal62(from: original)], lengthSize: 4)
+        _ = try #require(first.withUnsafeBytes { converter.convert(payload: $0, lengthSize: 4) })
+        let broken = lengthPrefixed(units: [vclUnit, malformedRPU62], lengthSize: 4)
+        let result = try #require(broken.withUnsafeBytes { converter.convert(payload: $0, lengthSize: 4) })
+
+        let units = parseLengthPrefixedUnits(result, lengthSize: 4)
+        #expect(units == [vclUnit, try convertedNal62(from: original)])
+        let stats = converter.stats
+        #expect(stats.rpusDropped == 1)
+        #expect(stats.errors == 1)
+        #expect(stats.rpusRepeated == 1)
+    }
+
+    @Test func aMalformedFrameIsNotGivenARepeatedRPU() throws {
+        let original = try decodeFixture(Self.fixtures[0].originalBase64)
+        let vclUnit = Data([0x02, 0x01]) + Data(repeating: 0xAB, count: 40)
+        let converter = try #require(DolbyVisionProfileConverter(record: profileSevenRecord()))
+
+        let first = lengthPrefixed(units: [vclUnit, try nal62(from: original)], lengthSize: 4)
+        _ = try #require(first.withUnsafeBytes { converter.convert(payload: $0, lengthSize: 4) })
+        // The prefix claims more bytes than follow.
+        let overrun = Data([0x00, 0x00, 0x01, 0x00]) + vclUnit
+        let result = overrun.withUnsafeBytes { converter.convert(payload: $0, lengthSize: 4) }
+        #expect(result == nil)
+        #expect(converter.stats.rpusRepeated == 0)
+    }
+
     // MARK: - synthesizedRecord / init?(record:)
 
     @Test func theSynthesizedRecordDescribesProfile81() throws {
