@@ -70,12 +70,23 @@ nonisolated enum DemuxError: LocalizedError {
     }
 }
 
-/// AC-3 alongside software-decoded video is decoded to LPCM: passed through,
-/// it interrupted audio and grew memory on tvOS. Everything else keeps
-/// passthrough.
+/// Which passthrough-capable audio is decoded to LPCM here instead.
+///
+/// AC-3 alongside software-decoded video: passed through, it interrupted
+/// audio and grew memory on tvOS.
+///
+/// AAC without a codec configuration: ADTS, as MPEG-TS carries it, with a
+/// seven-byte header on every frame and no AudioSpecificConfig. Handed to
+/// CoreAudio as raw AAC it never played, and the clock waited on it: an
+/// MPEG-TS recording stalled at its first second, buffering, with no error.
+/// Decoded here it plays, and follows the stereo and 5.1 changes broadcast
+/// streams make mid-way, which a passthrough format fixed at open cannot.
+///
+/// Everything else keeps passthrough.
 nonisolated enum AudioDecodePolicy {
-    static func requiresLocalPCM(codecID: AVCodecID, softwareVideoDecoded: Bool) -> Bool {
-        softwareVideoDecoded && codecID == AV_CODEC_ID_AC3
+    static func requiresLocalPCM(codecID: AVCodecID, softwareVideoDecoded: Bool, hasCodecConfiguration: Bool = true) -> Bool {
+        if codecID == AV_CODEC_ID_AAC, !hasCodecConfiguration { return true }
+        return softwareVideoDecoded && codecID == AV_CODEC_ID_AC3
     }
 }
 
@@ -630,7 +641,8 @@ nonisolated final class FFmpegDemuxer {
                 }
                 let requiresLocalPCM = AudioDecodePolicy.requiresLocalPCM(
                     codecID: par.pointee.codec_id,
-                    softwareVideoDecoded: outputsDecodedVideo
+                    softwareVideoDecoded: outputsDecodedVideo,
+                    hasCodecConfiguration: par.pointee.extradata != nil && par.pointee.extradata_size > 0
                 )
                 if !requiresLocalPCM,
                    let (passthrough, framesPerPacket) = SampleBufferFactory.audioFormatDescription(codecpar: par) {
