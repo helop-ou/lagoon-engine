@@ -55,8 +55,10 @@ struct URLSessionByteSourceTests {
         #expect(TransportStub.requests(path: "/nonranged").count == 1)
     }
 
+    /// A 5xx is retried within the budget, then an I/O error, never EOF.
     @Test func serverErrorsAreIOErrorsNotEOF() throws {
         let transport = makeTransport()
+        transport.retryPolicy = NetworkRetryPolicy(budget: 0.2, delays: [0.02, 0.05])
         TransportStub.set("/error", .init(status: 500))
         var io: UnsafeMutablePointer<AVIOContext>?
         #expect(Self.open(transport, url: Self.testURL("/error"), into: &io) >= 0)
@@ -68,18 +70,24 @@ struct URLSessionByteSourceTests {
         #expect(result != -541_478_725) // AVERROR_EOF: a failed read is not a clean end of stream.
         let count = TransportStub.requests(path: "/error").count
         #expect(count >= 2)
-        #expect(count <= 4)
+        // Bounded by the budget: 0.2 s at 0.05 s apart.
+        #expect(count <= 6)
     }
 
     @Test func aDroppedConnectionResumesAtTheSamePosition() throws {
         let transport = makeTransport()
         let body = Self.body(count: 1_048_576)
-        TransportStub.set("/dropped", .init(body: body, dropAfterBytes: 300 * 1_024))
+        let drop = DispatchSemaphore(value: 0)
+        TransportStub.set("/dropped", .init(body: body, dropAfterBytes: 300 * 1_024, dropWhenSignalled: drop))
         var io: UnsafeMutablePointer<AVIOContext>?
         #expect(Self.open(transport, url: Self.testURL("/dropped"), into: &io) >= 0)
         let context = try #require(io)
         defer { _ = transport.close(context) }
-        let received = Self.readAll(context)
+        var first = [UInt8](repeating: 0, count: 64 * 1_024)
+        let firstCount = avio_read(context, &first, Int32(first.count))
+        #expect(firstCount > 0)
+        drop.signal()
+        let received = Data(first.prefix(Int(max(firstCount, 0)))) + Self.readAll(context)
         #expect(received == body)
         let requests = TransportStub.requests(path: "/dropped")
         #expect(requests.count == 2)
@@ -98,6 +106,43 @@ struct URLSessionByteSourceTests {
         let result = avio_read(context, &buffer, Int32(buffer.count))
         #expect(result < 0)
         #expect(TransportStub.requests(path: "/missing").count == 1)
+    }
+
+    /// Six failed requests outlast the old three retries; the time budget
+    /// rides them out.
+    @Test func anOutageLongerThanThreeRetriesIsRiddenOut() throws {
+        let transport = makeTransport()
+        transport.retryPolicy = NetworkRetryPolicy(budget: 5, delays: [0.01, 0.02, 0.05])
+        let body = Self.body(count: 200 * 1_024)
+        TransportStub.set("/outage", .init(body: body, failFirst: 6))
+        var io: UnsafeMutablePointer<AVIOContext>?
+        #expect(Self.open(transport, url: Self.testURL("/outage"), into: &io) >= 0)
+        let context = try #require(io)
+        defer { _ = transport.close(context) }
+        #expect(Self.readAll(context) == body)
+        #expect(TransportStub.requests(path: "/outage").count == 7)
+    }
+
+    /// A read that gave up must not leave its error for the next one: the
+    /// demuxer's own retry has to reach the network again.
+    @Test func aReadAfterAnExhaustedRetryStartsAFreshRequest() throws {
+        let transport = makeTransport()
+        transport.retryPolicy = NetworkRetryPolicy(budget: 0.05, delays: [0.02])
+        let body = Self.body(count: 64 * 1_024)
+        TransportStub.set("/flaky", .init(body: body, failFirst: 100))
+        var io: UnsafeMutablePointer<AVIOContext>?
+        #expect(Self.open(transport, url: Self.testURL("/flaky"), into: &io) >= 0)
+        let context = try #require(io)
+        defer { _ = transport.close(context) }
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        #expect(avio_read(context, &buffer, Int32(buffer.count)) < 0)
+        let failedRequests = TransportStub.requests(path: "/flaky").count
+        #expect(failedRequests >= 2)
+        // The outage ends; the next read has to reach the network again.
+        TransportStub.set("/flaky", .init(body: body))
+        avio_seek(context, 0, SEEK_SET)
+        #expect(Self.readAll(context) == body)
+        #expect(TransportStub.requests(path: "/flaky").count > failedRequests)
     }
 
     @Test func anInterruptedReadReturnsPromptly() throws {
@@ -319,6 +364,14 @@ private nonisolated struct TransportFixture: Sendable {
     /// Fails with `.networkConnectionLost` once this many bytes have streamed
     /// for the path, then behaves normally.
     var dropAfterBytes: Int?
+    /// Holds the drop until signalled, so the client has read before the
+    /// connection goes. Without it, a loaded machine could deliver the error
+    /// ahead of the bytes streamed before it, and the resume from zero was
+    /// right but not what the test asked.
+    var dropWhenSignalled: DispatchSemaphore?
+    /// Fails this many requests for the path with `.notConnectedToInternet`
+    /// before serving any, as a network outage does.
+    var failFirst = 0
     /// Sends headers, then no body, until the task is cancelled.
     var holdBody = false
     /// Redirects to this URL instead of serving a body, to test that the
@@ -338,6 +391,7 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
     private nonisolated(unsafe) static var fixtures: [String: TransportFixture] = [:]
     private nonisolated(unsafe) static var recorded: [String: [(url: String, range: String?, headers: [String: String])]] = [:]
     private nonisolated(unsafe) static var dropped: Set<String> = []
+    private nonisolated(unsafe) static var failed: [String: Int] = [:]
     private let stateLock = NSLock()
     private var stopped = false
     private var fixture = TransportFixture(status: 404)
@@ -347,6 +401,18 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
             fixtures = [:]
             recorded = [:]
             dropped = []
+            failed = [:]
+        }
+    }
+
+    /// Whether this request is one of the path's scripted failures.
+    private static func failsNow(path: String, limit: Int) -> Bool {
+        guard limit > 0 else { return false }
+        return lock.withLock {
+            let count = failed[path, default: 0]
+            guard count < limit else { return false }
+            failed[path] = count + 1
+            return true
         }
     }
 
@@ -379,6 +445,10 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
         fixture = Self.lock.withLock {
             Self.recorded[url.path, default: []].append((url: url.absoluteString, range: range, headers: headers))
             return Self.fixtures[url.path] ?? TransportFixture(status: 404)
+        }
+        if Self.failsNow(path: url.path, limit: fixture.failFirst) {
+            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+            return
         }
         respond(url: url, range: range)
     }
@@ -444,6 +514,7 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
             offset = end
             if let dropAfter = fixture.dropAfterBytes, sent >= dropAfter,
                Self.markDropped(path: request.url?.path) {
+                _ = fixture.dropWhenSignalled?.wait(timeout: .now() + 5)
                 client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
                 return
             }
