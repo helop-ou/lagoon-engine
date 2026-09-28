@@ -101,8 +101,31 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
     /// VideoToolbox reports a damaged picture either from the decode call or
     /// in the callback, so both ask here.
     private func absorbsDamagedFrame(_ status: OSStatus) -> Bool {
-        guard status == kVTVideoDecoderBadDataErr else { return false }
+        guard Self.isFrameFault(status) else { return false }
         return stateLock.withLock { corruptFrames.absorbsDamagedFrame() }
+    }
+
+    /// Whether a status is about one picture, not the session or the stream:
+    /// dropped under `PlaybackCorruptFramePolicy`, never judged on its own.
+    ///
+    /// Apple documents these codes by name only. Bad data and a missing
+    /// reference are the decoder's own. CoreMedia's buffer errors come back
+    /// from the decode call when a sample is malformed, as a Dolby Vision
+    /// frame without its RPU was (-12704), and say nothing about the next.
+    static func isFrameFault(_ status: OSStatus) -> Bool {
+        switch status {
+        case kVTVideoDecoderBadDataErr,
+             kVTVideoDecoderReferenceMissingErr,
+             kVTVideoDecoderUnknownErr,
+             kCMBlockBufferBadOffsetParameterErr,
+             kCMBlockBufferBadLengthParameterErr,
+             kCMBlockBufferBadPointerParameterErr,
+             kCMBlockBufferEmptyBBufErr,
+             kCMSampleBufferError_InvalidSampleData:
+            true
+        default:
+            false
+        }
     }
 
     /// Whether a status is about the decode *session*, not the samples. The
@@ -110,10 +133,23 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
     ///
     /// `isRecoverableFrameError` is different: one bad access unit in a live
     /// session.
+    ///
+    /// VideoToolbox decodes out of process: a removed decoder, a malfunctioning
+    /// session and a lost link to it all mean the same thing. So does an
+    /// allocation failure, which is memory pressure, not the samples.
     static func isSessionFault(_ status: OSStatus) -> Bool {
-        status == kVTInvalidSessionErr
-            || status == kVTVideoDecoderMalfunctionErr
-            || status == kVTVideoDecoderNotAvailableNowErr
+        switch status {
+        case kVTInvalidSessionErr,
+             kVTVideoDecoderMalfunctionErr,
+             kVTVideoDecoderNotAvailableNowErr,
+             kVTVideoDecoderRemovedErr,
+             kVTSessionMalfunctionErr,
+             kVTVideoDecoderCallbackMessagingErr,
+             kVTAllocationFailedErr:
+            true
+        default:
+            false
+        }
     }
 
     public init(
