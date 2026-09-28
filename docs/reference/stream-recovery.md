@@ -172,6 +172,21 @@ the same hole. The repeat is kept across seeks: a stale RPU is a brief
 tone-mapping mismatch, a missing one a verdict. The HUD and the decode trace
 count them as `RPU repeated` and `rpuRepeat`.
 
+Native profile 5 and 8 streams fail the same way, since their frames reach
+VideoToolbox as Dolby Vision too. On the Apple TV 4K (3rd gen), a profile 8.1
+clip with the RPU removed from one frame in four for ten seconds had each such
+frame refused with `-12704` in the output callback and every picture
+referencing it with `-12909`: 223 of 755 pictures lost. The damaged-run
+policy kept it from a verdict, but a third of ten seconds of picture was
+gone. **`DolbyVisionRPURepeater` gives those frames the previous RPU too**,
+and the same clip showed all 755 pictures. A frame with its own RPU passes
+through zero-copy; the HUD reads `native · N RPU repeated` and the bench line
+`doviRepeat`.
+
+To reproduce it, remux a profile 8 title with the type-62 unit removed from
+every fourth non-key frame in a window, keeping the configuration record
+(`dvvC` in MP4 needs `-tag:v dvh1 -strict unofficial`).
+
 ### A decode session the system took back
 
 VideoToolbox `-12903`, `kVTInvalidSessionErr`, means the decode *session* is
