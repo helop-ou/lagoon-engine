@@ -247,6 +247,35 @@ A device profile cannot say "interlaced only", so the demuxer splits it:
   into HDR; without the rest, the display tone-maps from its own defaults
   instead of the master's.
 
+### A stream that changes size
+
+Broadcast MPEG-2 and H.264 switch between SD and HD at programme boundaries,
+and joined files do the same. On the Apple TV 4K (3rd gen), 720p, 1080p, 720p
+clips with continuous timestamps behaved like this:
+
+- **H.264 through the compressed renderer and HEVC through VideoToolbox**
+  played through; the parameter sets travel in the stream.
+- **The software path** (VP9, AV1 without AV1 silicon, MPEG-2, VC-1, MPEG-4,
+  interlaced H.264) failed on its first frame, `.undecodable`, whatever the
+  pixel format: its pools, pixel-transfer or Metal stage and format
+  description were all built for the size read at open.
+
+`SoftwareVideoDecoder` now rebuilds everything sized to the picture when a
+frame of a new size arrives (`reconfigureOutput`), in the output mode chosen at
+open, so a new size never changes how frames are coloured. GPU frames still in
+flight drain first, since they carry the old description. 8-bit VP9, MPEG-2
+576 to 1080, and 10-bit VP9 on the GPU path all played through on the device.
+
+`videoSize` follows too: decoded frames publish their presentation size when
+it changes, so a host lays subtitles out against the new picture. Progressive
+H.264 reaches the renderer compressed, so its size stays the one read at open.
+A change of bit depth mid-stream is still a verdict.
+
+The opt-in test `aStreamThatChangesSizeDecodesAtEachSize` reads
+`LAGOON_RESOLUTION_CHANGE_FIXTURE_URLS`, comma-separated. Make each fixture
+by joining same-codec clips of two sizes with ffmpeg's concat demuxer
+(`-f concat -c copy`), not `cat`, which restarts the timestamps.
+
 ### Anamorphic and non-square pixels
 
 - `SampleBufferFactory` attaches `kCMFormatDescriptionExtension_PixelAspectRatio`
