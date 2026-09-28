@@ -126,6 +126,32 @@ The fixture is a 6 s `testsrc2` clip encoded with `libvpx-vp9 -g 48`, with 40
 bytes of one packet's payload after 2.5 s overwritten with `0xFF`; `ffmpeg -i`
 on it must report "Error submitting packet to decoder: Invalid data".
 
+### A damaged picture the renderer plays through
+
+Progressive H.264 goes to `AVSampleBufferVideoRenderer` compressed, so the
+engine's decoder never sees its pictures. On the Apple TV 4K (3rd gen), one
+damaged H.264 P-picture made the renderer post `didFailToDecode` for it and for
+every picture depending on it: 18 notifications over 0.7 s, each
+`AVFoundationErrorDomain -11821` over `-12909`. Its status stayed `.rendering`,
+it never asked for a flush, and it decoded on from the next keyframe. The
+engine took the first notification as `.undecodable`, and a 10 s clip that
+the renderer would have finished stopped at 5.0 s.
+
+**Rule: a renderer frame fault in a stream it has played is counted, not
+judged.** `PlaybackRendererDamagePolicy`: once the renderer has taken 48
+samples since a flush, at any point in the stream, a decode failure whose
+underlying status is one picture's fault (`VideoToolboxDecoder.isFrameFault`)
+is let through while the renderer keeps rendering. Two seconds of media time
+without a failure close the run, and a run of 300 is a verdict. A failure from
+the first samples still gets the restart-point retry, and a renderer that
+needs a flush still gets one.
+
+To reproduce it without a server, hand the engine a file URL: a 10 s
+`testsrc2` clip in MP4 (`libx264 -g 48 -bf 2`, AAC audio), with 2 KB in the
+middle of the P-picture at 5.29 s overwritten. `ffmpeg -i` conceals it
+("concealing … errors in P frame"); the renderer does not. The engine only
+starts once a display layer is attached with `attach(displayLayer:)`.
+
 ### A Dolby Vision frame without its RPU
 
 Symptom: a profile 7 remux direct-plays for most of a film, then falls back
