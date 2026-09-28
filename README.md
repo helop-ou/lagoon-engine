@@ -167,7 +167,7 @@ The native libraries carry their own licence texts with the artifacts:
 
 - FFmpeg's four libraries: LGPL-2.1-or-later, built here without their network
   stack. Every release attaches their complete corresponding source
-  (`lagoon-engine-<version>-ffmpeg-8.1.2-source.tar.gz`), and libavcodec's
+  (`lagoon-engine-<version>-ffmpeg-8.1.3-source.tar.gz`), and libavcodec's
   Independent JPEG Group code asks an app to credit the IJG.
 - dav1d and uavs3d: BSD. lcms2 and libdovi: MIT. libdovi's licence file also
   lists the Rust crates and standard library it links.
