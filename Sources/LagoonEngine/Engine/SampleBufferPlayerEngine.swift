@@ -212,7 +212,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// Proof the Dolby Vision profile 7 rewrite engaged, for the HUD; nil
     /// until a profile 7 track appears.
     public var dolbyVisionRewriteInfo: String? {
-        guard let stats = demuxer.dolbyVisionRewriteStats else { return nil }
+        guard let stats = demuxer.dolbyVisionRewriteStats else {
+            return demuxer.dolbyVisionRepeatedRPUs.map { "native · \($0) RPU repeated" }
+        }
         let megabytes = Double(stats.bytesRemoved) / 1_000_000
         switch stats.mode {
         case .convert:
@@ -1870,6 +1872,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     gates += " doviP7=\"strip rpuDrop=\(stats.rpusDropped) elDrop=\(stats.enhancementUnitsDropped)"
                         + " bytes=\(stats.bytesRemoved)\""
                 }
+            } else if let repeated = demuxer.dolbyVisionRepeatedRPUs {
+                gates += " doviRepeat=\(repeated)"
             } else {
                 gates += " doviP7=\"off\""
             }
