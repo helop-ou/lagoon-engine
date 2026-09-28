@@ -8,6 +8,29 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.0.8
+
+September 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Fixed
+
+- A damaged picture in progressive H.264 no longer ends direct play. The
+  renderer reports it and decodes on from the next keyframe; the engine used
+  to report the first failure as `.undecodable`.
+- A packet the software decoder rejects as invalid data (AV1 in software,
+  VP9, MPEG-2, VC-1, interlaced H.264) is dropped instead of failing the
+  stream.
+- More of VideoToolbox's one-picture faults are dropped rather than judged:
+  missing references and unknown decoder errors from the decode call, and
+  CoreMedia's malformed-sample errors.
+- A decoder that was removed, lost its connection or ran out of memory is
+  rebuilt instead of reported as `.undecodable`. At open, the engine tries once
+  more before it gives up.
+- A stream that has already decoded keeps that standing across seeks, so a
+  damaged picture just after one is dropped. Damage right after a seek is
+  still judged within about two seconds.
+
 ## 1.0.7
 
 September 2026. No API change and no change to the libraries; upgrading is a
