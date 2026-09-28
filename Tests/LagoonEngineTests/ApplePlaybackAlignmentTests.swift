@@ -583,6 +583,44 @@ struct ApplePlaybackAlignmentTests {
         #expect(worstCombing < 1.0, "worst combing ratio \(worstCombing)")
     }
 
+    /// One damaged packet mid-stream is dropped, not judged: libavcodec
+    /// answers it with `AVERROR_INVALIDDATA` and decodes on. Opt-in: set
+    /// `LAGOON_DAMAGED_VP9_FIXTURE_URL` to a VP9 WebM with one frame's payload
+    /// overwritten after the first two seconds (recipe in stream-recovery.md).
+    @Test func aDamagedPacketInASoftwareDecodedStreamIsDropped() throws {
+        guard let rawURL = ProcessInfo.processInfo.environment["LAGOON_DAMAGED_VP9_FIXTURE_URL"],
+              !rawURL.isEmpty else { return }
+        let demuxer = FFmpegDemuxer(
+            capabilities: PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: true)
+        )
+        defer { demuxer.close() }
+        try demuxer.open(
+            url: rawURL,
+            recommendedPixelBufferAttributes: CVPixelBufferAttributes()
+        )
+        #expect(demuxer.videoStream?.codecName == "vp9")
+        let decoder = try #require(demuxer.takeSoftwareVideoDecoder())
+
+        var decodedFrames = 0
+        readLoop: while true {
+            switch demuxer.readNext() {
+            case .videoPacket(let packet):
+                decodedFrames += try decoder.decode(packet: packet.packet).count
+            case .failed(let message):
+                Issue.record("damaged vp9 fixture failed to read: \(message)")
+                break readLoop
+            case .endOfFile:
+                break readLoop
+            default:
+                continue
+            }
+        }
+        decodedFrames += try decoder.drain().count
+        #expect(decoder.corruptPacketCount >= 1)
+        // The clip is 144 pictures; the damage costs the rest of its group.
+        #expect(decodedFrames >= 100, "decoded \(decodedFrames)")
+    }
+
     /// Mean difference between adjacent luma rows over that between rows two
     /// apart. Above one, rows alternate like a woven field pair.
     private static func combingRatio(luma image: CVPixelBuffer) -> Double {
