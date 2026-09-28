@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the engine's four FFmpeg libraries from one configure.
 
-libavutil, libavcodec, libavformat and libswresample, FFmpeg n8.1.2, as four
+libavutil, libavcodec, libavformat and libswresample, FFmpeg n8.1.3, as four
 xcframeworks. Requires Xcode, Python 3 and pkg-config, and the Libdav1d, lcms2
 and Libuavs3d artifacts already in Artifacts/ (build-dav1d.sh, build-lcms2.sh,
 build-uavs3d.sh), because libavcodec links against them.
@@ -32,9 +32,9 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "Artifacts"
 PATCHES = sorted((ROOT / "Patches").glob("*.patch"))
-VERSION = "8.1.2"
-SOURCE_URL = "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2"
-SOURCE_SHA = "9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7"
+VERSION = "8.1.3"
+SOURCE_URL = "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.3"
+SOURCE_SHA = "09f990289327d3ebfedf4fc15cae3f884a65dab7a5aac7bbb5b01ff83900efd9"
 # FFmpeg embeds its configure line in every library (avformat_configuration),
 # so the prefix must not name the build machine's work directory. Headers are
 # installed under DESTDIR instead.
@@ -255,9 +255,9 @@ def main():
     work = (args.work or Path(tempfile.mkdtemp(prefix="lagoon-ffmpeg-"))).resolve()
     work.mkdir(parents=True, exist_ok=True)
     print(f"Build logs and source: {work}", flush=True)
-    archive = work / "ffmpeg-n8.1.2.tar.gz"
+    archive = work / f"ffmpeg-n{VERSION}.tar.gz"
     download(SOURCE_URL, SOURCE_SHA, archive)
-    source = work / "FFmpeg-n8.1.2"
+    source = work / f"FFmpeg-n{VERSION}"
     if source.exists():
         shutil.rmtree(source)
     with tarfile.open(archive) as tar:
