@@ -225,6 +225,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             if stats.rpusDropped > 0 {
                 line += " · \(stats.rpusDropped) RPU dropped"
             }
+            if stats.rpusRepeated > 0 {
+                line += " · \(stats.rpusRepeated) RPU repeated"
+            }
             if let elType = stats.enhancementLayerType {
                 line += " · \(elType)"
             }
@@ -1838,6 +1841,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 switch stats.mode {
                 case .convert:
                     gates += " doviP7=\"convert rpu=\(stats.rpusConverted) rpuDrop=\(stats.rpusDropped)"
+                        + " rpuRepeat=\(stats.rpusRepeated)"
                         + " elDrop=\(stats.enhancementUnitsDropped) bytes=\(stats.bytesRemoved)"
                         + " errors=\(stats.errors) el=\(stats.enhancementLayerType ?? "unknown")\""
                 case .stripToHDR10:
