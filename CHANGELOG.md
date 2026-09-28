@@ -8,6 +8,22 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.0.10
+
+September 2026. No API change; the FFmpeg libraries are rebuilt from a newer
+point release. Upgrading is a version bump.
+
+### Changed
+
+- FFmpeg 8.1.3, up from 8.1.2: about 270 upstream fixes on the same ABI,
+  mostly hardening against malformed input (HEVC, interlaced H.264, MP4,
+  MPEG-TS, PGS subtitles, Dolby Vision metadata) and an arm64 fix in
+  libswresample. Decoded output is bit-identical to 8.1.2 on the parity
+  fixtures, and frame loss on the Apple TV 4K (3rd gen) is unchanged.
+- 8.1.3 opens HLS child playlists through the same protocol check as media
+  segments. The engine's HLS patch already recognises `http(s)` there, so
+  transcodes play as before.
+
 ## 1.0.9
 
 September 2026. No API change and no change to the libraries; upgrading is a
