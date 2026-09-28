@@ -8,6 +8,26 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.0.12
+
+September 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Fixed
+
+- MPEG-TS with AAC plays. ADTS AAC, which carries no AudioSpecificConfig, is
+  decoded here instead of passed to CoreAudio, which never played it: the
+  clock waited on the audio and playback stalled a second in, buffering, with
+  no error. Decoded here, it also follows the stereo and 5.1 changes
+  broadcast streams make.
+- Software-decoded video (VP9, AV1 without AV1 silicon, MPEG-2, VC-1, MPEG-4,
+  interlaced H.264) that changes size mid-way, as broadcasts do between SD
+  and HD, keeps playing. The decoder rebuilds its output for the new size in
+  the mode chosen at open; a new size used to be `.undecodable`.
+- `videoSize` follows a decoded stream that changes size, so subtitles are
+  laid out against the new picture. Progressive H.264 reaches the renderer
+  compressed and keeps the size read at open.
+
 ## 1.0.11
 
 September 2026. No API change and no change to the libraries; upgrading is a
