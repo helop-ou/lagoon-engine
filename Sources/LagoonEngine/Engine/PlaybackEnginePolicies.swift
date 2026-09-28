@@ -86,6 +86,49 @@ nonisolated enum PlaybackCorruptFramePolicy {
     }
 }
 
+/// Whether a picture `AVSampleBufferVideoRenderer` failed to decode is
+/// damage it plays through, or a verdict on the stream.
+///
+/// On the Apple TV 4K (3rd gen), a damaged H.264 picture made the renderer
+/// post `didFailToDecode` (`-11821`, underlying `-12909`) for it and every
+/// picture depending on it, 18 over 0.7 s. Its status stayed `.rendering`, it
+/// never asked for a flush, and it decoded on from the next keyframe. Taking
+/// the first notification as a verdict threw direct play away for that. So,
+/// as `PlaybackCorruptFramePolicy` does for the engine's own decoder, a frame
+/// fault in a stream the renderer has already played is counted, not judged,
+/// up to a run too long to be one damaged group of pictures.
+nonisolated enum PlaybackRendererDamagePolicy {
+    /// Samples the renderer must take after a flush before its failures read
+    /// as damage: two seconds at 24 fps. The proof outlives seeks.
+    static let proofSamples = 48
+    /// Media time without a failure that closes a run.
+    static let quietSeconds = 2.0
+    /// The longest run of failed pictures played through.
+    static let toleratedRun = 300
+
+    struct State: Equatable {
+        private(set) var proven = false
+        private(set) var run = 0
+        private(set) var dropped = 0
+        private var lastFailureSeconds: Double?
+
+        /// True plays through the failed picture; false makes it a verdict.
+        mutating func absorbs(refusedSeconds: Double?, samplesSinceFlush: Int) -> Bool {
+            if samplesSinceFlush >= PlaybackRendererDamagePolicy.proofSamples { proven = true }
+            guard proven else { return false }
+            if let refusedSeconds, let last = lastFailureSeconds,
+               abs(refusedSeconds - last) > PlaybackRendererDamagePolicy.quietSeconds {
+                run = 0
+            }
+            guard run < PlaybackRendererDamagePolicy.toleratedRun else { return false }
+            run += 1
+            dropped += 1
+            if let refusedSeconds { lastFailureSeconds = refusedSeconds }
+            return true
+        }
+    }
+}
+
 /// Whether a sample may be the *first* one a flushed renderer is given.
 ///
 /// A read in flight during `flush()` returns a packet from the old position,
