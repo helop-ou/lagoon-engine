@@ -31,8 +31,22 @@ behind the `FFmpegCachedIO` bridge.
   resumed below 2 MiB.
 - Accepted: a 206 at the requested offset, a 200 at offset 0, or a 200 with a
   bounded discard of up to 4 MiB. Any other status is an I/O error, never EOF.
-- Transient errors retry from the current position up to 3 times, at
-  0.25/0.5/1 s. A 4xx never retries.
+- Transient errors retry from the current position on a time budget
+  (`NetworkRetryPolicy`): pauses of 0.25, 0.5, 1 and then 2 s, for up to 30 s
+  from the first failure, while buffered media keeps playing. Transient means
+  a network error other than a cancellation, a bad URL or a refused
+  certificate, a 5xx, 408 or 429, or the idle timeout. A 4xx never retries.
+  Three retries used to run out in under two seconds, because a dropped link
+  fails fast (`-1009`, `-1005`), and the host then reloaded over the same dead
+  network.
+- A read that gives up leaves no failed request behind. It used to keep the
+  task and its error, so the demuxer's own retries rethrew at once instead of
+  reaching the network again.
+- The playback cache's range loads use the same budget. A 5xx, 408 or 429 is
+  `PlaybackCacheError.serverStatus` and retried; it used to be reported as
+  `rangeUnsupported`, which never retries.
+- A seek that still fails after that gets one more try half a second later,
+  unless playback closed or a newer seek replaced it.
 - A 15 s idle timeout applies, and the demuxer's interrupt callback is polled
   every 100 ms.
 - `crypto+https://…` is hls.c's scheme for AES-128 segments. It cannot sit on
