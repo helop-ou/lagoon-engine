@@ -102,6 +102,31 @@ nonisolated enum HEVCNALUnitRewriter {
         return payload + prefixed
     }
 
+    /// The first unit of `type` (header included, no length prefix), or nil
+    /// when there is none or the payload does not parse up to it.
+    static func firstUnit(
+        ofType type: UInt8,
+        in payload: UnsafeRawBufferPointer,
+        lengthSize: Int
+    ) -> UnsafeRawBufferPointer? {
+        guard let base = payload.baseAddress, (1...4).contains(lengthSize) else { return nil }
+        var offset = 0
+        while offset < payload.count {
+            guard offset + lengthSize <= payload.count else { return nil }
+            var nalLength = 0
+            for index in 0..<lengthSize {
+                nalLength = nalLength << 8 | Int(payload[offset + index])
+            }
+            let unitStart = offset + lengthSize
+            guard nalLength > 0, unitStart + nalLength <= payload.count else { return nil }
+            if (payload[unitStart] >> 1) & 0x3F == type {
+                return UnsafeRawBufferPointer(start: base.advanced(by: unitStart), count: nalLength)
+            }
+            offset = unitStart + nalLength
+        }
+        return nil
+    }
+
     /// A copy of `payload` if its length prefixes walk it exactly, else nil.
     static func copyIfWellFormed(payload: UnsafeRawBufferPointer, lengthSize: Int) -> Data? {
         guard (1...4).contains(lengthSize) else { return nil }
