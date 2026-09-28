@@ -1,6 +1,6 @@
 {
-  "source_url": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2",
-  "source_sha256": "9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7",
+  "source_url": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.3",
+  "source_sha256": "09f990289327d3ebfedf4fc15cae3f884a65dab7a5aac7bbb5b01ff83900efd9",
   "network": false,
   "license": "LGPL-2.1-or-later",
   "patches": {
@@ -14,7 +14,7 @@
   "xcode": "Xcode 27.0\nBuild version 27A266a",
   "configurations": {
     "ios-arm64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-ios-arm64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=aarch64",
       "--enable-cross-compile",
@@ -188,7 +188,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "ios-simulator-arm64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-ios-simulator-arm64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=aarch64",
       "--enable-cross-compile",
@@ -362,7 +362,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "ios-simulator-x86_64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-ios-simulator-x86_64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=x86_64",
       "--enable-cross-compile",
@@ -536,7 +536,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "tvos-arm64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-tvos-arm64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=aarch64",
       "--enable-cross-compile",
@@ -710,7 +710,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "tvos-simulator-arm64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-tvos-simulator-arm64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=aarch64",
       "--enable-cross-compile",
@@ -884,7 +884,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "tvos-simulator-x86_64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-tvos-simulator-x86_64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=x86_64",
       "--enable-cross-compile",
@@ -1058,7 +1058,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "macos-arm64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-macos-arm64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=aarch64",
       "--enable-cross-compile",
@@ -1232,7 +1232,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "macos-x86_64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-macos-x86_64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=x86_64",
       "--enable-cross-compile",
@@ -1408,47 +1408,47 @@
   },
   "files": {
     "COPYING.LGPLv2.1": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30",
-    "Info.plist": "b04151fa746ed2e1b6e7bfcac2b5305f1001b6de6258f198c43bf5dbd0152111",
+    "Info.plist": "f3aaf5378694a03bdfa10213de317c65e9d1edbe80d3db8118bf86ee01ab588c",
     "LICENSE.md": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af",
-    "ios-arm64/Libswresample.framework/Headers/config.h": "09e984c639da0bbe318c27f8e7ee4d668a78acfbc505545e90162d424be27056",
+    "ios-arm64/Libswresample.framework/Headers/config.h": "852ab6189285421a8861283337cde043d0097c3371f55392d8d41adbf99b1ac5",
     "ios-arm64/Libswresample.framework/Headers/config_components.h": "f9199c378c2cf0ff47a868df8cabf416662bda67c96be1c8342a48b9bcfe3123",
     "ios-arm64/Libswresample.framework/Headers/swresample.h": "b23e625ab295d57a3d1ae0142c937b485dc386a36e4ed63f4b99ed886dc905e1",
-    "ios-arm64/Libswresample.framework/Headers/version.h": "6136f94fdc058466e84442fc0194c6456fe618b97fc776d1d5a286d0c64e01ab",
+    "ios-arm64/Libswresample.framework/Headers/version.h": "3d625a2c45500e7e59859ebe95e7e55bd3121e37c9bf396b17d962b713295ff0",
     "ios-arm64/Libswresample.framework/Headers/version_major.h": "5ded851cffe3a75e556e6914551ee8331c9b6eaa515307c88ceff8c9ab8b2dd1",
-    "ios-arm64/Libswresample.framework/Info.plist": "95a8b483505b7acfbc4a14dbd703266cbe76cf71fc06547565a4398cd950cf49",
-    "ios-arm64/Libswresample.framework/Libswresample": "b4235b20bfa136cff95b38301f7dff7c09dc5eb6014881a8361732728dd94c44",
+    "ios-arm64/Libswresample.framework/Info.plist": "4264cd06022d30d7d9462d84e0d8c1e7a35fe3580e56d3f1b9a3f057d84fc9cc",
+    "ios-arm64/Libswresample.framework/Libswresample": "1ce651959a555813c1ee5756eede5ad34843a03f8e3a227c69b32079d057a193",
     "ios-arm64/Libswresample.framework/Modules/module.modulemap": "a7174b4a45078a1037c1d07c98800c4f19d6e3ee41693794a646f2f9e1445868",
-    "ios-arm64_x86_64-simulator/Libswresample.framework/Headers/config.h": "bb158b86c3fd9c4a2030fff8334178279df59b9c4d100bb6055d04d1ea43ee7d",
+    "ios-arm64_x86_64-simulator/Libswresample.framework/Headers/config.h": "cbc83a10f100a839738671c6978d24eeb42b798f58fce0131d09f247b448880b",
     "ios-arm64_x86_64-simulator/Libswresample.framework/Headers/config_components.h": "f9199c378c2cf0ff47a868df8cabf416662bda67c96be1c8342a48b9bcfe3123",
     "ios-arm64_x86_64-simulator/Libswresample.framework/Headers/swresample.h": "b23e625ab295d57a3d1ae0142c937b485dc386a36e4ed63f4b99ed886dc905e1",
-    "ios-arm64_x86_64-simulator/Libswresample.framework/Headers/version.h": "6136f94fdc058466e84442fc0194c6456fe618b97fc776d1d5a286d0c64e01ab",
+    "ios-arm64_x86_64-simulator/Libswresample.framework/Headers/version.h": "3d625a2c45500e7e59859ebe95e7e55bd3121e37c9bf396b17d962b713295ff0",
     "ios-arm64_x86_64-simulator/Libswresample.framework/Headers/version_major.h": "5ded851cffe3a75e556e6914551ee8331c9b6eaa515307c88ceff8c9ab8b2dd1",
-    "ios-arm64_x86_64-simulator/Libswresample.framework/Info.plist": "29d520b7c847e40e2106262c6af19236c1a3c16698a7647e446c9b73eb361c12",
-    "ios-arm64_x86_64-simulator/Libswresample.framework/Libswresample": "420477f7fc23d5fe67a452edd87d3515483a973d89525157b6a27a2d33205456",
+    "ios-arm64_x86_64-simulator/Libswresample.framework/Info.plist": "c09709b8860c70f2555d8104d15e94c75d2bb39cc7cef401772e3b5317455933",
+    "ios-arm64_x86_64-simulator/Libswresample.framework/Libswresample": "811d014d379cf362868abf8b06efc2dd477220774b6d8fb599662b7e496f3f94",
     "ios-arm64_x86_64-simulator/Libswresample.framework/Modules/module.modulemap": "a7174b4a45078a1037c1d07c98800c4f19d6e3ee41693794a646f2f9e1445868",
-    "macos-arm64_x86_64/Libswresample.framework/Headers/config.h": "5cb831b55e8bd370328ebfa600720ad3af46edea81ede559607199e195c803c4",
+    "macos-arm64_x86_64/Libswresample.framework/Headers/config.h": "bc01d1946c56b17151fe521a20a209ed13c7e7850e60731c82907d359fda0c90",
     "macos-arm64_x86_64/Libswresample.framework/Headers/config_components.h": "f9199c378c2cf0ff47a868df8cabf416662bda67c96be1c8342a48b9bcfe3123",
     "macos-arm64_x86_64/Libswresample.framework/Headers/swresample.h": "b23e625ab295d57a3d1ae0142c937b485dc386a36e4ed63f4b99ed886dc905e1",
-    "macos-arm64_x86_64/Libswresample.framework/Headers/version.h": "6136f94fdc058466e84442fc0194c6456fe618b97fc776d1d5a286d0c64e01ab",
+    "macos-arm64_x86_64/Libswresample.framework/Headers/version.h": "3d625a2c45500e7e59859ebe95e7e55bd3121e37c9bf396b17d962b713295ff0",
     "macos-arm64_x86_64/Libswresample.framework/Headers/version_major.h": "5ded851cffe3a75e556e6914551ee8331c9b6eaa515307c88ceff8c9ab8b2dd1",
-    "macos-arm64_x86_64/Libswresample.framework/Info.plist": "f7bcfcb2f53e70cd7dba0a20e0aa52eb5d77107d228a1b8b943114d362af7327",
-    "macos-arm64_x86_64/Libswresample.framework/Libswresample": "4d021c7395203b5d84446582943d5a6980631c79dd1a0a93b35d56cc6e57faed",
+    "macos-arm64_x86_64/Libswresample.framework/Info.plist": "c38e2ee0eed67dd098af3d082e85154b17fc4bba472f8353f19bc94ccf389742",
+    "macos-arm64_x86_64/Libswresample.framework/Libswresample": "2e769f58d827a61e80acf30c97b0cd09185e2f29f3331c69a4f77129c205dd2f",
     "macos-arm64_x86_64/Libswresample.framework/Modules/module.modulemap": "a7174b4a45078a1037c1d07c98800c4f19d6e3ee41693794a646f2f9e1445868",
-    "tvos-arm64/Libswresample.framework/Headers/config.h": "65b47800367036ce8c4eeaa4ee93305bf6d56ce10f20a58b9c5440bacd270c0a",
+    "tvos-arm64/Libswresample.framework/Headers/config.h": "636c21bf1e48d8f7d03c5a95fb402a56bbb8d08c3be60c2a45d108a3b4837ebb",
     "tvos-arm64/Libswresample.framework/Headers/config_components.h": "f9199c378c2cf0ff47a868df8cabf416662bda67c96be1c8342a48b9bcfe3123",
     "tvos-arm64/Libswresample.framework/Headers/swresample.h": "b23e625ab295d57a3d1ae0142c937b485dc386a36e4ed63f4b99ed886dc905e1",
-    "tvos-arm64/Libswresample.framework/Headers/version.h": "6136f94fdc058466e84442fc0194c6456fe618b97fc776d1d5a286d0c64e01ab",
+    "tvos-arm64/Libswresample.framework/Headers/version.h": "3d625a2c45500e7e59859ebe95e7e55bd3121e37c9bf396b17d962b713295ff0",
     "tvos-arm64/Libswresample.framework/Headers/version_major.h": "5ded851cffe3a75e556e6914551ee8331c9b6eaa515307c88ceff8c9ab8b2dd1",
-    "tvos-arm64/Libswresample.framework/Info.plist": "56686c8d7294f5b4a998c59b53fd394ac40caac1f4957ad87589feb8609b0a3b",
-    "tvos-arm64/Libswresample.framework/Libswresample": "bec90a5eab579043f8578a7bda128b46998f449e2f84d70349e70540c6598552",
+    "tvos-arm64/Libswresample.framework/Info.plist": "c7b484aaa5a7e298d71f076ea6a2d37ea1ac2ee40dcfb5fd0664e1c19e90dea8",
+    "tvos-arm64/Libswresample.framework/Libswresample": "1a8a78a48b4a38c21b6c3aac3c7f7ced1873037b595f0e320a390a5c2b9860b5",
     "tvos-arm64/Libswresample.framework/Modules/module.modulemap": "a7174b4a45078a1037c1d07c98800c4f19d6e3ee41693794a646f2f9e1445868",
-    "tvos-arm64_x86_64-simulator/Libswresample.framework/Headers/config.h": "d6d639efc72da550a293c319311ba9d246c504d94fc3e92d39e88effbcbd30d6",
+    "tvos-arm64_x86_64-simulator/Libswresample.framework/Headers/config.h": "065d515a867d2d8234bae91748eefa7b1490f2951d16a7fad3b60be464141380",
     "tvos-arm64_x86_64-simulator/Libswresample.framework/Headers/config_components.h": "f9199c378c2cf0ff47a868df8cabf416662bda67c96be1c8342a48b9bcfe3123",
     "tvos-arm64_x86_64-simulator/Libswresample.framework/Headers/swresample.h": "b23e625ab295d57a3d1ae0142c937b485dc386a36e4ed63f4b99ed886dc905e1",
-    "tvos-arm64_x86_64-simulator/Libswresample.framework/Headers/version.h": "6136f94fdc058466e84442fc0194c6456fe618b97fc776d1d5a286d0c64e01ab",
+    "tvos-arm64_x86_64-simulator/Libswresample.framework/Headers/version.h": "3d625a2c45500e7e59859ebe95e7e55bd3121e37c9bf396b17d962b713295ff0",
     "tvos-arm64_x86_64-simulator/Libswresample.framework/Headers/version_major.h": "5ded851cffe3a75e556e6914551ee8331c9b6eaa515307c88ceff8c9ab8b2dd1",
-    "tvos-arm64_x86_64-simulator/Libswresample.framework/Info.plist": "0a7742cd33dc2266528a201c439ca73bb48327fce06751a2692bbabaca5394a0",
-    "tvos-arm64_x86_64-simulator/Libswresample.framework/Libswresample": "4be160425d58544ae1633c4c0d3d21e3fdbca11d0594be815acafb34bd6995a2",
+    "tvos-arm64_x86_64-simulator/Libswresample.framework/Info.plist": "b139bcdcb845b9b29a32010cf811ad25c5661f7308e377351ba91e946195c2c3",
+    "tvos-arm64_x86_64-simulator/Libswresample.framework/Libswresample": "eb1312aefa8cfcc24f566ab02d001b907015ba736cc99420bd2a15a13b8082de",
     "tvos-arm64_x86_64-simulator/Libswresample.framework/Modules/module.modulemap": "a7174b4a45078a1037c1d07c98800c4f19d6e3ee41693794a646f2f9e1445868"
   }
 }

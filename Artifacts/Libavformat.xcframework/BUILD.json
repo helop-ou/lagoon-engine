@@ -1,6 +1,6 @@
 {
-  "source_url": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2",
-  "source_sha256": "9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7",
+  "source_url": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.3",
+  "source_sha256": "09f990289327d3ebfedf4fc15cae3f884a65dab7a5aac7bbb5b01ff83900efd9",
   "network": false,
   "license": "LGPL-2.1-or-later",
   "patches": {
@@ -14,7 +14,7 @@
   "xcode": "Xcode 27.0\nBuild version 27A266a",
   "configurations": {
     "ios-arm64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-ios-arm64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=aarch64",
       "--enable-cross-compile",
@@ -188,7 +188,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "ios-simulator-arm64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-ios-simulator-arm64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=aarch64",
       "--enable-cross-compile",
@@ -362,7 +362,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "ios-simulator-x86_64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-ios-simulator-x86_64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=x86_64",
       "--enable-cross-compile",
@@ -536,7 +536,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "tvos-arm64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-tvos-arm64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=aarch64",
       "--enable-cross-compile",
@@ -710,7 +710,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "tvos-simulator-arm64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-tvos-simulator-arm64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=aarch64",
       "--enable-cross-compile",
@@ -884,7 +884,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "tvos-simulator-x86_64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-tvos-simulator-x86_64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=x86_64",
       "--enable-cross-compile",
@@ -1058,7 +1058,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "macos-arm64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-macos-arm64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=aarch64",
       "--enable-cross-compile",
@@ -1232,7 +1232,7 @@
       "--enable-decoder=libuavs3d"
     ],
     "macos-x86_64": [
-      "--prefix=/private/tmp/claude-501/-Users-jaagopj-Documents-Projects-Personal-lagoon/099a0bc3-650f-4b6f-b055-a24804017d7b/scratchpad/work-ffmpeg/build-macos-x86_64/install",
+      "--prefix=/lagoon-ffmpeg",
       "--target-os=darwin",
       "--arch=x86_64",
       "--enable-cross-compile",
@@ -1408,52 +1408,52 @@
   },
   "files": {
     "COPYING.LGPLv2.1": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30",
-    "Info.plist": "4e547e7853fdc511f883180cdce6876f26cdefcb12c78ec7411e35d55bde581c",
+    "Info.plist": "d9fcb206046c1c9518e39d2261b1b60ef1f847c89a4d1efa3278755d2f77aaf2",
     "LICENSE.md": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af",
     "ios-arm64/Libavformat.framework/Headers/avformat.h": "a92ad4e9ae2866fb5bb409a30dda8162e253f77e9250fd3057c09f60e3059cbe",
     "ios-arm64/Libavformat.framework/Headers/avio.h": "30312971fc299e65bc69cf1beddb76f50394e044d9c71fe32fec3ae9c13bd1af",
-    "ios-arm64/Libavformat.framework/Headers/config.h": "09e984c639da0bbe318c27f8e7ee4d668a78acfbc505545e90162d424be27056",
+    "ios-arm64/Libavformat.framework/Headers/config.h": "852ab6189285421a8861283337cde043d0097c3371f55392d8d41adbf99b1ac5",
     "ios-arm64/Libavformat.framework/Headers/config_components.h": "f9199c378c2cf0ff47a868df8cabf416662bda67c96be1c8342a48b9bcfe3123",
-    "ios-arm64/Libavformat.framework/Headers/version.h": "43c69df3cb9e2e1788adf14c9467b72a33dff78384264f7be0dbb7cd52353706",
+    "ios-arm64/Libavformat.framework/Headers/version.h": "5e284be174e606b09c7bcd030e246d6b2629faf6edb43566f4032b6ee7f4c683",
     "ios-arm64/Libavformat.framework/Headers/version_major.h": "3dde828335345cf56d654fcae728c0fdeb66da23774556d5fed8b09a1fb1a9fc",
-    "ios-arm64/Libavformat.framework/Info.plist": "7ce38a82e5bc99c92f46b694da056dc6e5d2c677bcb1d988e7aeeff1e99235af",
-    "ios-arm64/Libavformat.framework/Libavformat": "77a3b6b874f59f039113abd138fed69b9fee77f2574fe99b8c5a13af78e50af0",
+    "ios-arm64/Libavformat.framework/Info.plist": "25a4cb394e396baaf50098302eed902f69a9ee227320137b312577f37fd8288e",
+    "ios-arm64/Libavformat.framework/Libavformat": "c5a42f038726c118c6070b9f1b5c8bea77937ec78ef3add4e91423a967f10253",
     "ios-arm64/Libavformat.framework/Modules/module.modulemap": "3a6b340009b1ccf71ef8864439be49f3b97c8ac62822ce1a9fe5a19664de26ae",
     "ios-arm64_x86_64-simulator/Libavformat.framework/Headers/avformat.h": "a92ad4e9ae2866fb5bb409a30dda8162e253f77e9250fd3057c09f60e3059cbe",
     "ios-arm64_x86_64-simulator/Libavformat.framework/Headers/avio.h": "30312971fc299e65bc69cf1beddb76f50394e044d9c71fe32fec3ae9c13bd1af",
-    "ios-arm64_x86_64-simulator/Libavformat.framework/Headers/config.h": "bb158b86c3fd9c4a2030fff8334178279df59b9c4d100bb6055d04d1ea43ee7d",
+    "ios-arm64_x86_64-simulator/Libavformat.framework/Headers/config.h": "cbc83a10f100a839738671c6978d24eeb42b798f58fce0131d09f247b448880b",
     "ios-arm64_x86_64-simulator/Libavformat.framework/Headers/config_components.h": "f9199c378c2cf0ff47a868df8cabf416662bda67c96be1c8342a48b9bcfe3123",
-    "ios-arm64_x86_64-simulator/Libavformat.framework/Headers/version.h": "43c69df3cb9e2e1788adf14c9467b72a33dff78384264f7be0dbb7cd52353706",
+    "ios-arm64_x86_64-simulator/Libavformat.framework/Headers/version.h": "5e284be174e606b09c7bcd030e246d6b2629faf6edb43566f4032b6ee7f4c683",
     "ios-arm64_x86_64-simulator/Libavformat.framework/Headers/version_major.h": "3dde828335345cf56d654fcae728c0fdeb66da23774556d5fed8b09a1fb1a9fc",
-    "ios-arm64_x86_64-simulator/Libavformat.framework/Info.plist": "583a8117ac04b67f3929dafeb3a32b6040c501c7956943a965217b1fc2748e5f",
-    "ios-arm64_x86_64-simulator/Libavformat.framework/Libavformat": "74b1feebae78aee05329905184701a5669555e0ef223d8d4a5f7f8c97b3e107c",
+    "ios-arm64_x86_64-simulator/Libavformat.framework/Info.plist": "1f028cb5aabd7db3014d51f960087609151926c3ea3e01cb47b134a447cc6ca3",
+    "ios-arm64_x86_64-simulator/Libavformat.framework/Libavformat": "fae736773d55b7afb163862c01392b697c8b2c9be974c91ef9327ec3954ca570",
     "ios-arm64_x86_64-simulator/Libavformat.framework/Modules/module.modulemap": "3a6b340009b1ccf71ef8864439be49f3b97c8ac62822ce1a9fe5a19664de26ae",
     "macos-arm64_x86_64/Libavformat.framework/Headers/avformat.h": "a92ad4e9ae2866fb5bb409a30dda8162e253f77e9250fd3057c09f60e3059cbe",
     "macos-arm64_x86_64/Libavformat.framework/Headers/avio.h": "30312971fc299e65bc69cf1beddb76f50394e044d9c71fe32fec3ae9c13bd1af",
-    "macos-arm64_x86_64/Libavformat.framework/Headers/config.h": "5cb831b55e8bd370328ebfa600720ad3af46edea81ede559607199e195c803c4",
+    "macos-arm64_x86_64/Libavformat.framework/Headers/config.h": "bc01d1946c56b17151fe521a20a209ed13c7e7850e60731c82907d359fda0c90",
     "macos-arm64_x86_64/Libavformat.framework/Headers/config_components.h": "f9199c378c2cf0ff47a868df8cabf416662bda67c96be1c8342a48b9bcfe3123",
-    "macos-arm64_x86_64/Libavformat.framework/Headers/version.h": "43c69df3cb9e2e1788adf14c9467b72a33dff78384264f7be0dbb7cd52353706",
+    "macos-arm64_x86_64/Libavformat.framework/Headers/version.h": "5e284be174e606b09c7bcd030e246d6b2629faf6edb43566f4032b6ee7f4c683",
     "macos-arm64_x86_64/Libavformat.framework/Headers/version_major.h": "3dde828335345cf56d654fcae728c0fdeb66da23774556d5fed8b09a1fb1a9fc",
-    "macos-arm64_x86_64/Libavformat.framework/Info.plist": "d877a22f5f76d67751653c22a2231f32318173a93fe8fa403085aa29605a84e1",
-    "macos-arm64_x86_64/Libavformat.framework/Libavformat": "26ef549e8f65bee8186f55bf8a8d9f98bb2ad607d16cdfa9d49366392a70618b",
+    "macos-arm64_x86_64/Libavformat.framework/Info.plist": "845a2f9c9af4c5589ee7fc45ee186da23c4ed3e9f5ba9ffbccee7cdbecf09b17",
+    "macos-arm64_x86_64/Libavformat.framework/Libavformat": "046752444ea65081bd91ac4285c8afbe18874c7480203a60871e57d370517f69",
     "macos-arm64_x86_64/Libavformat.framework/Modules/module.modulemap": "3a6b340009b1ccf71ef8864439be49f3b97c8ac62822ce1a9fe5a19664de26ae",
     "tvos-arm64/Libavformat.framework/Headers/avformat.h": "a92ad4e9ae2866fb5bb409a30dda8162e253f77e9250fd3057c09f60e3059cbe",
     "tvos-arm64/Libavformat.framework/Headers/avio.h": "30312971fc299e65bc69cf1beddb76f50394e044d9c71fe32fec3ae9c13bd1af",
-    "tvos-arm64/Libavformat.framework/Headers/config.h": "65b47800367036ce8c4eeaa4ee93305bf6d56ce10f20a58b9c5440bacd270c0a",
+    "tvos-arm64/Libavformat.framework/Headers/config.h": "636c21bf1e48d8f7d03c5a95fb402a56bbb8d08c3be60c2a45d108a3b4837ebb",
     "tvos-arm64/Libavformat.framework/Headers/config_components.h": "f9199c378c2cf0ff47a868df8cabf416662bda67c96be1c8342a48b9bcfe3123",
-    "tvos-arm64/Libavformat.framework/Headers/version.h": "43c69df3cb9e2e1788adf14c9467b72a33dff78384264f7be0dbb7cd52353706",
+    "tvos-arm64/Libavformat.framework/Headers/version.h": "5e284be174e606b09c7bcd030e246d6b2629faf6edb43566f4032b6ee7f4c683",
     "tvos-arm64/Libavformat.framework/Headers/version_major.h": "3dde828335345cf56d654fcae728c0fdeb66da23774556d5fed8b09a1fb1a9fc",
-    "tvos-arm64/Libavformat.framework/Info.plist": "4a299568537ab63ed544816785c6d565d7cb3c09f6722496622f6b559118e1e5",
-    "tvos-arm64/Libavformat.framework/Libavformat": "df2764ec2a89eedb9eae541bcbed6b01f43a50617b5a044e9b818a2fad1f6a58",
+    "tvos-arm64/Libavformat.framework/Info.plist": "4d90328c9e4def6839edc8f16071ed82b648db6605ad2c8d53ea698a711ef994",
+    "tvos-arm64/Libavformat.framework/Libavformat": "bbb0adfbcdba26f27c304276a02487efae1cefdb73e7d5a288fdb9eec367acfe",
     "tvos-arm64/Libavformat.framework/Modules/module.modulemap": "3a6b340009b1ccf71ef8864439be49f3b97c8ac62822ce1a9fe5a19664de26ae",
     "tvos-arm64_x86_64-simulator/Libavformat.framework/Headers/avformat.h": "a92ad4e9ae2866fb5bb409a30dda8162e253f77e9250fd3057c09f60e3059cbe",
     "tvos-arm64_x86_64-simulator/Libavformat.framework/Headers/avio.h": "30312971fc299e65bc69cf1beddb76f50394e044d9c71fe32fec3ae9c13bd1af",
-    "tvos-arm64_x86_64-simulator/Libavformat.framework/Headers/config.h": "d6d639efc72da550a293c319311ba9d246c504d94fc3e92d39e88effbcbd30d6",
+    "tvos-arm64_x86_64-simulator/Libavformat.framework/Headers/config.h": "065d515a867d2d8234bae91748eefa7b1490f2951d16a7fad3b60be464141380",
     "tvos-arm64_x86_64-simulator/Libavformat.framework/Headers/config_components.h": "f9199c378c2cf0ff47a868df8cabf416662bda67c96be1c8342a48b9bcfe3123",
-    "tvos-arm64_x86_64-simulator/Libavformat.framework/Headers/version.h": "43c69df3cb9e2e1788adf14c9467b72a33dff78384264f7be0dbb7cd52353706",
+    "tvos-arm64_x86_64-simulator/Libavformat.framework/Headers/version.h": "5e284be174e606b09c7bcd030e246d6b2629faf6edb43566f4032b6ee7f4c683",
     "tvos-arm64_x86_64-simulator/Libavformat.framework/Headers/version_major.h": "3dde828335345cf56d654fcae728c0fdeb66da23774556d5fed8b09a1fb1a9fc",
-    "tvos-arm64_x86_64-simulator/Libavformat.framework/Info.plist": "3ba8c5b08c97894cc43e9dce2177f8eec01af8d7d3985ddc354510592d2b3983",
-    "tvos-arm64_x86_64-simulator/Libavformat.framework/Libavformat": "711c5c1cfead928c9eb3afb7ff91f8c3ff67d2ed8acfa33832d48167bfb31b9c",
+    "tvos-arm64_x86_64-simulator/Libavformat.framework/Info.plist": "ad3726473314a228a706f545c612546dc2bfffb9f50402ecd8b8a3e32badb42c",
+    "tvos-arm64_x86_64-simulator/Libavformat.framework/Libavformat": "c5208542ef21fad8d2f4f7b1cc0a726336731c33d433c493b49928e9d7fc4363",
     "tvos-arm64_x86_64-simulator/Libavformat.framework/Modules/module.modulemap": "3a6b340009b1ccf71ef8864439be49f3b97c8ac62822ce1a9fe5a19664de26ae"
   }
 }
