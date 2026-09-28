@@ -44,6 +44,17 @@ used to rebuild only for a new sample format: a resampler kept for six planes
 read past a stereo frame's two and crashed, and a 44.1 kHz stretch played at
 48 kHz, fast and sharp.
 
+AAC with no codec configuration is decoded here too, not passed through
+(`AudioDecodePolicy`). That is ADTS, as MPEG-TS carries it: a seven-byte
+header on every frame and no AudioSpecificConfig for the magic cookie.
+CoreAudio never played it, and the clock waited on the audio: on the Apple
+TV 4K (3rd gen) a TS recording with AAC stalled a second in, buffering, with
+no error, while the same audio in MKV and AC-3 in TS played. Decoded here it
+plays, and it follows the stereo and 5.1 changes broadcast streams make,
+which a passthrough format fixed at open cannot. A TS clip whose AAC went
+stereo, 5.1, then stereo at 44.1 kHz stalled at 0.97 s on 1.0.11 and played
+all nine seconds after.
+
 `AudioDecoderResampleTests` feeds synthetic frames that change shape; its
 opt-in test reads `LAGOON_LAYOUT_CHANGE_TS_FIXTURE_URL`. The fixture is three
 two-second MPEG-TS clips joined with `cat`: `sine` encoded with `-c:a aac -f
