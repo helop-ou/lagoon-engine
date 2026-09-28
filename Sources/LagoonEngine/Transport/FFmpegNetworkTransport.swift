@@ -121,6 +121,8 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
     private let session: URLSession
     private let delegate: FFmpegTransportSessionDelegate
     private let authorization: MediaRequestAuthorization?
+    /// Handed to every byte source. Internal so tests can shorten it.
+    var retryPolicy = NetworkRetryPolicy.playback
 
     private let stateLock = NSLock()
     private var tracked: [UInt: TrackedContext] = [:]
@@ -252,7 +254,7 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
               let iv = Self.decodeHex(ivHex), iv.count == 16 else {
             return ffmpegErrorInvalid
         }
-        let inner = URLSessionByteSource(url: innerURL, session: session, isInterrupted: isInterrupted, authorization: authorization)
+        let inner = URLSessionByteSource(url: innerURL, session: session, isInterrupted: isInterrupted, authorization: authorization, retryPolicy: retryPolicy)
         let decrypted = AES128CBCByteSource(inner: inner, key: key, iv: iv)
         do {
             let io = try FFmpegCachedIO(source: decrypted, bufferSize: 64 * 1_024)
@@ -311,7 +313,7 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
         url: URL,
         output: UnsafeMutablePointer<UnsafeMutablePointer<AVIOContext>?>
     ) -> Int32 {
-        let source = URLSessionByteSource(url: url, session: session, isInterrupted: isInterrupted, authorization: authorization)
+        let source = URLSessionByteSource(url: url, session: session, isInterrupted: isInterrupted, authorization: authorization, retryPolicy: retryPolicy)
         do {
             let io = try FFmpegCachedIO(source: source)
             guard let ioContext = io.context else {
@@ -393,8 +395,6 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
 /// reads at the stream position; a read elsewhere restarts the GET there. AVIO
 /// already buffers ahead, so a request per refill would be wasted overhead.
 nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Sendable {
-    private static let retryDelays: [TimeInterval] = [0.25, 0.5, 1.0]
-    private static let maxRetries = retryDelays.count
     private static let idleTimeout: TimeInterval = 15
     private static let backpressureHighWaterMark = 8 * 1_024 * 1_024
     private static let backpressureLowWaterMark = 2 * 1_024 * 1_024
@@ -405,6 +405,7 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
     private let isInterrupted: @Sendable () -> Bool
     private let priority: Float
     private let authorization: MediaRequestAuthorization?
+    private let retryPolicy: NetworkRetryPolicy
 
     // Mutable fields below are touched only under `condition`: reads come from
     // the demux queue, callbacks from the session's delegate queue.
@@ -421,6 +422,8 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
     private var contentLengthStorage: Int64?
     private var lastDataAt = Date()
     private var retryCount = 0
+    /// When the current run of failures began; cleared by any data.
+    private var firstFailureAt: Date?
     private var closed = false
 
     /// AVIO buffer size; see `FFmpegCachedIO`.
@@ -437,13 +440,15 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         session: URLSession,
         isInterrupted: @escaping @Sendable () -> Bool,
         priority: Float = URLSessionTask.highPriority,
-        authorization: MediaRequestAuthorization? = nil
+        authorization: MediaRequestAuthorization? = nil,
+        retryPolicy: NetworkRetryPolicy = .playback
     ) {
         self.url = url
         self.session = session
         self.isInterrupted = isInterrupted
         self.priority = priority
         self.authorization = authorization
+        self.retryPolicy = retryPolicy
     }
 
     deinit {
@@ -481,15 +486,25 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
                 break
             }
             if let error = pendingError {
-                guard Self.isRetryable(error), retryCount < Self.maxRetries else {
+                let started = firstFailureAt ?? Date()
+                firstFailureAt = started
+                guard NetworkRetryPolicy.isTransient(error),
+                      let delay = retryPolicy.delay(
+                          beforeAttempt: retryCount,
+                          elapsedSinceFirstFailure: Date().timeIntervalSince(started)
+                      ) else {
+                    // Leave no failed request behind: the demuxer's own retry
+                    // reads again, and must get a fresh request, not this error.
+                    cancelActiveTaskLocked()
                     condition.unlock()
                     throw error
                 }
-                let delay = Self.retryDelays[retryCount]
                 retryCount += 1
-                condition.unlock()
-                Thread.sleep(forTimeInterval: delay)
-                condition.lock()
+                // `cancel()` broadcasts, so closing wakes this at once.
+                let deadline = Date().addingTimeInterval(delay)
+                while !closed, !isInterrupted(), Date() < deadline {
+                    condition.wait(until: min(deadline, Date().addingTimeInterval(0.1)))
+                }
                 if closed {
                     condition.unlock()
                     throw FFmpegTransportError.closed
@@ -536,6 +551,7 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         buffer.removeAll(keepingCapacity: true)
         currentPosition = offset
         retryCount = 0
+        firstFailureAt = nil
         issueRequestLocked(at: offset, priority: priority)
     }
 
@@ -574,20 +590,6 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         task.cancel()
         activeTask = nil
         suspended = false
-    }
-
-    private static func isRetryable(_ error: Error) -> Bool {
-        if let urlError = error as? URLError {
-            return urlError.code != .cancelled
-        }
-        switch error {
-        case FFmpegTransportError.httpStatus(let code):
-            return (500...599).contains(code)
-        case FFmpegTransportError.timeout:
-            return true
-        default:
-            return false
-        }
     }
 
     private static func contentRangeStart(_ header: String) -> Int64? {
@@ -635,6 +637,7 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         buffer.append(chunk)
         lastDataAt = Date()
         retryCount = 0
+        firstFailureAt = nil
         if buffer.count > Self.backpressureHighWaterMark, let task = activeTask, !suspended {
             task.suspend()
             suspended = true
