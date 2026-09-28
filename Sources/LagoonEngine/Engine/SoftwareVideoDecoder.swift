@@ -141,6 +141,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     private let sequencer = GPUDeliverySequencer(capacity: 3)
     private let failureLock = NSLock()
     private var gpuFailure: Error?
+    private let corruptPacketLock = NSLock()
+    private var corruptPackets = PlaybackCorruptFramePolicy.State()
     /// Output tags: `colorProperties`, or BT.709 when HDR is tone-mapped.
     private let outputProperties: ColorProperties
     /// True when HDR leaves as tone-mapped SDR (the tvOS default: it dropped
@@ -673,9 +675,30 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             $0.packets += 1
             $0.decodeSeconds += elapsed - sent
         }
-        guard status >= 0 else { throw DecoderError.decode(status) }
+        if status < 0 {
+            guard absorbsDamagedPacket(status) else { throw DecoderError.decode(status) }
+        }
         try receiveFrames(deliver: deliver)
     }
+
+    /// Packets dropped as damage in a stream that otherwise decodes; see
+    /// `PlaybackCorruptFramePolicy`.
+    var corruptPacketCount: Int {
+        corruptPacketLock.withLock { corruptPackets.dropped }
+    }
+
+    /// A packet libavcodec calls broken (`AVERROR_INVALIDDATA`) is dropped
+    /// under the same policy as a picture VideoToolbox rejects: FFmpeg's own
+    /// players skip it and decode on. Any other error, and damage before the
+    /// stream has decoded, stays a verdict.
+    private func absorbsDamagedPacket(_ status: Int32) -> Bool {
+        guard status == Self.avErrorInvalidData else { return false }
+        return corruptPacketLock.withLock { corruptPackets.absorbsDamagedFrame() }
+    }
+
+    /// `AVERROR_INVALIDDATA`, `-MKTAG('I','N','D','A')`; a macro Swift
+    /// cannot import.
+    static let avErrorInvalidData: Int32 = -1_094_995_529
 
     func drain() throws -> [CMSampleBuffer] {
         let collected = CollectedFrames()
@@ -740,6 +763,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     func flush() {
         waitForPendingOutput()
         avcodec_flush_buffers(codecContext)
+        corruptPacketLock.withLock { corruptPackets.reset() }
         timeline?.reset()
         // Reset on seek, as the bench does, so the profile covers one scene.
         profileLock.withLock {
@@ -759,6 +783,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             recordProfile(at: received) { $0.decodeSeconds += received - waited }
             guard status >= 0 else { break }
             defer { av_frame_unref(frame) }
+            corruptPacketLock.withLock { corruptPackets.recordDecoded() }
             let buffer = try makeSampleBuffer(deliver: deliver)
             let converted = Self.now()
             detailedTimings.recordOutput(at: converted)
