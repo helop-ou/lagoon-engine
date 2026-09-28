@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import LagoonEngine
@@ -211,6 +212,57 @@ struct PlaybackEnginePolicyTests {
         for _ in 0..<(PlaybackCorruptFramePolicy.proofFrames - 1) { state.recordDecoded() }
         state.reset()
         #expect(!absorbs(&state))
+    }
+
+    /// The Apple TV's shape: 18 failures over 0.7 s, then clean pictures.
+    @Test func aRendererPlaysThroughADamagedGroupOfPictures() {
+        var state = PlaybackRendererDamagePolicy.State()
+        for index in 0..<18 {
+            #expect(playsThrough(&state, 5.25 + Double(index) * 0.042, 130 + index))
+        }
+        #expect(state.dropped == 18)
+    }
+
+    @Test func aRendererFailingFromItsFirstSamplesStillReachesTheLadder() {
+        var state = PlaybackRendererDamagePolicy.State()
+        #expect(!playsThrough(&state, 0.1, 3))
+        #expect(!playsThrough(&state, 0.2, PlaybackRendererDamagePolicy.proofSamples - 1))
+    }
+
+    @Test func aRendererRunTooLongIsAVerdictAndAQuietGapClosesIt() {
+        var state = PlaybackRendererDamagePolicy.State()
+        let proof = PlaybackRendererDamagePolicy.proofSamples
+        for index in 0..<PlaybackRendererDamagePolicy.toleratedRun {
+            #expect(playsThrough(&state, Double(index) * 0.04, proof))
+        }
+        #expect(!playsThrough(&state, 12.1, proof))
+        // Two quiet seconds later, a new run gets the whole allowance.
+        #expect(playsThrough(&state, 12.1 + PlaybackRendererDamagePolicy.quietSeconds + 0.5, 0))
+    }
+
+    @Test func onlyADecodeFailureOverOnePicturesFaultIsRendererDamage() {
+        func failure(code: Int, underlying: Int?) -> NSError {
+            var info: [String: Any] = [:]
+            if let underlying {
+                info[NSUnderlyingErrorKey] = NSError(domain: NSOSStatusErrorDomain, code: underlying)
+            }
+            return NSError(domain: AVFoundationErrorDomain, code: code, userInfo: info)
+        }
+        let decodeFailed = AVError.Code.decodeFailed.rawValue
+        #expect(SampleBufferPlayerEngine.isRendererFrameFault(failure(code: decodeFailed, underlying: -12909)))
+        #expect(SampleBufferPlayerEngine.isRendererFrameFault(failure(code: decodeFailed, underlying: -12704)))
+        #expect(!SampleBufferPlayerEngine.isRendererFrameFault(failure(code: decodeFailed, underlying: -12910)))
+        #expect(!SampleBufferPlayerEngine.isRendererFrameFault(failure(code: decodeFailed, underlying: nil)))
+        #expect(!SampleBufferPlayerEngine.isRendererFrameFault(failure(code: -11800, underlying: -12909)))
+        #expect(!SampleBufferPlayerEngine.isRendererFrameFault(nil))
+    }
+
+    private func playsThrough(
+        _ state: inout PlaybackRendererDamagePolicy.State,
+        _ refusedSeconds: Double?,
+        _ samplesSinceFlush: Int
+    ) -> Bool {
+        state.absorbs(refusedSeconds: refusedSeconds, samplesSinceFlush: samplesSinceFlush)
     }
 
     /// `#expect` cannot take a mutating call.
