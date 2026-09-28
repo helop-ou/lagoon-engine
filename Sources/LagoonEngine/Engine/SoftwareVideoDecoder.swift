@@ -120,16 +120,26 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     private let codecContext: UnsafeMutablePointer<AVCodecContext>
     private let frame: UnsafeMutablePointer<AVFrame>
     private let timeBase: AVRational
-    private let width: Int
-    private let height: Int
+    // Sized to the picture, and rebuilt together when the stream changes
+    // size mid-way; see `reconfigureOutput(width:height:)`. Decode queue
+    // only, and swapped only once GPU output has drained.
+    private var width: Int
+    private var height: Int
     private let outputBitDepth: Int
-    private let pixelBufferPool: CVPixelBufferPool
+    private var pixelBufferPool: CVPixelBufferPool
     /// Non-nil when output goes through a pixel transfer (lossless or SDR).
-    /// Probed once at open; if the device refuses, output stays linear.
-    private let transferSession: VTPixelTransferSession?
-    private let transferOutputPool: CVPixelBufferPool?
-    private let gpuConverter: MetalFrameConverter?
-    private let gpuOutputPool: CVPixelBufferPool?
+    /// Probed at open; if the device refuses, output stays linear.
+    private var transferSession: VTPixelTransferSession?
+    private var transferOutputPool: CVPixelBufferPool?
+    private var gpuConverter: MetalFrameConverter?
+    private var gpuOutputPool: CVPixelBufferPool?
+    /// What a rebuild keeps from open: the mode resolved then, so a new size
+    /// never changes how frames are coloured, and the inputs to build it.
+    private let outputMode: OutputMode
+    private let fullRange: Bool
+    private let baseAttributes: [String: Any]
+    private let sourcePixelFormat: AVPixelFormat
+    private let sourcePeakNits: Float
 
     /// Receives ready frames: synchronously from `decode` on the CPU paths,
     /// from the delivery queue, in decode order, on the GPU path.
@@ -160,7 +170,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     private var windowFrames = 0
     private static let windowSeconds = 2.0
 
-    let formatDescription: CMVideoFormatDescription
+    private(set) var formatDescription: CMVideoFormatDescription
     let usesCompressedOutput: Bool
     /// The mode actually in use, not the one requested.
     let outputModeName: String
@@ -381,44 +391,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             throw DecoderError.codecSetup("unsupported \(name)")
         }
         let fullRange = codecpar.pointee.color_range == AVCOL_RANGE_JPEG
-        let outputPixelFormat: OSType = if resolvedBitDepth == 10 {
-            fullRange
-                ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
-                : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-        } else {
-            fullRange
-                ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-                : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        }
-        var attributes = VideoToolboxDecoder.resolvedPixelBufferAttributes(
+        let baseAttributes = VideoToolboxDecoder.resolvedPixelBufferAttributes(
             recommended: recommendedPixelBufferAttributes
         ).rawAttributes
-        attributes[kCVPixelBufferWidthKey as String] = resolvedWidth
-        attributes[kCVPixelBufferHeightKey as String] = resolvedHeight
-        attributes[kCVPixelBufferPixelFormatTypeKey as String] = outputPixelFormat
-        // Without this the GPU conversion silently falls back to the CPU.
-        attributes[kCVPixelBufferMetalCompatibilityKey as String] = true
-        // Matches VideoToolbox's surfaces.
-        attributes[kCVPixelBufferIOSurfaceCoreAnimationCompatibilityKey as String] = true
-        let poolAttributes: [String: Any] = [
-            kCVPixelBufferPoolMinimumBufferCountKey as String: 18,
-        ]
-
-        var createdPool: CVPixelBufferPool?
-        let poolStatus = CVPixelBufferPoolCreate(
-            kCFAllocatorDefault,
-            poolAttributes as CFDictionary,
-            attributes as CFDictionary,
-            &createdPool
-        )
-        guard poolStatus == kCVReturnSuccess, let createdPool else {
-            var framePointer: UnsafeMutablePointer<AVFrame>? = decodedFrame
-            av_frame_free(&framePointer)
-            var contextPointer: UnsafeMutablePointer<AVCodecContext>? = context
-            avcodec_free_context(&contextPointer)
-            throw DecoderError.pixelBufferPool(poolStatus)
-        }
-
         // The transfer function is what switches tvOS to HDR. Primaries and
         // matrix stay; static metadata goes with the transfer.
         let properties = ColorProperties(
@@ -430,21 +405,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             contentLightLevel: SampleBufferFactory.contentLightLevel(codecpar),
             ambientViewingEnvironment: SampleBufferFactory.ambientViewingEnvironment(codecpar)
         )
-        var prototype: CVPixelBuffer?
-        let prototypeStatus = CVPixelBufferPoolCreatePixelBuffer(
-            kCFAllocatorDefault,
-            createdPool,
-            &prototype
-        )
-        guard prototypeStatus == kCVReturnSuccess, let prototype else {
-            var framePointer: UnsafeMutablePointer<AVFrame>? = decodedFrame
-            av_frame_free(&framePointer)
-            var contextPointer: UnsafeMutablePointer<AVCodecContext>? = context
-            avcodec_free_context(&contextPointer)
-            throw DecoderError.pixelBuffer(prototypeStatus)
-        }
         let aspect = SampleBufferFactory.pixelAspectRatio(codecpar.pointee.sample_aspect_ratio)
-        Self.apply(properties, pixelAspectRatio: aspect, to: prototype)
 
         // tvOS tone-maps HDR by default (measured); iOS keeps source colour.
         #if os(tvOS)
@@ -454,156 +415,49 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         #endif
 
         let tuning = EngineTuning.current
-        var requestedOutputMode = Self.outputMode(
+        let requestedOutputMode = Self.outputMode(
             requestedValue: tuning.softwareDecodeOutputMode,
             legacyCompressedOutput: tuning.softwareDecodeCompressedOutput,
             toneMapHDRByDefault: toneMapHDRByDefault
         )
-
-        // GPU first; if Metal cannot serve the stream, degrade to the
-        // transfer equivalent. Each transfer mode gets its own pool and one
-        // probe transfer. See playback.md for what the matrix isolates.
-        var gpuSetup: (MetalFrameConverter, CVPixelBufferPool, CVPixelBuffer, lossless: Bool)?
-        if requestedOutputMode.usesGPU {
-            gpuSetup = Self.makeGPUOutput(
-                mode: requestedOutputMode,
-                codecpar: codecpar,
-                sourcePixelFormat: sourcePixelFormat,
+        let peakNits = Self.sourcePeakNits(codecpar)
+        let sized: SizedOutput
+        do {
+            sized = try Self.makeSizedOutput(
                 width: resolvedWidth,
                 height: resolvedHeight,
+                bitDepth: resolvedBitDepth,
                 fullRange: fullRange,
-                properties: properties
+                baseAttributes: baseAttributes,
+                properties: properties,
+                pixelAspectRatio: aspect,
+                requestedMode: requestedOutputMode,
+                modeIsExplicit: tuning.softwareDecodeOutputMode != nil,
+                sourcePixelFormat: sourcePixelFormat,
+                sourcePeakNits: peakNits
             )
-            if gpuSetup == nil {
-                // An explicit request fails rather than measure another path.
-                if tuning.softwareDecodeOutputMode != nil {
-                    var framePointer: UnsafeMutablePointer<AVFrame>? = decodedFrame
-                    av_frame_free(&framePointer)
-                    var contextPointer: UnsafeMutablePointer<AVCodecContext>? = context
-                    avcodec_free_context(&contextPointer)
-                    throw DecoderError.codecSetup(
-                        "requested output mode \(requestedOutputMode.rawValue) is unavailable"
-                    )
-                }
-                requestedOutputMode = requestedOutputMode.pixelTransferFallback
-            }
-        }
-
-        var transferSetup: (VTPixelTransferSession, CVPixelBufferPool, CVPixelBuffer)?
-        if requestedOutputMode.usesPixelTransfer {
-            var transferAttributes = attributes
-            if requestedOutputMode.usesLosslessStorage {
-                let destinationIsFullRange = fullRange && !requestedOutputMode.convertsToSDR
-                let losslessFormat: OSType = if resolvedBitDepth == 10 {
-                    destinationIsFullRange
-                        ? kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange
-                        : kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange
-                } else {
-                    destinationIsFullRange
-                        ? kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarFullRange
-                        : kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarVideoRange
-                }
-                transferAttributes = [
-                    kCVPixelBufferWidthKey as String: resolvedWidth,
-                    kCVPixelBufferHeightKey as String: resolvedHeight,
-                    kCVPixelBufferPixelFormatTypeKey as String: losslessFormat,
-                    kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
-                ]
-            } else if requestedOutputMode.convertsToSDR {
-                // Video range, to match the lossless SDR formats.
-                transferAttributes[kCVPixelBufferPixelFormatTypeKey as String] = resolvedBitDepth == 10
-                    ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-            }
-            var sessionOut: VTPixelTransferSession?
-            var poolOut: CVPixelBufferPool?
-            CVPixelBufferPoolCreate(
-                kCFAllocatorDefault,
-                [kCVPixelBufferPoolMinimumBufferCountKey as String: 18] as CFDictionary,
-                transferAttributes as CFDictionary,
-                &poolOut
-            )
-            if let poolOut,
-               VTPixelTransferSessionCreate(
-                   allocator: kCFAllocatorDefault,
-                   pixelTransferSessionOut: &sessionOut
-               ) == noErr,
-               let sessionOut {
-                var sessionUsable = true
-                if requestedOutputMode.convertsToSDR {
-                    let destination: [(CFString, CFString)] = [
-                        (kVTPixelTransferPropertyKey_DestinationColorPrimaries,
-                         kCVImageBufferColorPrimaries_ITU_R_709_2),
-                        (kVTPixelTransferPropertyKey_DestinationTransferFunction,
-                         kCVImageBufferTransferFunction_ITU_R_709_2),
-                        (kVTPixelTransferPropertyKey_DestinationYCbCrMatrix,
-                         kCVImageBufferYCbCrMatrix_ITU_R_709_2),
-                    ]
-                    for (key, value) in destination
-                    where VTSessionSetProperty(sessionOut, key: key, value: value) != noErr {
-                        sessionUsable = false
-                    }
-                }
-                var probe: CVPixelBuffer?
-                CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, poolOut, &probe)
-                if sessionUsable,
-                   let probe,
-                   VTPixelTransferSessionTransferImage(sessionOut, from: prototype, to: probe) == noErr {
-                    transferSetup = (sessionOut, poolOut, probe)
-                } else {
-                    VTPixelTransferSessionInvalidate(sessionOut)
-                }
-            }
-        }
-        if tuning.softwareDecodeOutputMode != nil,
-           requestedOutputMode.usesPixelTransfer,
-           transferSetup == nil {
+        } catch {
             var framePointer: UnsafeMutablePointer<AVFrame>? = decodedFrame
             av_frame_free(&framePointer)
             var contextPointer: UnsafeMutablePointer<AVCodecContext>? = context
             avcodec_free_context(&contextPointer)
-            throw DecoderError.codecSetup(
-                "requested output mode \(requestedOutputMode.rawValue) is unavailable"
-            )
-        }
-        let resolvedOutputMode: OutputMode = if gpuSetup != nil {
-            requestedOutputMode
-        } else if transferSetup == nil {
-            .directSource
-        } else {
-            requestedOutputMode
-        }
-        let resolvedOutputProperties = resolvedOutputMode.convertsToSDR
-            ? properties.sdrToneMapped
-            : properties
-        if let probe = gpuSetup?.2 ?? transferSetup?.2 {
-            Self.apply(resolvedOutputProperties, pixelAspectRatio: aspect, to: probe)
+            throw error
         }
 
-        let descriptionSource = gpuSetup?.2 ?? transferSetup?.2 ?? prototype
-        var description: CMVideoFormatDescription?
-        let descriptionStatus = CMVideoFormatDescriptionCreateForImageBuffer(
-            allocator: kCFAllocatorDefault,
-            imageBuffer: descriptionSource,
-            formatDescriptionOut: &description
-        )
-        guard descriptionStatus == noErr, let description else {
-            var framePointer: UnsafeMutablePointer<AVFrame>? = decodedFrame
-            av_frame_free(&framePointer)
-            var contextPointer: UnsafeMutablePointer<AVCodecContext>? = context
-            avcodec_free_context(&contextPointer)
-            throw DecoderError.outputFormat(descriptionStatus)
-        }
-
-        transferSession = transferSetup?.0
-        transferOutputPool = transferSetup?.1
-        gpuConverter = gpuSetup?.0
-        gpuOutputPool = gpuSetup?.1
-        usesCompressedOutput = resolvedOutputMode.usesLosslessStorage || gpuSetup?.lossless == true
-        outputModeName = resolvedOutputMode.diagnosticName(sourceIsHDR: properties.isHDR)
-            + (gpuSetup.map { $0.lossless ? "-lossless" : "-linear" } ?? "")
-        outputProperties = resolvedOutputProperties
-        outputsToneMappedSDR = properties.isHDR && resolvedOutputMode.convertsToSDR
+        transferSession = sized.transferSession
+        transferOutputPool = sized.transferOutputPool
+        gpuConverter = sized.gpuConverter
+        gpuOutputPool = sized.gpuOutputPool
+        usesCompressedOutput = sized.mode.usesLosslessStorage || sized.gpuLossless
+        outputModeName = sized.mode.diagnosticName(sourceIsHDR: properties.isHDR)
+            + (sized.gpuConverter == nil ? "" : sized.gpuLossless ? "-lossless" : "-linear")
+        outputProperties = sized.mode.convertsToSDR ? properties.sdrToneMapped : properties
+        outputsToneMappedSDR = properties.isHDR && sized.mode.convertsToSDR
+        outputMode = sized.mode
+        self.fullRange = fullRange
+        self.baseAttributes = baseAttributes
+        self.sourcePixelFormat = sourcePixelFormat
+        self.sourcePeakNits = peakNits
         codecContext = context
         resolvedThreadCount = context.pointee.thread_count
         codecName = codec.pointee.name.map(String.init(cString:)) ?? "unknown"
@@ -623,14 +477,14 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         width = resolvedWidth
         height = resolvedHeight
         outputBitDepth = resolvedBitDepth
-        pixelBufferPool = createdPool
+        pixelBufferPool = sized.pixelBufferPool
         colorProperties = properties
         pixelAspectRatio = aspect
         timeline = VideoFrameTimeline(
             frameRateNum: frameRate.num,
             frameRateDen: frameRate.den
         )
-        formatDescription = description
+        formatDescription = sized.formatDescription
         detailedTimings = PipelineStageTimings(
             enabled: codecpar.pointee.codec_id == AV_CODEC_ID_AV1
                 && EngineTuning.current.profilesAV1Pipeline
@@ -850,9 +704,17 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             decodedFormat == AV_PIX_FMT_YUV420P10LE
                 || decodedFormat == AV_PIX_FMT_P010LE
         )
+        let frameWidth = Int(frame.pointee.width)
+        let frameHeight = Int(frame.pointee.height)
+        if (isSupported8Bit || isSupported10Bit),
+           frameWidth != width || frameHeight != height,
+           frameWidth > 0, frameHeight > 0,
+           frameWidth.isMultiple(of: 2), frameHeight.isMultiple(of: 2) {
+            try reconfigureOutput(width: frameWidth, height: frameHeight)
+        }
         guard isSupported8Bit || isSupported10Bit,
-              Int(frame.pointee.width) == width,
-              Int(frame.pointee.height) == height else {
+              frameWidth == width,
+              frameHeight == height else {
             let name = av_get_pix_fmt_name(decodedFormat).map(String.init(cString:)) ?? "\(frame.pointee.format)"
             throw DecoderError.unsupportedPixelFormat(name)
         }
@@ -1133,12 +995,245 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         av_frame_unref(frame)
     }
 
+    /// Everything sized to the picture: the surfaces frames are written into,
+    /// the transfer or GPU stage after them, and the description the renderer
+    /// is given.
+    private struct SizedOutput {
+        let pixelBufferPool: CVPixelBufferPool
+        let transferSession: VTPixelTransferSession?
+        let transferOutputPool: CVPixelBufferPool?
+        let gpuConverter: MetalFrameConverter?
+        let gpuOutputPool: CVPixelBufferPool?
+        let gpuLossless: Bool
+        /// The mode in use, not the one requested.
+        let mode: OutputMode
+        let formatDescription: CMVideoFormatDescription
+    }
+
+    /// Builds the sized output: GPU first; if Metal cannot serve the stream,
+    /// the transfer equivalent; if that is refused, linear. Each mode gets
+    /// its own pool and one probe. An explicit mode fails rather than
+    /// measure another path. See playback.md for what the matrix isolates.
+    private static func makeSizedOutput(
+        width: Int,
+        height: Int,
+        bitDepth: Int,
+        fullRange: Bool,
+        baseAttributes: [String: Any],
+        properties: ColorProperties,
+        pixelAspectRatio aspect: (horizontal: Int32, vertical: Int32)?,
+        requestedMode: OutputMode,
+        modeIsExplicit: Bool,
+        sourcePixelFormat: AVPixelFormat,
+        sourcePeakNits: Float
+    ) throws -> SizedOutput {
+        let outputPixelFormat: OSType = if bitDepth == 10 {
+            fullRange
+                ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+                : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        } else {
+            fullRange
+                ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        }
+        var attributes = baseAttributes
+        attributes[kCVPixelBufferWidthKey as String] = width
+        attributes[kCVPixelBufferHeightKey as String] = height
+        attributes[kCVPixelBufferPixelFormatTypeKey as String] = outputPixelFormat
+        // Without this the GPU conversion silently falls back to the CPU.
+        attributes[kCVPixelBufferMetalCompatibilityKey as String] = true
+        // Matches VideoToolbox's surfaces.
+        attributes[kCVPixelBufferIOSurfaceCoreAnimationCompatibilityKey as String] = true
+        let poolAttributes: [String: Any] = [
+            kCVPixelBufferPoolMinimumBufferCountKey as String: 18,
+        ]
+
+        var createdPool: CVPixelBufferPool?
+        let poolStatus = CVPixelBufferPoolCreate(
+            kCFAllocatorDefault,
+            poolAttributes as CFDictionary,
+            attributes as CFDictionary,
+            &createdPool
+        )
+        guard poolStatus == kCVReturnSuccess, let createdPool else {
+            throw DecoderError.pixelBufferPool(poolStatus)
+        }
+        var prototype: CVPixelBuffer?
+        let prototypeStatus = CVPixelBufferPoolCreatePixelBuffer(
+            kCFAllocatorDefault,
+            createdPool,
+            &prototype
+        )
+        guard prototypeStatus == kCVReturnSuccess, let prototype else {
+            throw DecoderError.pixelBuffer(prototypeStatus)
+        }
+        Self.apply(properties, pixelAspectRatio: aspect, to: prototype)
+
+        var requested = requestedMode
+        var gpuSetup: (MetalFrameConverter, CVPixelBufferPool, CVPixelBuffer, lossless: Bool)?
+        if requested.usesGPU {
+            gpuSetup = Self.makeGPUOutput(
+                mode: requested,
+                sourcePeakNits: sourcePeakNits,
+                sourcePixelFormat: sourcePixelFormat,
+                width: width,
+                height: height,
+                fullRange: fullRange,
+                properties: properties
+            )
+            if gpuSetup == nil {
+                if modeIsExplicit {
+                    throw DecoderError.codecSetup("requested output mode \(requested.rawValue) is unavailable")
+                }
+                requested = requested.pixelTransferFallback
+            }
+        }
+
+        var transferSetup: (VTPixelTransferSession, CVPixelBufferPool, CVPixelBuffer)?
+        if requested.usesPixelTransfer {
+            var transferAttributes = attributes
+            if requested.usesLosslessStorage {
+                let destinationIsFullRange = fullRange && !requested.convertsToSDR
+                let losslessFormat: OSType = if bitDepth == 10 {
+                    destinationIsFullRange
+                        ? kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange
+                        : kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange
+                } else {
+                    destinationIsFullRange
+                        ? kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarFullRange
+                        : kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarVideoRange
+                }
+                transferAttributes = [
+                    kCVPixelBufferWidthKey as String: width,
+                    kCVPixelBufferHeightKey as String: height,
+                    kCVPixelBufferPixelFormatTypeKey as String: losslessFormat,
+                    kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
+                ]
+            } else if requested.convertsToSDR {
+                // Video range, to match the lossless SDR formats.
+                transferAttributes[kCVPixelBufferPixelFormatTypeKey as String] = bitDepth == 10
+                    ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            }
+            var sessionOut: VTPixelTransferSession?
+            var poolOut: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(
+                kCFAllocatorDefault,
+                [kCVPixelBufferPoolMinimumBufferCountKey as String: 18] as CFDictionary,
+                transferAttributes as CFDictionary,
+                &poolOut
+            )
+            if let poolOut,
+               VTPixelTransferSessionCreate(
+                   allocator: kCFAllocatorDefault,
+                   pixelTransferSessionOut: &sessionOut
+               ) == noErr,
+               let sessionOut {
+                var sessionUsable = true
+                if requested.convertsToSDR {
+                    let destination: [(CFString, CFString)] = [
+                        (kVTPixelTransferPropertyKey_DestinationColorPrimaries,
+                         kCVImageBufferColorPrimaries_ITU_R_709_2),
+                        (kVTPixelTransferPropertyKey_DestinationTransferFunction,
+                         kCVImageBufferTransferFunction_ITU_R_709_2),
+                        (kVTPixelTransferPropertyKey_DestinationYCbCrMatrix,
+                         kCVImageBufferYCbCrMatrix_ITU_R_709_2),
+                    ]
+                    for (key, value) in destination
+                    where VTSessionSetProperty(sessionOut, key: key, value: value) != noErr {
+                        sessionUsable = false
+                    }
+                }
+                var probe: CVPixelBuffer?
+                CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, poolOut, &probe)
+                if sessionUsable,
+                   let probe,
+                   VTPixelTransferSessionTransferImage(sessionOut, from: prototype, to: probe) == noErr {
+                    transferSetup = (sessionOut, poolOut, probe)
+                } else {
+                    VTPixelTransferSessionInvalidate(sessionOut)
+                }
+            }
+        }
+        if modeIsExplicit, requested.usesPixelTransfer, transferSetup == nil {
+            throw DecoderError.codecSetup("requested output mode \(requested.rawValue) is unavailable")
+        }
+        let resolvedMode: OutputMode = if gpuSetup != nil {
+            requested
+        } else if transferSetup == nil {
+            .directSource
+        } else {
+            requested
+        }
+        let resolvedProperties = resolvedMode.convertsToSDR ? properties.sdrToneMapped : properties
+        if let probe = gpuSetup?.2 ?? transferSetup?.2 {
+            Self.apply(resolvedProperties, pixelAspectRatio: aspect, to: probe)
+        }
+
+        let descriptionSource = gpuSetup?.2 ?? transferSetup?.2 ?? prototype
+        var description: CMVideoFormatDescription?
+        let descriptionStatus = CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: descriptionSource,
+            formatDescriptionOut: &description
+        )
+        guard descriptionStatus == noErr, let description else {
+            if let session = transferSetup?.0 { VTPixelTransferSessionInvalidate(session) }
+            throw DecoderError.outputFormat(descriptionStatus)
+        }
+        return SizedOutput(
+            pixelBufferPool: createdPool,
+            transferSession: transferSetup?.0,
+            transferOutputPool: transferSetup?.1,
+            gpuConverter: gpuSetup?.0,
+            gpuOutputPool: gpuSetup?.1,
+            gpuLossless: gpuSetup?.lossless ?? false,
+            mode: resolvedMode,
+            formatDescription: description
+        )
+    }
+
+    /// Follows a stream that changes size mid-way, as broadcast MPEG-2 and
+    /// H.264 do between SD and HD: rebuilds everything sized to the picture,
+    /// in the mode chosen at open. A new size used to be a verdict.
+    ///
+    /// GPU frames still in flight were written for the old size and carry
+    /// the old description, so they drain first.
+    private func reconfigureOutput(width newWidth: Int, height newHeight: Int) throws {
+        waitForPendingOutput()
+        try rethrowGPUFailure()
+        let sized = try Self.makeSizedOutput(
+            width: newWidth,
+            height: newHeight,
+            bitDepth: outputBitDepth,
+            fullRange: fullRange,
+            baseAttributes: baseAttributes,
+            properties: colorProperties,
+            pixelAspectRatio: pixelAspectRatio,
+            requestedMode: outputMode,
+            modeIsExplicit: true,
+            sourcePixelFormat: sourcePixelFormat,
+            sourcePeakNits: sourcePeakNits
+        )
+        if let transferSession {
+            VTPixelTransferSessionInvalidate(transferSession)
+        }
+        width = newWidth
+        height = newHeight
+        pixelBufferPool = sized.pixelBufferPool
+        transferSession = sized.transferSession
+        transferOutputPool = sized.transferOutputPool
+        gpuConverter = sized.gpuConverter
+        gpuOutputPool = sized.gpuOutputPool
+        formatDescription = sized.formatDescription
+    }
+
     /// The Metal stage for 10-bit planar 4:2:0 (PQ BT.2020 when tone-mapping),
     /// or nil to fall back. Linear P010 unless
     /// `-debug.softwareDecodeGPULossless YES`.
     private static func makeGPUOutput(
         mode: OutputMode,
-        codecpar: UnsafeMutablePointer<AVCodecParameters>,
+        sourcePeakNits: Float,
         sourcePixelFormat: AVPixelFormat,
         width: Int,
         height: Int,
@@ -1158,7 +1253,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             height: height,
             fullRange: fullRange,
             toneMap: mode.convertsToSDR,
-            sourcePeakNits: sourcePeakNits(codecpar),
+            sourcePeakNits: sourcePeakNits,
             targetPeakNits: Float(min(max(targetNits, 100), 1000)),
             outputBitDepth: 10,
             verbose: EngineTuning.current.profilesAV1Pipeline
