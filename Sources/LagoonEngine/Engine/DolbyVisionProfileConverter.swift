@@ -17,11 +17,15 @@ nonisolated enum DolbyVisionProfile7Mode: Sendable, Equatable {
 /// One playback's profile 7 rewrite counts, for the HUD and the bench.
 nonisolated struct DolbyVisionRewriteStats: Equatable, Sendable {
     var mode: DolbyVisionProfile7Mode
-    /// Packets that carried a type 62 or 63 unit.
+    /// Packets rewritten: they carried a type 62 or 63 unit, or were given
+    /// a repeated RPU.
     var packets: Int = 0
     var rpusConverted: Int = 0
     /// Type 62 units removed: strip mode, or a failed conversion.
     var rpusDropped: Int = 0
+    /// Frames that reached the decoder carrying the previous frame's RPU,
+    /// because they had none of their own or theirs failed to convert.
+    var rpusRepeated: Int = 0
     /// Type 63 units removed.
     var enhancementUnitsDropped: Int = 0
     var bytesRemoved: Int64 = 0
@@ -38,6 +42,13 @@ nonisolated struct DolbyVisionRewriteStats: Equatable, Sendable {
 /// `dovi_tool -m 2`). Mode 2, not 4, because it resets a FEL source's mapping
 /// curves to identity; they only make sense with the residual. Type-63 units
 /// are dropped. A failed RPU is dropped and counted, never stalls the stream.
+///
+/// Every frame leaves with an RPU once one has converted. The stream is
+/// tagged Dolby Vision 8.1, and VideoToolbox refuses a frame of it without
+/// one (`kCMBlockBufferBadLengthParameterErr`, -12704), which the ladder
+/// reads as undecodable. Some remuxes lose the metadata of a few frames in
+/// a scene, and a failed conversion leaves the same hole, so such a frame
+/// gets the last converted RPU, as dovi_tool's editor duplicates one.
 /// Runs on the demux queue; `stats` is locked because the HUD reads it.
 nonisolated final class DolbyVisionProfileConverter {
     /// dvvC for the converted stream: profile 8, single layer, level and
@@ -50,6 +61,9 @@ nonisolated final class DolbyVisionProfileConverter {
     // Demux-queue only: `convert` is never called concurrently with itself.
     private var didReadHeader = false
     private var recordedEnhancementLayerType: String?
+    /// Kept across seeks: a stale RPU for a frame is a brief tone-mapping
+    /// mismatch, a missing one a verdict.
+    private var lastConvertedRPU: Data?
 
     var stats: DolbyVisionRewriteStats {
         lock.lock()
@@ -78,6 +92,7 @@ nonisolated final class DolbyVisionProfileConverter {
     /// parse, as `HEVCNALUnitRewriter.rewrite`.
     func convert(payload: UnsafeRawBufferPointer, lengthSize: Int) -> Data? {
         var converted = 0
+        var repeated = 0
         var rpuDropped = 0
         var enhancementDropped = 0
         var errors = 0
@@ -100,6 +115,7 @@ nonisolated final class DolbyVisionProfileConverter {
                     }
                     converted += 1
                     bytesRemoved += Int64(unit.count - data.count)
+                    self.lastConvertedRPU = data
                     return .replace(data)
                 case .failed:
                     rpuDropped += 1
@@ -112,14 +128,25 @@ nonisolated final class DolbyVisionProfileConverter {
             }
         }
 
-        // nil: no 62/63 unit, or the payload did not parse. Pass through
-        // with nothing counted.
-        guard let result else { return nil }
+        var output = result
+        if converted == 0, let lastConvertedRPU,
+           let base = output ?? HEVCNALUnitRewriter.copyIfWellFormed(payload: payload, lengthSize: lengthSize),
+           let filled = HEVCNALUnitRewriter.appending(unit: lastConvertedRPU, to: base, lengthSize: lengthSize) {
+            // RPUs close the access unit, and the enhancement layer after
+            // them is gone.
+            output = filled
+            repeated = 1
+        }
+
+        // nil: no 62/63 unit and nothing to repeat, or the payload did not
+        // parse. Pass through with nothing counted.
+        guard let output else { return nil }
 
         lock.lock()
         mutableStats.packets += 1
         mutableStats.rpusConverted += converted
         mutableStats.rpusDropped += rpuDropped
+        mutableStats.rpusRepeated += repeated
         mutableStats.enhancementUnitsDropped += enhancementDropped
         mutableStats.errors += errors
         mutableStats.bytesRemoved += bytesRemoved
@@ -128,7 +155,7 @@ nonisolated final class DolbyVisionProfileConverter {
         }
         lock.unlock()
 
-        return result
+        return output
     }
 
     private enum RPUOutcome {
