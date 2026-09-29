@@ -8,6 +8,21 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.1.1
+
+September 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Fixed
+
+- A bounded download (artwork, trickplay tiles, sidecar subtitles) that is
+  redirected to another host no longer carries the original request's
+  credential headers there. URLSession drops `Authorization` itself but
+  forwarded any other header, such as a forward-auth proxy's service token
+  from `MediaRequestAuthorization.additionalHeaders`. Only `Accept`,
+  `Accept-Language`, `Accept-Encoding`, `User-Agent`, `Range`, `If-Range`
+  and `Cache-Control` now follow a redirect off the host.
+
 ## 1.1.0
 
 September 2026. Adds API and one native library, `Libass`; nothing is removed
