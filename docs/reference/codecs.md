@@ -356,12 +356,41 @@ by joining same-codec clips of two sizes with ffmpeg's concat demuxer
   late results taking over, and embedded subtitle writes and replacement
   commits share the engine lock. None of these failures pause or restart
   playback.
-- **ASS/SSA placement.** `ASSSubtitleTextParser` keeps each text composition
-  separate instead of joining simultaneous speakers into one bottom-centre
-  block. It reads `PlayResX/Y` from FFmpeg's subtitle header, maps
+- **Styled ASS/SSA (libass).** An ASS or SSA track, embedded or a sidecar,
+  renders through libass in `StyledSubtitleRenderer`: named styles, `\fn`,
+  `\fs`, karaoke, `\move`, `\fad`, clips, rotation, borders and `\p`
+  drawings, in the fonts the file carries as Matroska attachments, then
+  CoreText's. libass draws for a moment rather than per cue, so the renderer
+  runs on its own queue at the video frame rate (capped at 30 Hz), reads the
+  synchronizer's timebase, and publishes premultiplied images through
+  `currentSubtitleImages` only when the picture changes: one per cluster of
+  overlapping pieces, so a top karaoke line and the bottom dialogue are two
+  small images rather than one covering the frame. The overlay treats them
+  as it treats PGS. The bench line's `styledSubs` field gives the render and
+  composite cost per changed frame; on the Apple TV 4K (3rd gen), a 1080p24
+  opening with two `\kf` karaoke lines, `\blur`, a moving sign and dialogue
+  cost 10.1 ms average and 47–58 ms peak, with no frames lost (2026-09-29,
+  four runs). Splitting the blend into regions did not lower it (9.4 ms with
+  one image), so the time is most likely libass's own rendering; the split
+  was not measured. Embedded events reach libass as raw Matroska chunks
+  (`SubtitleEvent.styledChunk`) beside the parsed cue; libass drops
+  duplicates by ReadOrder, so re-demuxing after a seek is harmless. The parsed
+  cues still feed `currentSubtitleText` for Media Accessibility, but not the
+  overlay. The canvas is the video size capped at 1920×1080, with the storage
+  size set to the video so borders and blur scale with it.
+  `EngineTuning.rendersStyledSubtitles` (on by default) turns it off, and a
+  renderer that fails to start leaves the track to the cue parser below.
+  Tests: `StyledSubtitleRendererTests`; the opt-in
+  `theFixturesAttachedFontReachesLibass` opens
+  `LAGOON_STYLED_ASS_FIXTURE_URL`, a Matroska file whose styles name a font it
+  carries as an attachment
+  (`ffmpeg … -c:s ass -attach Font.ttf -metadata:s:t:0 mimetype=application/x-truetype-font`).
+- **ASS/SSA placement without libass.** `ASSSubtitleTextParser` keeps each
+  text composition separate instead of joining simultaneous speakers into one
+  bottom-centre block. It reads `PlayResX/Y` from FFmpeg's subtitle header, maps
   `\pos(x,y)` onto the presentation rect, uses `\an1…9` as the anchor, and
   keeps inline primary colour, bold and italic. Every other override is
-  ignored on purpose: this is the useful signs-and-dialogue subset, not libass.
+  ignored on purpose: this is the fallback subset for when libass is off.
   A cue with none of these overrides takes the plain `PlayerSubtitleText`
   path, so SRT, WebVTT and plain ASS dialogue keep the viewer's caption style
   and position.

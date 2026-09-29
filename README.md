@@ -19,7 +19,8 @@ disc images. HEVC, H.264, AV1, VP9, VC-1, WMV3, MPEG-2 and MPEG-4 Part 2,
 including interlaced H.264 and MPEG-2 through the software decoder. HDR10, HLG
 and Dolby Vision, including dual-layer profile 7 converted to 8.1 in flight.
 Dolby Atmos passed through; TrueHD, DTS, FLAC and ALAC decoded to lossless
-PCM. Embedded, PGS, VobSub, DVB and external subtitles.
+PCM. Embedded, PGS, VobSub, DVB and external subtitles, with styled ASS/SSA
+drawn by libass in the fonts the file carries.
 
 VideoToolbox decodes where the hardware takes the bitstream; libavcodec
 decodes the rest.
