@@ -48,6 +48,26 @@ struct MediaCredentialTests {
         #expect(request.timeoutInterval == 12)
     }
 
+    @Test func proxyHeadersGoOnlyToTheOriginWithTheCredential() {
+        let authorization = MediaRequestAuthorization(
+            origin: URL(string: "https://\(MediaCredentialStub.host):8920")!,
+            headerName: "Authorization",
+            headerValue: #"MediaBrowser Token="secret""#,
+            additionalHeaders: ["CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "proxy-secret"]
+        )
+        let origin = authorization.request(for: URL(string: "https://\(MediaCredentialStub.host):8920/x")!)
+        #expect(origin.value(forHTTPHeaderField: "CF-Access-Client-Id") == "id.access")
+        #expect(origin.value(forHTTPHeaderField: "CF-Access-Client-Secret") == "proxy-secret")
+        #expect(origin.value(forHTTPHeaderField: "Authorization") == #"MediaBrowser Token="secret""#)
+
+        let elsewhere = authorization.request(for: URL(string: "https://elsewhere.test/file.srt")!)
+        #expect(elsewhere.allHTTPHeaderFields?.isEmpty ?? true)
+
+        var leaving = origin
+        authorization.remove(from: &leaving)
+        #expect(leaving.allHTTPHeaderFields?.isEmpty ?? true)
+    }
+
     @Test func requestForWithoutATimeoutKeepsURLRequestsOwnDefault() {
         let url = URL(string: "https://\(MediaCredentialStub.host):8920/x")!
         #expect(Self.authorization.request(for: url).timeoutInterval == URLRequest(url: url).timeoutInterval)

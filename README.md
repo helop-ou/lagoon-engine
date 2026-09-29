@@ -119,7 +119,8 @@ engine.prepare(
 
 Pass a `MediaRequestAuthorization`, and the engine sends the header with every
 request, HLS playlists and segments included. Credentials never go into a URL
-and are never logged.
+and are never logged. A server behind a forward-auth proxy can add the
+proxy's headers with `additionalHeaders`; they go to the same origin only.
 
 ```swift
 engine.prepare(

@@ -101,7 +101,7 @@ private final class FFmpegTransportSessionDelegate: NSObject, URLSessionDataDele
         if let url = request.url, authorization.applies(to: url) {
             authorization.apply(to: &request)
         } else {
-            request.setValue(nil, forHTTPHeaderField: authorization.headerName)
+            authorization.remove(from: &request)
         }
         completionHandler(request)
     }

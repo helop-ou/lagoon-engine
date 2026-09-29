@@ -11,17 +11,24 @@ public nonisolated struct MediaRequestAuthorization: Sendable, Equatable {
     public let headerValue: String
     /// Query item names (compared lowercased) that carry the same credential in the URL.
     public let queryNames: Set<String>
+    /// More headers for the same origin, such as a forward-auth proxy's
+    /// service token (Cloudflare Access's `CF-Access-Client-Id` and
+    /// `-Secret`). Values are credentials too: never logged, and dropped on a
+    /// redirect to another origin. The credential header wins a name clash.
+    public let additionalHeaders: [String: String]
 
     public init(
         origin: URL,
         headerName: String,
         headerValue: String,
-        queryNames: Set<String> = []
+        queryNames: Set<String> = [],
+        additionalHeaders: [String: String] = [:]
     ) {
         self.origin = origin
         self.headerName = headerName
         self.headerValue = headerValue
         self.queryNames = queryNames
+        self.additionalHeaders = additionalHeaders
     }
 
     /// Same scheme, host (case-insensitive) and effective port as `origin`. The
@@ -32,12 +39,23 @@ public nonisolated struct MediaRequestAuthorization: Sendable, Equatable {
             && Self.effectivePort(url) == Self.effectivePort(origin)
     }
 
-    /// Strips `queryNames` from the URL and sets the header when the request
+    /// Strips `queryNames` from the URL and sets the headers when the request
     /// targets `origin`; leaves other requests untouched.
     public func apply(to request: inout URLRequest) {
         guard let url = request.url, applies(to: url) else { return }
         request.url = strippingCredentials(from: url)
+        for (name, value) in additionalHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         request.setValue(headerValue, forHTTPHeaderField: headerName)
+    }
+
+    /// Removes every header `apply` sets, for a request leaving `origin`.
+    public func remove(from request: inout URLRequest) {
+        for name in additionalHeaders.keys {
+            request.setValue(nil, forHTTPHeaderField: name)
+        }
+        request.setValue(nil, forHTTPHeaderField: headerName)
     }
 
     /// The URL without the credential when it targets `origin`. For callers

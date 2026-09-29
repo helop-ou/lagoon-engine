@@ -67,8 +67,13 @@ every failed segment fetch.
   same-origin request.
 - It strips `ApiKey`/`api_key` from a URL that already carries one, since a
   server-supplied `TranscodingUrl` can arrive with either spelling.
+- `additionalHeaders` go to the same origin with the credential, for a
+  server behind a forward-auth proxy (Cloudflare Access's
+  `CF-Access-Client-Id`/`-Secret`, Authelia, Authentik). They are
+  credentials too. The credential header wins a name clash.
 - Requests to any other origin are left as given, and the session delegate
-  drops the header on a cross-origin redirect.
+  drops every one of those headers on a cross-origin redirect
+  (`MediaRequestAuthorization.remove(from:)`).
 - The playback cache (`URLSessionPlaybackRangeLoader`/`PlaybackRangeRequest`
   in `Sources/LagoonEngine/Transport/PlaybackCache.swift`) applies the same
   authorization to every ranged request, including HLS child URLs the server

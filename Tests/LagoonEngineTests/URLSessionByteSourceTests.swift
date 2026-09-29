@@ -262,6 +262,37 @@ struct URLSessionByteSourceTests {
         #expect(secondRequest.headers["Authorization"] == nil)
     }
 
+    @Test func proxyHeadersTravelWithTheCredentialAndStopAtTheOrigin() throws {
+        let authorization = MediaRequestAuthorization(
+            origin: URL(string: "https://\(TransportStub.host)")!,
+            headerName: "Authorization",
+            headerValue: #"MediaBrowser Token="secret""#,
+            additionalHeaders: [
+                "CF-Access-Client-Id": "id.access",
+                "CF-Access-Client-Secret": "proxy-secret",
+                // A clash never replaces the credential.
+                "Authorization": "overridden",
+            ]
+        )
+        let transport = makeTransport(authorization: authorization)
+        let redirectTarget = URL(string: "https://\(TransportStub.redirectHost)/proxy-elsewhere")!
+        TransportStub.set("/proxy-redirecting", .init(redirectTo: redirectTarget))
+        TransportStub.set("/proxy-elsewhere", .init(body: Self.body(count: 4_096)))
+        var io: UnsafeMutablePointer<AVIOContext>?
+        #expect(Self.open(transport, url: Self.testURL("/proxy-redirecting"), into: &io) >= 0)
+        let context = try #require(io)
+        defer { _ = transport.close(context) }
+        _ = Self.readAll(context)
+        let first = try #require(TransportStub.requests(path: "/proxy-redirecting").first)
+        let second = try #require(TransportStub.requests(path: "/proxy-elsewhere").first)
+        #expect(first.headers["CF-Access-Client-Id"] == "id.access")
+        #expect(first.headers["CF-Access-Client-Secret"] == "proxy-secret")
+        #expect(first.headers["Authorization"] == #"MediaBrowser Token="secret""#)
+        #expect(second.headers["CF-Access-Client-Id"] == nil)
+        #expect(second.headers["CF-Access-Client-Secret"] == nil)
+        #expect(second.headers["Authorization"] == nil)
+    }
+
     @Test func closingATransportFreesItsContexts() throws {
         let transport = makeTransport()
         var ioA: UnsafeMutablePointer<AVIOContext>?
