@@ -90,7 +90,11 @@ ok "releasing into ${slug}"
 #    which the LGPL wants offered from the same place as the binaries: the
 #    release attaches that bundle (step 8).
 missing=""
-for material in LICENSE Artifacts/FFmpeg.README.md Artifacts/Libdovi.README.md; do
+materials=(LICENSE Artifacts/FFmpeg.README.md Artifacts/Libdovi.README.md)
+if git -C "$root" cat-file -e "${sha}:scripts/build-libass.sh" 2>/dev/null; then
+    materials+=(Artifacts/Libass.README.md)
+fi
+for material in "${materials[@]}"; do
     git -C "$root" cat-file -e "${sha}:${material}" 2>/dev/null || missing="${missing} ${material}"
 done
 [ -z "$missing" ] || die "the revision is missing dependency materials:${missing}"
@@ -128,9 +132,17 @@ trap 'rm -rf "$bundle_dir"' EXIT
 bundle="$("$root/scripts/ffmpeg-source-bundle.sh" "$tag" "$bundle_dir" --rev "$sha")" \
     || die "could not assemble the FFmpeg source bundle"
 ok "FFmpeg source bundle: $(basename "$bundle")"
+bundles=("$bundle")
+# FriBidi, linked statically inside Libass, is LGPL too.
+if git -C "$root" cat-file -e "${sha}:scripts/build-libass.sh" 2>/dev/null; then
+    fribidi_bundle="$("$root/scripts/fribidi-source-bundle.sh" "$tag" "$bundle_dir" --rev "$sha")" \
+        || die "could not assemble the FriBidi source bundle"
+    ok "FriBidi source bundle: $(basename "$fribidi_bundle")"
+    bundles+=("$fribidi_bundle")
+fi
 
 # Below 1.0 is a pre-release, so an unfinished API is never served as Latest.
-set -- gh release create "$tag" "$bundle" --repo "$slug" --target "$sha" \
+set -- gh release create "$tag" "${bundles[@]}" --repo "$slug" --target "$sha" \
     --title "$tag" --notes-file -
 case "$tag" in 0.*) set -- "$@" --prerelease ;; esac
 
