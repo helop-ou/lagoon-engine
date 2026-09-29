@@ -78,9 +78,10 @@ scripts/publish-release.sh 1.2.0
 
 The script refuses a release it cannot stand behind: a version or changelog
 mismatch, an unpushed commit, missing licence materials, a stale codec table,
-or a package that does not build and test. It attaches FFmpeg's corresponding
-source to the release (`scripts/ffmpeg-source-bundle.sh`), which the LGPL
-asks for wherever the binaries are offered.
+or a package that does not build and test. It attaches FFmpeg's and FriBidi's
+corresponding source to the release (`scripts/ffmpeg-source-bundle.sh`,
+`scripts/fribidi-source-bundle.sh`), which the LGPL asks for wherever the
+binaries are offered.
 
 Real semantic versioning: a breaking change to anything `public` is a major
 bump. Public means a host names the type or can reach it from one it does; a
@@ -111,6 +112,9 @@ first three:
 - **libavutil, libavcodec, libavformat, libswresample**: one configure, no
   network stack. See [`Artifacts/FFmpeg.README.md`](Artifacts/FFmpeg.README.md).
   Needs Python 3.12+ and pkg-config.
+- **libass**, with FreeType, FriBidi and HarfBuzz in the same archive:
+  `scripts/build-libass.sh`. Needs meson, ninja, pkg-config and nasm. See
+  [`Artifacts/Libass.README.md`](Artifacts/Libass.README.md).
 - **libdovi** cannot be rebuilt here. It is vendored prebuilt; a from-source
   build needs a Rust toolchain and `cargo-c`. Provenance and per-slice hashes
   are in [`Artifacts/Libdovi.README.md`](Artifacts/Libdovi.README.md).
