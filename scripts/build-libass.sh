@@ -11,6 +11,12 @@
 # Requires meson, ninja, pkg-config and nasm (brew install meson ninja
 # pkg-config nasm); nasm assembles libass's x86 routines for the simulators.
 #
+# FreeType reads fonts through stdio rather than mmap, and HarfBuzz is built
+# with HB_NO_MMAP, so neither imports fstat (a privacy-manifest API). HarfBuzz
+# then leaves its macOS resource-fork reader unused, which its own pragmas make
+# an error (HB_NO_PRAGMA_GCC_DIAGNOSTIC_ERROR turns those off); the function is
+# not emitted, and the verification checks that.
+#
 # Licences: libass ISC, FreeType FTL (chosen over its GPL-2.0 alternative),
 # HarfBuzz MIT, FriBidi LGPL-2.1-or-later. FriBidi's source travels with each
 # release in the source bundle, as FFmpeg's does. Fonts come from CoreText and
@@ -53,9 +59,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Every slice must carry all four libraries, and no fontconfig: a missing one
-# links only to fail at the first styled cue, and fontconfig would look for a
-# configuration file tvOS does not have.
+# Every slice must carry all four libraries, no fontconfig, and no file
+# metadata call: a missing library links only to fail at the first styled cue,
+# fontconfig would look for a configuration file tvOS does not have, and stat
+# and its relatives are privacy-manifest APIs Lagoon would have to declare.
 verify_contents() {
     local framework="$1" failures=0
     echo "== verifying the four libraries are linked =="
@@ -74,6 +81,10 @@ verify_contents() {
             done
             if grep -q " U _Fc" <<< "$symbols"; then
                 echo "   ERROR: $slice/$arch references fontconfig" >&2
+                failures=$((failures + 1))
+            fi
+            if grep -Eq " U _(f|l)?stat(at)?(64)?$| U _getattrlist(bulk)?$| U _fgetattrlist$" <<< "$symbols"; then
+                echo "   ERROR: $slice/$arch imports a file metadata API" >&2
                 failures=$((failures + 1))
             fi
             printf '   %-34s %-7s libass+FreeType+FriBidi+HarfBuzz\n' "$slice" "$arch"
@@ -187,7 +198,7 @@ pkg_config_libdir = ['$prefix/lib/pkgconfig']
 
 [built-in options]
 c_args = ['-target', '$triple', '-isysroot', '$sysroot', '-fno-common']
-cpp_args = ['-target', '$triple', '-isysroot', '$sysroot', '-fno-common']
+cpp_args = ['-target', '$triple', '-isysroot', '$sysroot', '-fno-common', '-DHB_NO_MMAP', '-DHB_NO_PRAGMA_GCC_DIAGNOSTIC_ERROR', '-Wno-error=unused-function']
 c_link_args = ['-target', '$triple', '-isysroot', '$sysroot']
 cpp_link_args = ['-target', '$triple', '-isysroot', '$sysroot']
 
@@ -202,7 +213,7 @@ CROSS
 
     echo "== building $group $arch ($triple) =="
     meson_build freetype "$work/freetype-$FREETYPE_VERSION" \
-        -Dbrotli=disabled -Dharfbuzz=disabled -Dpng=disabled \
+        -Dbrotli=disabled -Dharfbuzz=disabled -Dpng=disabled -Dmmap=disabled \
         -Dzlib=internal -Dtests=disabled
     meson_build fribidi "$work/fribidi-$FRIBIDI_VERSION" \
         -Ddocs=false -Dbin=false -Dtests=false

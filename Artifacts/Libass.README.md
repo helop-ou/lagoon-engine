@@ -14,16 +14,22 @@ carry (tvOS and iOS devices and simulators, and macOS for indexing). Choices:
 
 - **Fonts.** CoreText is libass's system font provider; fontconfig is not
   built. The media's own fonts come from its attachments at runtime.
-- **FreeType** without HarfBuzz, PNG or Brotli, with its internal zlib.
+- **FreeType** without HarfBuzz, PNG or Brotli, with its internal zlib, and
+  without mmap: it reads font files through stdio, so it never calls `fstat`.
 - **HarfBuzz** with only the FreeType integration: no GLib, ICU, Cairo,
-  CoreText, subsetter or utilities.
+  CoreText, subsetter or utilities, and built with `HB_NO_MMAP`, which drops
+  its only `fstat` caller. (Its source promotes the now-unused resource-fork
+  reader to an error, so `HB_NO_PRAGMA_GCC_DIAGNOSTIC_ERROR` is set; the
+  function is not emitted.)
 - **FriBidi** as the library only.
 - **libass** with its assembly (nasm for the x86_64 simulators), no
   libunibreak, tests or tools.
 - Local symbols are stripped (`strip -x -S`); the exported API is untouched.
 
 The script fails unless every slice defines libass, FreeType, FriBidi and
-HarfBuzz entry points and none references fontconfig.
+HarfBuzz entry points, none references fontconfig, and none imports `stat`,
+`fstat`, `lstat`, `fstatat` or `getattrlist`: file-timestamp APIs a host
+would have to declare in its privacy manifest.
 
 ## Licences
 
