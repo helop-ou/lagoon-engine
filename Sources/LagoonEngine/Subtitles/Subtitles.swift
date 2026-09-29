@@ -496,12 +496,16 @@ nonisolated enum ASSSubtitleTextParser {
     }
 }
 
-/// Parses external subtitle files: vtt, and srt since the timestamps overlap.
+/// Parses external subtitle files: vtt, srt since the timestamps overlap,
+/// and ASS/SSA scripts.
 nonisolated enum SubtitleParser {
     static func cues(from data: Data, languageHint: String? = nil) -> [SubtitleCue] {
         guard data.count <= DownloadLimit.subtitle, !Task.isCancelled,
               let content = SubtitleTextDecoder.text(from: data, languageHint: languageHint) else {
             return []
+        }
+        if content.prefix(4_096).contains("[Script Info]") {
+            return scriptCues(from: content)
         }
         var result: [SubtitleCue] = []
 
@@ -525,6 +529,62 @@ nonisolated enum SubtitleParser {
             result.append(SubtitleCue(start: start, end: end, text: text, images: []))
         }
         return result
+    }
+
+    /// Every `Dialogue` line of an ASS/SSA script, read through the same
+    /// subset parser as embedded tracks so both copies of a file look alike.
+    /// Fields follow the `[Events]` section's `Format` line (SSA has `Marked`
+    /// where ASS has `Layer`); Text is always the last field and may hold
+    /// commas. libass draws the script when it can; these cues are the
+    /// fallback and the accessibility text.
+    static func scriptCues(from content: String) -> [SubtitleCue] {
+        let playResolution = ASSSubtitleTextParser.playResolution(from: content)
+        var format = ["layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text"]
+        var inEvents = false
+        var result: [SubtitleCue] = []
+        for rawLine in content.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline) {
+            guard !Task.isCancelled else { return [] }
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") {
+                inEvents = line.lowercased() == "[events]"
+                continue
+            }
+            guard inEvents, let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].lowercased()
+            let body = line[line.index(after: colon)...].drop { $0 == " " }
+            if key == "format" {
+                format = body.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                continue
+            }
+            guard key == "dialogue", format.last == "text",
+                  let startIndex = format.firstIndex(of: "start"),
+                  let endIndex = format.firstIndex(of: "end") else { continue }
+            let fields = body.split(separator: ",", maxSplits: format.count - 1, omittingEmptySubsequences: false)
+            guard fields.count == format.count,
+                  let start = scriptSeconds(fields[startIndex]),
+                  let end = scriptSeconds(fields[endIndex]),
+                  end > start,
+                  // FFmpeg's normalized event, of which the parser reads
+                  // only the Text field.
+                  let cue = ASSSubtitleTextParser.cue(
+                      from: "0,0,,,0,0,0,," + fields[format.count - 1],
+                      playResolution: playResolution
+                  ),
+                  !cue.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { continue }
+            result.append(SubtitleCue(start: start, end: end, textCues: [cue], images: []))
+        }
+        return result
+    }
+
+    /// ASS time, "h:mm:ss.cc".
+    static func scriptSeconds(_ field: Substring) -> Double? {
+        let parts = field.trimmingCharacters(in: .whitespaces).split(separator: ":")
+        guard parts.count == 3,
+              let hours = Double(parts[0]), let minutes = Double(parts[1]),
+              let seconds = Double(parts[2]) else { return nil }
+        let total = hours * 3_600 + minutes * 60 + seconds
+        return total.isFinite && total >= 0 ? total : nil
     }
 
     /// "hh:mm:ss.mmm", "mm:ss.mmm", or the srt comma variant; vtt cue

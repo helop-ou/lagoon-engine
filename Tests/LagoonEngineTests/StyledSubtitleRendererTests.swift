@@ -108,6 +108,41 @@ struct StyledSubtitleRendererTests {
         #expect(ExternalSubtitleLoader.styledScript(from: srt, language: nil) == nil)
     }
 
+    @Test func anASSSidecarLoadsAsCuesAndAScriptInsteadOfBeingRejected() async throws {
+        let track = ExternalSubtitleTrack(
+            url: URL(string: "https://example.test/Stream.ass")!,
+            preloadedData: Data(Self.script.utf8),
+            title: nil, language: "eng", select: true
+        )
+        let loaded = try await ExternalSubtitleLoader.load(track, using: .shared)
+        #expect(loaded.styledScript != nil)
+        #expect(loaded.cues.count == 4)
+        let sign = try #require(loaded.cues.first)
+        #expect(sign.start == 1 && sign.end == 3)
+        #expect(sign.text == "Sign")
+        // \pos survives on the fallback path too.
+        let position = try #require(sign.textCues.first?.position)
+        #expect(abs(position.x - 160.0 / 1920) < 0.001)
+        #expect(abs(position.y - 200.0 / 1080) < 0.001)
+    }
+
+    @Test func scriptTimesAndCommasInTextParse() {
+        let script = """
+        [Script Info]
+        ScriptType: v4.00
+
+        [Events]
+        Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+        Dialogue: Marked=0,0:01:02.50,0:01:04.00,Default,,0,0,0,,Well, hello, there
+        Comment: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,not shown
+        """
+        let cues = SubtitleParser.cues(from: Data(script.utf8))
+        #expect(cues.count == 1)
+        #expect(cues.first?.start == 62.5)
+        #expect(cues.first?.end == 64)
+        #expect(cues.first?.text == "Well, hello, there")
+    }
+
     /// Opt-in: `LAGOON_STYLED_ASS_FIXTURE_URL`, a Matroska file with an ASS
     /// track whose Karaoke and Sign styles name a font the file carries as an
     /// attachment (recipe in codecs.md).
@@ -155,6 +190,24 @@ struct StyledSubtitleRendererTests {
         let family = (font.name as NSString).deletingPathExtension
         let systemFamily = CTFontCopyFamilyName(CTFontCreateWithName(family as CFString, 12, nil)) as String
         let withFont = try render(with: [font])
+        // The same script as a sidecar (`LAGOON_STYLED_ASS_SIDECAR_PATH`) draws
+        // the same pixels as the embedded copy.
+        if let sidecarPath = ProcessInfo.processInfo.environment["LAGOON_STYLED_ASS_SIDECAR_PATH"],
+           let sidecar = FileManager.default.contents(atPath: sidecarPath) {
+            let script = try #require(ExternalSubtitleLoader.styledScript(from: sidecar, language: nil))
+            let external = try #require(StyledSubtitleRenderer(
+                script: script, fonts: [font], videoSize: CGSize(width: 1920, height: 1080)
+            ))
+            let externalImages = external.render(atMilliseconds: 5_000)
+            let embedded = try #require(StyledSubtitleRenderer(
+                header: header, fonts: [font], videoSize: CGSize(width: 1920, height: 1080)
+            ))
+            chunks.forEach(embedded.add)
+            let embeddedImages = embedded.render(atMilliseconds: 5_000)
+            #expect(externalImages.count == embeddedImages.count)
+            #expect(externalImages.map(\.rect) == embeddedImages.map(\.rect))
+            #expect(externalImages.map { Self.pixels($0.image) } == embeddedImages.map { Self.pixels($0.image) })
+        }
         if systemFamily != family {
             let withoutFont = try render(with: [])
             #expect(Self.pixels(withFont.image) != Self.pixels(withoutFont.image))

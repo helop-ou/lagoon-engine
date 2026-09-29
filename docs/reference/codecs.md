@@ -320,8 +320,10 @@ by joining same-codec clips of two sizes with ffmpeg's concat demuxer
   Embedded streams decode through `avcodec_decode_subtitle2`, which turns
   srt/ass/ssa/mov_text into ASS event payloads (the text is everything after
   the 8th comma) and PGS/VobSub into paletted rects, converted to CGImages on
-  the codec's graphics plane. External vtt files download and parse into the
-  same cue store.
+  the codec's graphics plane. External vtt, srt and ASS/SSA files download
+  and parse into the same cue store; an ASS script's `Dialogue` lines go
+  through the same subset parser as embedded events (`SubtitleParser.scriptCues`),
+  and the script itself goes to libass.
 - **Track list.** Every subtitle stream is listed, even if undecodable, so
   per-type ordinals match the server's stream list. External tracks follow
   embedded ones, and the host maps `DefaultSubtitleStreamIndex` into that
