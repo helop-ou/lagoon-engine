@@ -293,6 +293,26 @@ struct URLSessionByteSourceTests {
         #expect(second.headers["Authorization"] == nil)
     }
 
+    @Test func aBoundedDownloadLeavingTheHostDropsEveryCredentialHeader() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TransportStub.self]
+        let download = BoundedDownload(configuration: configuration)
+        let target = URL(string: "https://\(TransportStub.redirectHost)/bounded-elsewhere")!
+        TransportStub.set("/bounded-redirecting", .init(redirectTo: target))
+        TransportStub.set("/bounded-elsewhere", .init(body: Self.body(count: 512)))
+        var request = URLRequest(url: URL(string: Self.testURL("/bounded-redirecting"))!)
+        request.setValue("proxy-secret", forHTTPHeaderField: "CF-Access-Client-Secret")
+        request.setValue("image/*", forHTTPHeaderField: "Accept")
+        // The stub answers every file 206, which a bounded download refuses;
+        // only what each hop received matters here.
+        _ = try? await download.data(for: request, limit: 4_096, content: .bytes)
+        let first = try #require(TransportStub.requests(path: "/bounded-redirecting").first)
+        let second = try #require(TransportStub.requests(path: "/bounded-elsewhere").first)
+        #expect(first.headers["CF-Access-Client-Secret"] == "proxy-secret")
+        #expect(second.headers["CF-Access-Client-Secret"] == nil)
+        #expect(second.headers["Accept"] == "image/*")
+    }
+
     @Test func closingATransportFreesItsContexts() throws {
         let transport = makeTransport()
         var ioA: UnsafeMutablePointer<AVIOContext>?

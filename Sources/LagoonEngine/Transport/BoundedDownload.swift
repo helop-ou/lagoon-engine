@@ -99,9 +99,22 @@ private nonisolated final class DownloadDelegate: NSObject, URLSessionDataDelega
             return
         }
         // URLSession handles redirects and TLS trust. Never copy Authorization
-        // or API keys onto the redirected request by hand.
-        completionHandler(request)
+        // or API keys onto the redirected request by hand. Leaving the host,
+        // keep only headers that carry no credential: URLSession drops
+        // Authorization itself, but not a proxy's service token.
+        var redirected = request
+        if to.host()?.lowercased() != from.host()?.lowercased() {
+            for name in (redirected.allHTTPHeaderFields ?? [:]).keys
+            where !Self.headersSafeAcrossHosts.contains(name.lowercased()) {
+                redirected.setValue(nil, forHTTPHeaderField: name)
+            }
+        }
+        completionHandler(redirected)
     }
+
+    private static let headersSafeAcrossHosts: Set<String> = [
+        "accept", "accept-language", "accept-encoding", "user-agent", "range", "if-range", "cache-control",
+    ]
 }
 
 /// Only fields under `lock` are mutable. Resume, cancellation and removal run
