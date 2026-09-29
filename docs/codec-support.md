@@ -11,7 +11,7 @@ is decoded by libavcodec on the CPU.
 
 | Codec | Path | Notes |
 | --- | --- | --- |
-| H.264 | VideoToolbox, software fallback | Progressive H.264 is handed to the renderer compressed. Interlaced H.264 decodes in software, because that is the only path with a deinterlacer. |
+| H.264 | VideoToolbox, software fallback | Progressive 8-bit H.264 is handed to the renderer compressed. Interlaced H.264 decodes in software, because that is the only path with a deinterlacer, and so does 10-bit H.264 (High 10), which no Apple hardware decoder accepts. |
 | HEVC | VideoToolbox | Always compressed, interlaced included. There is no software fallback, and a device without HEVC hardware fails the title rather than decoding it on the CPU. |
 | AV1 | VideoToolbox, software fallback | VideoToolbox when the device can make a session for the stream, and libdav1d when it cannot. Which one you get is decided by trying, once, at open. |
 | VP9 | Software | Always software. |

@@ -218,12 +218,29 @@ A device profile cannot say "interlaced only", so the demuxer splits it:
   counts as progressive.
 - HEVC keeps its guard: it has no software route, and interlaced HEVC is rare
   in libraries.
-- Tests: `interlacedH264IsRoutedToTheSoftwareDecoderAndProgressiveIsNot`. The
+- Tests: `interlacedAndTenBitH264AreRoutedToSoftwareAndPlainH264IsNot`. The
   opt-in `interlacedH264FixtureDecodesInSoftwareWithoutCombing` opens
   `LAGOON_INTERLACED_H264_FIXTURE_URL` and scores every frame for row
   alternation (a woven field pair on motion scores above 1.5, deinterlaced
   output below 1), with `LAGOON_PROGRESSIVE_H264_FIXTURE_URL` as the control
   that must stay compressed.
+
+### 10-bit H.264
+
+No Apple hardware decoder takes H.264 High 10 (Hi10P, common in older anime
+releases), so VideoToolbox refuses it and the demuxer sends it to software
+too. `FFmpegDemuxer.isHighBitDepthH264` reads what the probe parsed from the
+SPS: a 10-bit pixel format, else a sample depth above 8, else the High 10
+profile. A stream whose container or server metadata names no profile is
+still caught. Anything unknown counts as 8-bit and stays on hardware.
+
+- The output is P010, as for 10-bit AV1 and VP9. Interlaced 10-bit H.264 is
+  decoded but not deinterlaced; the deinterlacer is 8-bit only.
+- Tests: `tenBitH264IsReadFromTheStreamNotItsLabel`, and the opt-in
+  `hi10PH264FixtureProducesReadyP010Frames`, which opens
+  `LAGOON_HI10P_H264_FIXTURE_URL`. A fixture:
+  `ffmpeg -f lavfi -i testsrc2=size=1920x1080:rate=24 -t 6 -c:v libx264
+  -pix_fmt yuv420p10le -profile:v high10 hi10p.mkv`.
 
 ### 10-bit AV1 and VP9
 

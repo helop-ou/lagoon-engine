@@ -11,9 +11,9 @@ libavformat demuxes. `AVSampleBufferDisplayLayer` and
 
 | Content | Path |
 | --- | --- |
-| H.264, and audio CoreAudio takes | Stays compressed |
+| Progressive 8-bit H.264, and audio CoreAudio takes | Stays compressed |
 | HEVC, and AV1 where the hardware has a decoder | Decoded ahead by a hardware-only VideoToolbox session |
-| Other AV1, VP9, VC-1, MPEG-4 Part 2, MPEG-2 | libavcodec on its own decode queue, into renderer-recommended NV12/P010 Core Video buffers |
+| Other AV1, VP9, VC-1, MPEG-4 Part 2, MPEG-2, interlaced or 10-bit H.264 | libavcodec on its own decode queue, into renderer-recommended NV12/P010 Core Video buffers |
 | 10-bit software output | One asynchronous Metal pass that repacks and, on tvOS, tone-maps (`MetalFrameConverter`) |
 | Other compressed audio | libavcodec to LPCM |
 
