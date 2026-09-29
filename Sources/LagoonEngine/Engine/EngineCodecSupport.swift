@@ -21,21 +21,22 @@ nonisolated enum EngineCodecSupport {
         let id: AVCodecID
         let name: String
         let path: VideoPath
-        /// True when the software path takes this codec only interlaced.
-        let softwareOnlyWhenInterlaced: Bool
+        /// True when the software path takes this codec only interlaced or
+        /// 10-bit.
+        let softwareOnlyWhenInterlacedOrTenBit: Bool
         let note: String
 
         init(
             _ id: AVCodecID,
             _ name: String,
             _ path: VideoPath,
-            softwareOnlyWhenInterlaced: Bool = false,
+            softwareOnlyWhenInterlacedOrTenBit: Bool = false,
             note: String
         ) {
             self.id = id
             self.name = name
             self.path = path
-            self.softwareOnlyWhenInterlaced = softwareOnlyWhenInterlaced
+            self.softwareOnlyWhenInterlacedOrTenBit = softwareOnlyWhenInterlacedOrTenBit
             self.note = note
         }
     }
@@ -48,10 +49,11 @@ nonisolated enum EngineCodecSupport {
     }
 
     static let video: [Video] = [
-        Video(AV_CODEC_ID_H264, "H.264", .either, softwareOnlyWhenInterlaced: true, note:
-            "Progressive H.264 is handed to the renderer compressed. Interlaced "
-            + "H.264 decodes in software, because that is the only path with a "
-            + "deinterlacer."),
+        Video(AV_CODEC_ID_H264, "H.264", .either, softwareOnlyWhenInterlacedOrTenBit: true, note:
+            "Progressive 8-bit H.264 is handed to the renderer compressed. "
+            + "Interlaced H.264 decodes in software, because that is the only "
+            + "path with a deinterlacer, and so does 10-bit H.264 (High 10), "
+            + "which no Apple hardware decoder accepts."),
         Video(AV_CODEC_ID_HEVC, "HEVC", .videoToolbox, note:
             "Always compressed, interlaced included. There is no software "
             + "fallback, and a device without HEVC hardware fails the title "

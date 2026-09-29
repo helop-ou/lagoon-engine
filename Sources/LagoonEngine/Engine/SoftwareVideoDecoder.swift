@@ -7,7 +7,8 @@ import Libavutil
 import LagoonPixelOps
 
 /// libavcodec decode for codecs VideoToolbox does not offer here (VC-1/WMV3,
-/// MPEG-4 Part 2, MPEG-2, VP9, AV1 without hardware, interlaced H.264).
+/// MPEG-4 Part 2, MPEG-2, VP9, AV1 without hardware, interlaced or 10-bit
+/// H.264).
 /// Frames become Core Video buffers; AVFoundation still owns presentation.
 ///
 /// Output is narrow on purpose: 8-bit becomes NV12, 10-bit becomes P010.
@@ -268,16 +269,20 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         detailedTimings.reset()
     }
 
-    /// H.264 only when interlaced, so a progressive H.264 failure surfaces
-    /// instead of quietly decoding on the CPU.
-    static func supports(codecID: AVCodecID, interlaced: Bool = false) -> Bool {
+    /// H.264 only when interlaced or 10-bit, so a progressive 8-bit H.264
+    /// failure surfaces instead of quietly decoding on the CPU.
+    static func supports(
+        codecID: AVCodecID,
+        interlaced: Bool = false,
+        highBitDepth: Bool = false
+    ) -> Bool {
         codecID == AV_CODEC_ID_VC1
             || codecID == AV_CODEC_ID_WMV3
             || codecID == AV_CODEC_ID_MPEG4
             || codecID == AV_CODEC_ID_MPEG2VIDEO
             || codecID == AV_CODEC_ID_AV1
             || codecID == AV_CODEC_ID_VP9
-            || (codecID == AV_CODEC_ID_H264 && interlaced)
+            || (codecID == AV_CODEC_ID_H264 && (interlaced || highBitDepth))
     }
 
     /// Resolves the output-mode selector, still honouring the older boolean
@@ -323,7 +328,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             : avcodec_find_decoder(codecID)
         guard Self.supports(
                   codecID: codecID,
-                  interlaced: FFmpegDemuxer.isInterlaced(fieldOrder: codecpar.pointee.field_order)
+                  interlaced: FFmpegDemuxer.isInterlaced(fieldOrder: codecpar.pointee.field_order),
+                  highBitDepth: FFmpegDemuxer.isHighBitDepthH264(codecpar)
               ),
               let codec = selectedCodec,
               let context = avcodec_alloc_context3(codec) else {

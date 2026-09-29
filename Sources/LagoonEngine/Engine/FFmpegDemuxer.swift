@@ -255,15 +255,17 @@ nonisolated final class FFmpegDemuxer {
     /// software. AV1 is settled per stream at session creation.
     ///
     /// Interlaced H.264 goes to software, the only path with a deinterlacer;
-    /// VideoToolbox would comb on motion. HEVC has no software route.
+    /// VideoToolbox would comb on motion. So does 10-bit H.264, which no
+    /// Apple hardware decoder accepts. HEVC has no software route.
     static func usesCompressedVideoPath(
         codecID: AVCodecID,
         capabilities: PlaybackCapabilities,
-        interlaced: Bool = false
+        interlaced: Bool = false,
+        highBitDepth: Bool = false
     ) -> Bool {
         switch codecID {
         case AV_CODEC_ID_H264:
-            !interlaced
+            !interlaced && !highBitDepth
         case AV_CODEC_ID_HEVC:
             true
         case AV_CODEC_ID_AV1:
@@ -283,6 +285,34 @@ nonisolated final class FFmpegDemuxer {
             false
         }
     }
+
+    /// Whether an H.264 stream is 10-bit (High 10). Read from what the probe
+    /// parsed out of the SPS, not from a container label, so a stream whose
+    /// metadata says nothing is still caught: the pixel format, else the
+    /// sample depth, else the profile. Unknown counts as 8-bit, so H.264 is
+    /// not taken off hardware for nothing.
+    static func isHighBitDepthH264(
+        profile: Int32,
+        pixelFormat: AVPixelFormat,
+        bitsPerRawSample: Int32
+    ) -> Bool {
+        if pixelFormat == AV_PIX_FMT_YUV420P10LE { return true }
+        if bitsPerRawSample > 8 { return true }
+        return profile == h264High10Profile || profile == h264High10IntraProfile
+    }
+
+    static func isHighBitDepthH264(_ codecpar: UnsafePointer<AVCodecParameters>) -> Bool {
+        codecpar.pointee.codec_id == AV_CODEC_ID_H264 && isHighBitDepthH264(
+            profile: codecpar.pointee.profile,
+            pixelFormat: AVPixelFormat(rawValue: codecpar.pointee.format),
+            bitsPerRawSample: codecpar.pointee.bits_per_raw_sample
+        )
+    }
+
+    /// AV_PROFILE_H264_HIGH_10 and its intra variant, which Swift does not
+    /// import.
+    private static let h264High10Profile: Int32 = 110
+    private static let h264High10IntraProfile: Int32 = 110 | 2048
 
     /// Rates a display can match. A header that rounds one of these to the
     /// millisecond is corrected back to it.
@@ -491,10 +521,12 @@ nonisolated final class FFmpegDemuxer {
             videoFrameRate = Double(guessedRate.num) / Double(guessedRate.den)
         }
         let videoIsInterlaced = Self.isInterlaced(fieldOrder: videoPar.pointee.field_order)
+        let videoIsHighBitDepthH264 = Self.isHighBitDepthH264(videoPar)
         let usesCompressedVideo = Self.usesCompressedVideoPath(
             codecID: videoPar.pointee.codec_id,
             capabilities: capabilities,
-            interlaced: videoIsInterlaced
+            interlaced: videoIsInterlaced,
+            highBitDepth: videoIsHighBitDepthH264
         ) && (videoPar.pointee.codec_id != AV_CODEC_ID_AV1 || routesAV1ToVideoToolbox)
         // Catch missing or Annex B parameter sets before building the
         // description: it builds either way and only the decoder refuses,
@@ -567,7 +599,8 @@ nonisolated final class FFmpegDemuxer {
         if videoDescription == nil,
            SoftwareVideoDecoder.supports(
                codecID: videoPar.pointee.codec_id,
-               interlaced: videoIsInterlaced
+               interlaced: videoIsInterlaced,
+               highBitDepth: videoIsHighBitDepthH264
            ) {
             let decoder = try SoftwareVideoDecoder(
                 codecpar: videoPar,
