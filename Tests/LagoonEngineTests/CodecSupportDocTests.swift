@@ -42,9 +42,11 @@ struct CodecSupportDocTests {
         for entry in EngineCodecSupport.video {
             let progressive = SoftwareVideoDecoder.supports(codecID: entry.id, interlaced: false)
             let interlaced = SoftwareVideoDecoder.supports(codecID: entry.id, interlaced: true)
-            if entry.softwareOnlyWhenInterlaced {
-                #expect(!progressive, "\(entry.name) should reach software only interlaced")
+            let tenBit = SoftwareVideoDecoder.supports(codecID: entry.id, highBitDepth: true)
+            if entry.softwareOnlyWhenInterlacedOrTenBit {
+                #expect(!progressive, "\(entry.name) should reach software only interlaced or 10-bit")
                 #expect(interlaced, "\(entry.name) is documented as deinterlaced in software")
+                #expect(tenBit, "\(entry.name) is documented as decoding 10-bit in software")
             } else if entry.path == .software || entry.path == .either {
                 #expect(progressive, "\(entry.name) is documented as software-capable but is refused")
             }
@@ -66,6 +68,7 @@ struct CodecSupportDocTests {
                 codecID: codec, capabilities: capabilities, interlaced: false
             ) || SoftwareVideoDecoder.supports(codecID: codec, interlaced: false)
                 || SoftwareVideoDecoder.supports(codecID: codec, interlaced: true)
+                || SoftwareVideoDecoder.supports(codecID: codec, highBitDepth: true)
             if routed {
                 #expect(
                     documented.contains(codec.rawValue),

@@ -355,6 +355,16 @@ struct ApplePlaybackAlignmentTests {
         ))
     }
 
+    /// Opt-in: set `LAGOON_HI10P_H264_FIXTURE_URL` to a 10-bit H.264 file
+    /// (recipe in codecs.md). It must decode in software to P010 rather than
+    /// reach VideoToolbox, which refuses it.
+    @Test func hi10PH264FixtureProducesReadyP010Frames() throws {
+        try assertTenBitSoftwareFixture(
+            environmentKey: "LAGOON_HI10P_H264_FIXTURE_URL",
+            codecName: "h264"
+        )
+    }
+
     @Test func av1FixtureProducesReadyP010Frames() throws {
         try assertTenBitSoftwareFixture(
             environmentKey: "LAGOON_AV1_FIXTURE_URL",

@@ -1,5 +1,6 @@
 import Foundation
 import Libavcodec
+import Libavutil
 import Testing
 @testable import LagoonEngine
 
@@ -111,6 +112,52 @@ struct SoftwareDecodePipelineTests {
         ))
         #expect(FFmpegDemuxer.usesCompressedVideoPath(
             codecID: AV_CODEC_ID_H264, capabilities: noAV1Silicon
+        ))
+    }
+
+    @Test func interlacedAndTenBitH264AreRoutedToSoftwareAndPlainH264IsNot() {
+        let capabilities = PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: true)
+        #expect(FFmpegDemuxer.usesCompressedVideoPath(codecID: AV_CODEC_ID_H264, capabilities: capabilities))
+        #expect(!SoftwareVideoDecoder.supports(codecID: AV_CODEC_ID_H264))
+        for (interlaced, highBitDepth) in [(true, false), (false, true), (true, true)] {
+            #expect(!FFmpegDemuxer.usesCompressedVideoPath(
+                codecID: AV_CODEC_ID_H264, capabilities: capabilities,
+                interlaced: interlaced, highBitDepth: highBitDepth
+            ))
+            #expect(SoftwareVideoDecoder.supports(
+                codecID: AV_CODEC_ID_H264, interlaced: interlaced, highBitDepth: highBitDepth
+            ))
+        }
+        // HEVC has no software route, 10-bit or not.
+        #expect(FFmpegDemuxer.usesCompressedVideoPath(
+            codecID: AV_CODEC_ID_HEVC, capabilities: capabilities, highBitDepth: true
+        ))
+        #expect(!SoftwareVideoDecoder.supports(codecID: AV_CODEC_ID_HEVC, highBitDepth: true))
+    }
+
+    @Test func tenBitH264IsReadFromTheStreamNotItsLabel() {
+        // The pixel format alone, with no profile: a stream whose metadata
+        // says nothing.
+        #expect(FFmpegDemuxer.isHighBitDepthH264(
+            profile: -99, pixelFormat: AV_PIX_FMT_YUV420P10LE, bitsPerRawSample: 0
+        ))
+        #expect(FFmpegDemuxer.isHighBitDepthH264(
+            profile: -99, pixelFormat: AV_PIX_FMT_NONE, bitsPerRawSample: 10
+        ))
+        // High 10 and High 10 Intra, before the pixel format is known.
+        #expect(FFmpegDemuxer.isHighBitDepthH264(
+            profile: 110, pixelFormat: AV_PIX_FMT_NONE, bitsPerRawSample: 0
+        ))
+        #expect(FFmpegDemuxer.isHighBitDepthH264(
+            profile: 110 | 2048, pixelFormat: AV_PIX_FMT_NONE, bitsPerRawSample: 0
+        ))
+        // 8-bit High, and a stream the probe learnt nothing about, stay on
+        // hardware.
+        #expect(!FFmpegDemuxer.isHighBitDepthH264(
+            profile: 100, pixelFormat: AV_PIX_FMT_YUV420P, bitsPerRawSample: 8
+        ))
+        #expect(!FFmpegDemuxer.isHighBitDepthH264(
+            profile: -99, pixelFormat: AV_PIX_FMT_NONE, bitsPerRawSample: 0
         ))
     }
 
