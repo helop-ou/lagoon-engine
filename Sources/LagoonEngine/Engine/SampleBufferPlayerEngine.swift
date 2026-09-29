@@ -838,7 +838,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         subtitleLoadState = .idle
     }
 
-    private func commitSubtitleSelection(ordinal: Int, cues: [SubtitleCue] = []) {
+    private func commitSubtitleSelection(ordinal: Int, cues: [SubtitleCue] = [], styledScript: Data? = nil) {
         shared.withLock { state in
             state.selectedSubtitleOrdinal = ordinal
             state.selectedSubtitleStreamIndex = ordinal > 0 && ordinal <= embeddedSubtitleCount
@@ -852,6 +852,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 subtitleStore.resetForEmbeddedPlayback()
             }
         }
+        replaceStyledSubtitleRenderer(videoSize: videoSize, externalScript: styledScript)
         currentSubtitleText = nil
         currentSubtitleCues = []
         currentSubtitleImages = []
@@ -889,10 +890,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // mid-playback still has it.
         externalLoadTask = Task { [weak self, subtitleDownloader, pendingAuthorization] in
             do {
-                let cues = try await ExternalSubtitleLoader.load(track, using: subtitleDownloader, authorization: pendingAuthorization)
+                let loaded = try await ExternalSubtitleLoader.load(track, using: subtitleDownloader, authorization: pendingAuthorization)
                 try Task.checkCancellation()
                 guard let self, !self.shutdownRequested, self.externalLoadToken == token else { return }
-                self.commitSubtitleSelection(ordinal: ordinal, cues: cues)
+                self.commitSubtitleSelection(ordinal: ordinal, cues: loaded.cues, styledScript: loaded.styledScript)
                 self.subtitleLoadState = .idle
                 self.externalLoadTask = nil
             } catch {
@@ -943,6 +944,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         audioRendererReplacementID = nil
         av1PipelineTimer?.cancel()
         av1PipelineTimer = nil
+        shared.withLock { state in
+            let styled = state.styledSubtitleRenderer
+            state.styledSubtitleRenderer = nil
+            return styled
+        }?.stop()
         stallRecoveryTask?.cancel()
         clearPendingStallConfirmation()
         if stallSignpostActive {
@@ -1883,6 +1889,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             if let stage = softwareDecodeStage {
                 gates += " output=\"\(stage.outputModeName)\""
             }
+            if let styled = shared.withLock({ $0.styledSubtitleRenderer }) {
+                gates += " styledSubs=\"\(styled.benchField)\""
+            }
             gates += " hud=\"\(EngineTuning.current.hostShowsPlaybackHUD ? "on" : "off")\""
             if let supplement = benchGatesSupplement?(), !supplement.isEmpty {
                 gates += " " + supplement
@@ -2122,6 +2131,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     private func refreshSubtitles(at seconds: Double) {
         let active = subtitleStore.active(at: seconds)
+        // libass draws the picture on its own clock; the parsed cues only
+        // supply the text Media Accessibility reads.
+        if shared.withLock({ $0.styledSubtitleRenderer != nil }) {
+            let text = active.textCues.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
+            let spoken = text.isEmpty ? nil : text
+            if spoken != currentSubtitleText { currentSubtitleText = spoken }
+            if !currentSubtitleCues.isEmpty { currentSubtitleCues = [] }
+            return
+        }
         if active.textCues != currentSubtitleCues {
             currentSubtitleCues = active.textCues
             let text = active.textCues.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
@@ -2129,6 +2147,48 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
         if active.images != currentSubtitleImages {
             currentSubtitleImages = active.images
+        }
+    }
+
+    /// Stops the current styled renderer and, when the selected track is ASS
+    /// (embedded, or a sidecar's `externalScript`), starts one for it. Called
+    /// from the demux loop on open and from the main actor on a track change;
+    /// the demux callback reads the renderer under the same lock, so no chunk
+    /// reaches the wrong one.
+    nonisolated private func replaceStyledSubtitleRenderer(videoSize: CGSize?, externalScript: Data? = nil) {
+        let (old, ordinal, streamIndex, headers, fonts, frameRate) = shared.withLock { state in
+            let old = state.styledSubtitleRenderer
+            state.styledSubtitleRenderer = nil
+            return (old, state.selectedSubtitleOrdinal, state.selectedSubtitleStreamIndex,
+                    state.styledSubtitleHeaders, state.subtitleFonts, state.videoFrameRate)
+        }
+        old?.stop()
+        guard ordinal > 0, EngineTuning.current.rendersStyledSubtitles else { return }
+        let made: StyledSubtitleRenderer? = if let externalScript {
+            StyledSubtitleRenderer(script: externalScript, fonts: fonts, videoSize: videoSize)
+        } else if let header = headers[streamIndex] {
+            StyledSubtitleRenderer(header: header, fonts: fonts, videoSize: videoSize)
+        } else {
+            nil
+        }
+        guard let renderer = made else { return }
+        let installed = shared.withLock { state -> Bool in
+            // A newer selection won while libass was starting.
+            guard state.selectedSubtitleOrdinal == ordinal else { return false }
+            state.styledSubtitleRenderer = renderer
+            return true
+        }
+        guard installed else { return }
+        renderer.start(
+            timebase: synchronizer.timebase,
+            frameRate: frameRate > 0 ? frameRate : nil
+        ) { [weak self, weak renderer] images in
+            Task { @MainActor in
+                guard let self, let renderer,
+                      self.shared.withLock({ $0.styledSubtitleRenderer === renderer }),
+                      images != self.currentSubtitleImages else { return }
+                self.currentSubtitleImages = images
+            }
         }
     }
 
@@ -2338,6 +2398,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let embeddedSubtitles = demuxer.subtitleStreams
         let (externals, subtitleMetadata, subtitleOrdinal) = shared.withLock { state -> ([ExternalSubtitleTrack], [PlayerTrackMetadata], Int) in
             state.embeddedSubtitleStreamIndices = embeddedSubtitles.map(\.streamIndex)
+            state.styledSubtitleHeaders = demuxer.styledSubtitleHeaders
+            state.subtitleFonts = demuxer.subtitleFonts
+            state.videoFrameRate = demuxer.videoFrameRate
             if state.selectedSubtitleOrdinal < 0 {
                 state.selectedSubtitleOrdinal = state.initialSubtitleOrdinal ?? 0
             }
@@ -2347,6 +2410,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             return (state.externalSubtitles, state.embeddedSubtitleMetadata, ordinal)
         }
+        // Before the first packet, so the opening lines reach libass too.
+        replaceStyledSubtitleRenderer(videoSize: size)
         let subtitleTracks = embeddedSubtitles.enumerated().map { offset, stream in
             let metadata = subtitleMetadata.indices.contains(offset) ? subtitleMetadata[offset] : nil
             return PlayerTrack(
@@ -2742,12 +2807,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         case .subtitle(let events, let streamIndex):
             shared.withLock { state in
                 guard streamIndex == state.selectedSubtitleStreamIndex else { return }
+                let styled = state.styledSubtitleRenderer
                 for event in events {
                     switch event {
                     case .cue(let cue):
                         subtitleStore.add(cue)
                     case .clear(let seconds):
                         subtitleStore.closeOpenCues(at: seconds)
+                    case .styledChunk(let chunk):
+                        styled?.add(chunk)
                     }
                 }
             }
@@ -3582,6 +3650,13 @@ nonisolated private final class SharedState: @unchecked Sendable {
         var embeddedSubtitleMetadata: [PlayerTrackMetadata] = []
         var embeddedSubtitleStreamIndices: [Int32] = []
         var externalSubtitles: [ExternalSubtitleTrack] = []
+        /// libass for the selected embedded ASS track. Nil when subtitles are
+        /// off, the track is not ASS, or libass would not start; the cue
+        /// parser covers those.
+        var styledSubtitleRenderer: StyledSubtitleRenderer?
+        var styledSubtitleHeaders: [Int32: String] = [:]
+        var subtitleFonts: [SubtitleFontAttachment] = []
+        var videoFrameRate: Double = 0
         /// Highest video pts the demuxer has delivered, for stall detection.
         var videoBufferedTo: Double = 0
         /// Audio-only background playback: video is discarded, and anything

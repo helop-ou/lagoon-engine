@@ -140,6 +140,11 @@ nonisolated final class FFmpegDemuxer {
     // Codecs CoreAudio can't take compressed are decoded to LPCM.
     private var audioDecoders: [Int32: AudioDecoder] = [:]
     private var subtitleDecoders: [Int32: SubtitleDecoder] = [:]
+    /// ASS/SSA streams' script headers (styles and play resolution), by
+    /// stream index, for libass.
+    private(set) var styledSubtitleHeaders: [Int32: String] = [:]
+    /// Fonts attached to the container, for styled subtitles that name them.
+    private(set) var subtitleFonts: [SubtitleFontAttachment] = []
     // Sample-exact timing for passthrough audio; see `PassthroughAudioTimeline`.
     private var passthroughTimelines: [Int32: PassthroughAudioTimeline] = [:]
     // Removes Matroska's millisecond quantization from video PTS.
@@ -313,6 +318,54 @@ nonisolated final class FFmpegDemuxer {
     /// import.
     private static let h264High10Profile: Int32 = 110
     private static let h264High10IntraProfile: Int32 = 110 | 2048
+
+    /// The script header of an ASS or SSA stream: its codec private data.
+    static func styledSubtitleHeader(_ codecpar: UnsafePointer<AVCodecParameters>) -> String? {
+        let codec = codecpar.pointee.codec_id
+        guard codec == AV_CODEC_ID_ASS || codec == AV_CODEC_ID_SSA,
+              let bytes = codecpar.pointee.extradata,
+              codecpar.pointee.extradata_size > 0 else { return nil }
+        let header = String(
+            decoding: UnsafeBufferPointer(start: bytes, count: Int(codecpar.pointee.extradata_size)),
+            as: UTF8.self
+        )
+        return header.contains("[Script Info]") ? header : nil
+    }
+
+    /// A font attachment, recognised by MIME type or file extension.
+    private static func fontAttachment(_ stream: UnsafeMutablePointer<AVStream>) -> SubtitleFontAttachment? {
+        guard let par = stream.pointee.codecpar,
+              let bytes = par.pointee.extradata,
+              par.pointee.extradata_size > 0 else { return nil }
+        let name = metadata(stream, key: "filename") ?? "attachment"
+        let mime = metadata(stream, key: "mimetype")?.lowercased() ?? ""
+        let isFont = par.pointee.codec_id == AV_CODEC_ID_TTF
+            || par.pointee.codec_id == AV_CODEC_ID_OTF
+            || mime.contains("font") || mime.contains("opentype") || mime.contains("truetype")
+            || [".ttf", ".otf", ".ttc", ".otc"].contains { name.lowercased().hasSuffix($0) }
+        guard isFont else { return nil }
+        return SubtitleFontAttachment(
+            name: name,
+            data: Data(bytes: bytes, count: Int(par.pointee.extradata_size))
+        )
+    }
+
+    /// A Matroska ASS block as libass takes it: the event line, with its
+    /// start and duration in milliseconds.
+    static func styledChunk(
+        _ packet: UnsafePointer<AVPacket>,
+        timeBase: AVRational?
+    ) -> StyledSubtitleChunk? {
+        guard let timeBase, timeBase.den > 0,
+              let data = packet.pointee.data, packet.pointee.size > 0,
+              packet.pointee.pts != avNoPTS else { return nil }
+        let millisecondsPerTick = 1000 * Double(timeBase.num) / Double(timeBase.den)
+        return StyledSubtitleChunk(
+            data: Data(bytes: data, count: Int(packet.pointee.size)),
+            startMilliseconds: Int64((Double(packet.pointee.pts) * millisecondsPerTick).rounded()),
+            durationMilliseconds: Int64((Double(max(packet.pointee.duration, 0)) * millisecondsPerTick).rounded())
+        )
+    }
 
     /// Rates a display can match. A header that rounds one of these to the
     /// millisecond is corrected back to it.
@@ -716,6 +769,9 @@ nonisolated final class FFmpegDemuxer {
                 if let decoder = SubtitleDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
                     subtitleDecoders[Int32(index)] = decoder
                 }
+                if let header = Self.styledSubtitleHeader(par) {
+                    styledSubtitleHeaders[Int32(index)] = header
+                }
                 subtitleStreams.append(DemuxedStream(
                     streamIndex: Int32(index),
                     codecName: String(cString: avcodec_get_name(par.pointee.codec_id)),
@@ -730,6 +786,13 @@ nonisolated final class FFmpegDemuxer {
             case AVMEDIA_TYPE_VIDEO:
                 if Int32(index) != bestVideo {
                     stream.pointee.discard = AVDISCARD_ALL
+                }
+            case AVMEDIA_TYPE_ATTACHMENT:
+                // Matroska delivers each attachment whole in the stream's
+                // extradata while the header is read.
+                stream.pointee.discard = AVDISCARD_ALL
+                if let font = Self.fontAttachment(stream) {
+                    subtitleFonts.append(font)
                 }
             default:
                 stream.pointee.discard = AVDISCARD_ALL
@@ -1355,7 +1418,11 @@ nonisolated final class FFmpegDemuxer {
             return .audio([buffer], streamIndex: streamIndex)
         }
         if let decoder = subtitleDecoders[streamIndex] {
-            let events = decoder.decode(packet: packet)
+            var events = decoder.decode(packet: packet)
+            if styledSubtitleHeaders[streamIndex] != nil,
+               let chunk = Self.styledChunk(packet, timeBase: formatContext?.pointee.streams[Int(streamIndex)]?.pointee.time_base) {
+                events.append(.styledChunk(chunk))
+            }
             return events.isEmpty ? .skipped : .subtitle(events, streamIndex: streamIndex)
         }
         return .skipped
@@ -1377,6 +1444,8 @@ nonisolated final class FFmpegDemuxer {
         // whenever the engine is released.
         audioDecoders.removeAll(keepingCapacity: false)
         subtitleDecoders.removeAll(keepingCapacity: false)
+        styledSubtitleHeaders.removeAll(keepingCapacity: false)
+        subtitleFonts.removeAll(keepingCapacity: false)
         softwareVideoDecoder = nil
         audioStreams.removeAll(keepingCapacity: false)
         subtitleStreams.removeAll(keepingCapacity: false)

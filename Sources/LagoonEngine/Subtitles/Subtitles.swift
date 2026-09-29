@@ -153,6 +153,9 @@ nonisolated enum SubtitleEvent {
     case cue(SubtitleCue)
     /// An empty composition (PGS clear screen): close open cues here.
     case clear(at: Double)
+    /// The raw ASS event, for libass. Sent alongside the parsed cue, which
+    /// is the fallback when libass is off or failed to start.
+    case styledChunk(StyledSubtitleChunk)
 }
 
 /// The demux loop appends embedded cues and display refresh drops them as they

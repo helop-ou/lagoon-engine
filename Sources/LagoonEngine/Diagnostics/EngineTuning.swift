@@ -25,6 +25,13 @@ public nonisolated struct EngineTuning: Sendable {
     /// it.
     public var softwareDecodeCompressedOutput: Bool?
 
+    // MARK: Subtitles
+
+    /// Render embedded ASS/SSA with libass: named styles, the media's own
+    /// fonts, karaoke and motion. Off falls back to the engine's plain cue
+    /// renderer, which keeps only alignment, position and basic styling.
+    public var rendersStyledSubtitles = true
+
     // MARK: Measurement
 
     /// Arm the frame-loss bench for each playback.

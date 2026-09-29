@@ -17,11 +17,18 @@ public nonisolated enum ExternalSubtitleLoader {
 
     /// `authorization` sends the credential as a header instead of in
     /// `track.url`'s query, since a failed request can log its full URL.
+    /// A loaded sidecar: its cues, and for ASS/SSA the script as UTF-8 for
+    /// libass, which draws it when it can.
+    struct Loaded {
+        let cues: [SubtitleCue]
+        let styledScript: Data?
+    }
+
     static func load(
         _ track: ExternalSubtitleTrack,
         using downloader: BoundedDownload,
         authorization: MediaRequestAuthorization? = nil
-    ) async throws -> [SubtitleCue] {
+    ) async throws -> Loaded {
         let data: Data
         if let preloaded = track.preloadedData {
             data = preloaded
@@ -33,7 +40,16 @@ public nonisolated enum ExternalSubtitleLoader {
             }()
             data = try await downloader.data(for: request, limit: DownloadLimit.subtitle, content: .subtitle)
         }
-        return try await parse(data, language: track.language)
+        let cues = try await parse(data, language: track.language)
+        return Loaded(cues: cues, styledScript: styledScript(from: data, language: track.language))
+    }
+
+    /// The script re-encoded as UTF-8 when it is ASS or SSA; libass is given
+    /// no codepage, so it must not see the original encoding.
+    static func styledScript(from data: Data, language: String?) -> Data? {
+        guard let text = SubtitleTextDecoder.text(from: data, languageHint: language),
+              text.prefix(4_096).contains("[Script Info]") else { return nil }
+        return Data(text.utf8)
     }
 
     static func parse(_ data: Data, language: String?) async throws -> [SubtitleCue] {
