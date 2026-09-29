@@ -8,6 +8,39 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.1.0
+
+September 2026. Adds API and one native library, `Libass`; nothing is removed
+or changed, so upgrading is a version bump. A host that credits its
+dependencies adds libass, FreeType, FriBidi and HarfBuzz
+(`Artifacts/Libass.README.md` has the licences).
+
+### Added
+
+- Styled ASS/SSA subtitles through libass 0.17.5, with FreeType, FriBidi and
+  HarfBuzz: named styles, karaoke, `\move`, `\fad`, clips, rotation, borders
+  and drawings, in the fonts the file carries as Matroska attachments, then
+  CoreText's. Embedded tracks and sidecars alike. Frames arrive through
+  `currentSubtitleImages`, as PGS bitmaps do, so an overlay that draws those
+  needs no change; the text still feeds `currentSubtitleText`.
+- `EngineTuning.rendersStyledSubtitles`, on by default. Off falls back to the
+  engine's own cue renderer.
+- `MediaRequestAuthorization.additionalHeaders`, for a server behind a
+  forward-auth proxy (Cloudflare Access, Authelia, Authentik). They go with
+  the credential to the server's origin only, and `remove(from:)` takes every
+  one off a request that leaves it.
+- 10-bit H.264 (High 10) decodes in software, since no Apple hardware decoder
+  accepts it. It is recognised from the stream itself, so one whose metadata
+  names no profile no longer reaches VideoToolbox and fails.
+- A `styledSubs` field on the bench line: libass's render and composite cost
+  per changed frame.
+- Releases attach FriBidi's corresponding source, as they do FFmpeg's.
+
+### Fixed
+
+- ASS and SSA sidecar files load. They were rejected as unsupported; their
+  dialogue now parses with the same subset as embedded events.
+
 ## 1.0.12
 
 September 2026. No API change and no change to the libraries; upgrading is a
