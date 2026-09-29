@@ -28,7 +28,7 @@ let package = Package(
                 "_LagoonFFmpeg",
                 "LagoonPixelOps",
                 "Libavcodec", "Libavformat", "Libavutil", "Libswresample",
-                "Libdav1d", "Libuavs3d", "lcms2", "Libdovi",
+                "Libdav1d", "Libuavs3d", "lcms2", "Libdovi", "Libass",
             ],
             path: "Sources/LagoonEngine",
             swiftSettings: [
@@ -60,6 +60,8 @@ let package = Package(
                 .linkedFramework("CoreFoundation"),
                 .linkedFramework("Security"),
                 .linkedFramework("CoreMedia"),
+                // libass finds system fonts through CoreText.
+                .linkedFramework("CoreText"),
                 .linkedFramework("Metal"),
                 .linkedFramework("VideoToolbox"),
                 .linkedLibrary("bz2"),
@@ -127,6 +129,13 @@ let package = Package(
             name: "lcms2",
             // Little CMS 2.17, MIT. Rebuild/provenance: scripts/build-lcms2.sh.
             path: "Artifacts/lcms2.xcframework"
+        ),
+        // libass 0.17.5 with FreeType, FriBidi and HarfBuzz, for styled ASS/SSA
+        // subtitles. One static archive per slice. Rebuild/provenance:
+        // scripts/build-libass.sh and Artifacts/Libass.README.md.
+        .binaryTarget(
+            name: "Libass",
+            path: "Artifacts/Libass.xcframework"
         ),
         .binaryTarget(
             name: "Libuavs3d",
