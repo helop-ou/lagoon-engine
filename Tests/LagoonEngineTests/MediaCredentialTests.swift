@@ -108,7 +108,7 @@ struct MediaCredentialTests {
             language: "en",
             select: true
         )
-        let cues = try await ExternalSubtitleLoader.load(track, using: downloader, authorization: Self.authorization)
+        let cues = try await ExternalSubtitleLoader.load(track, using: downloader, authorization: Self.authorization).cues
         #expect(cues.first?.text == "Hello there")
         let recorded = try #require(MediaCredentialStub.requests(path: "/sub.srt").first)
         #expect(!recorded.url.contains("ApiKey"))
@@ -129,7 +129,7 @@ struct MediaCredentialTests {
             language: "en",
             select: true
         )
-        let cues = try await ExternalSubtitleLoader.load(track, using: downloader)
+        let cues = try await ExternalSubtitleLoader.load(track, using: downloader).cues
         #expect(cues.first?.text == "Hello WebVTT")
         let recorded = try #require(MediaCredentialStub.requests(path: "/webvtt.vtt").first)
         #expect(recorded.headers["Authorization"] == nil)
