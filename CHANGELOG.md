@@ -8,6 +8,29 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.1.3
+
+September 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Changed
+
+- Unselected text subtitle streams (SubRip, ASS/SSA, WebVTT, mov_text) are
+  now demuxed and decoded too, and the last 120 seconds of each (at most
+  4,096 events) are kept. Bitmap streams (PGS, DVD, DVB) are still discarded
+  until chosen.
+
+### Fixed
+
+- Choosing an embedded text subtitle track shows the line already on screen
+  straight away. The engine used to seek back to re-read it: that missed any
+  line that started before the keyframe it landed on, until the next line,
+  and flushed the video on the main thread, 57–76 ms per switch on an Apple
+  TV 4K. It now replays the stream's recent events without a seek. A bitmap
+  track still seeks.
+- Styled subtitle events that arrive while libass is still starting are held
+  and handed to it, instead of being dropped.
+
 ## 1.1.2
 
 September 2026. No API change; upgrading is a version bump. `Libass` is
