@@ -83,7 +83,9 @@ verify_contents() {
                 echo "   ERROR: $slice/$arch references fontconfig" >&2
                 failures=$((failures + 1))
             fi
-            if grep -Eq " U _(f|l)?stat(at)?(64)?$| U _getattrlist(bulk)?$| U _fgetattrlist$" <<< "$symbols"; then
+            # x86_64 macOS spells the 64-bit-inode variants with a suffix,
+            # as in _fstat$INODE64.
+            if grep -Eq ' U _(f|l)?stat(at)?(64)?(\$INODE64)?$| U _getattrlist(bulk)?$| U _fgetattrlist$' <<< "$symbols"; then
                 echo "   ERROR: $slice/$arch imports a file metadata API" >&2
                 failures=$((failures + 1))
             fi
