@@ -100,6 +100,11 @@ Each of these has regressed at least once.
   leaked the entire decoded audio stream.
 - Software 10-bit conversion uses the asynchronous Metal path. Making it
   synchronous loses its performance.
+- **libass is budgeted too.** Its desktop defaults allow 128 MB of bitmaps
+  per renderer, and attached fonts are held by FFmpeg, by the demuxer and by
+  every libass library made from them. `StyledSubtitleRenderer` caps the
+  caches and `FFmpegDemuxer.subtitleFontBudget` the fonts. Starting and
+  stopping a renderer runs on its own serial queue, never the main actor.
 
 ## Verdicts, not decisions
 
