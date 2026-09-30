@@ -287,6 +287,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     @ObservationIgnored nonisolated private let audioQueue = SampleBufferQueue()
     @ObservationIgnored nonisolated private let demuxQueue = DispatchQueue(label: "ee.helop.lagoon.demux", qos: .userInitiated)
     @ObservationIgnored nonisolated private let pumpQueue = DispatchQueue(label: "ee.helop.lagoon.pump", qos: .userInteractive)
+    /// Starting libass copies every font and may parse a whole sidecar, and
+    /// stopping one waits for a frame in flight, so neither runs on the main
+    /// actor. Serial, so replacements land in the order they were asked for.
+    @ObservationIgnored nonisolated private let styledSubtitleQueue = DispatchQueue(
+        label: "ee.helop.lagoon.subtitles.setup", qos: .userInitiated
+    )
     @ObservationIgnored nonisolated private let pumpKickState = PumpKickState()
     /// Compressed video read past the decoded-frame limit while the demuxer
     /// reads on for audio. Demux queue, plus the resets.
@@ -839,10 +845,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     private func commitSubtitleSelection(ordinal: Int, cues: [SubtitleCue] = [], styledScript: Data? = nil) {
-        shared.withLock { state in
+        let generation = shared.withLock { state in
             state.selectedSubtitleOrdinal = ordinal
             state.selectedSubtitleStreamIndex = ordinal > 0 && ordinal <= embeddedSubtitleCount
                 ? state.embeddedSubtitleStreamIndices[ordinal - 1] : -1
+            state.styledSubtitleGeneration += 1
+            state.styledSubtitlePending = ordinal > 0 && EngineTuning.current.rendersStyledSubtitles
+                && (styledScript != nil || state.styledSubtitleHeaders[state.selectedSubtitleStreamIndex] != nil)
             // The demux subtitle callback holds this lock through its cue
             // write, so an old embedded packet cannot land after an external
             // track is committed.
@@ -851,8 +860,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             } else {
                 subtitleStore.resetForEmbeddedPlayback()
             }
+            return state.styledSubtitleGeneration
         }
-        replaceStyledSubtitleRenderer(videoSize: videoSize, externalScript: styledScript)
+        let size = videoSize
+        styledSubtitleQueue.async { [weak self] in
+            self?.replaceStyledSubtitleRenderer(videoSize: size, externalScript: styledScript, generation: generation)
+        }
         currentSubtitleText = nil
         currentSubtitleCues = []
         currentSubtitleImages = []
@@ -944,11 +957,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         audioRendererReplacementID = nil
         av1PipelineTimer?.cancel()
         av1PipelineTimer = nil
-        shared.withLock { state in
+        let styled = shared.withLock { state in
+            state.styledSubtitleGeneration += 1
+            state.styledSubtitlePending = false
             let styled = state.styledSubtitleRenderer
             state.styledSubtitleRenderer = nil
             return styled
-        }?.stop()
+        }
+        styledSubtitleQueue.async { styled?.stop() }
         stallRecoveryTask?.cancel()
         clearPendingStallConfirmation()
         if stallSignpostActive {
@@ -2133,7 +2149,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let active = subtitleStore.active(at: seconds)
         // libass draws the picture on its own clock; the parsed cues only
         // supply the text Media Accessibility reads.
-        if shared.withLock({ $0.styledSubtitleRenderer != nil }) {
+        if shared.withLock({ $0.styledSubtitleRenderer != nil || $0.styledSubtitlePending }) {
             let text = active.textCues.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
             let spoken = text.isEmpty ? nil : text
             if spoken != currentSubtitleText { currentSubtitleText = spoken }
@@ -2151,34 +2167,54 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     /// Stops the current styled renderer and, when the selected track is ASS
-    /// (embedded, or a sidecar's `externalScript`), starts one for it. Called
-    /// from the demux loop on open and from the main actor on a track change;
-    /// the demux callback reads the renderer under the same lock, so no chunk
-    /// reaches the wrong one.
-    nonisolated private func replaceStyledSubtitleRenderer(videoSize: CGSize?, externalScript: Data? = nil) {
-        let (old, ordinal, streamIndex, headers, fonts, frameRate) = shared.withLock { state in
+    /// (embedded, or a sidecar's `externalScript`), starts one for it. Runs on
+    /// `styledSubtitleQueue`: synchronously from the demux loop on open, and
+    /// queued from the main actor on a track change. The demux callback reads
+    /// the renderer under the same lock, so no chunk reaches the wrong one,
+    /// and `generation` drops the work of a selection already replaced.
+    private struct Selection {
+        let old: StyledSubtitleRenderer?
+        let ordinal: Int
+        let streamIndex: Int32
+        let headers: [Int32: String]
+        let fonts: [SubtitleFontAttachment]
+        let frameRate: Double
+    }
+
+    nonisolated private func replaceStyledSubtitleRenderer(
+        videoSize: CGSize?, externalScript: Data? = nil, generation: Int
+    ) {
+        let current = shared.withLock { state -> Selection? in
+            guard state.styledSubtitleGeneration == generation else { return nil }
             let old = state.styledSubtitleRenderer
             state.styledSubtitleRenderer = nil
-            return (old, state.selectedSubtitleOrdinal, state.selectedSubtitleStreamIndex,
-                    state.styledSubtitleHeaders, state.subtitleFonts, state.videoFrameRate)
+            return Selection(
+                old: old, ordinal: state.selectedSubtitleOrdinal, streamIndex: state.selectedSubtitleStreamIndex,
+                headers: state.styledSubtitleHeaders, fonts: state.subtitleFonts, frameRate: state.videoFrameRate
+            )
         }
-        old?.stop()
-        guard ordinal > 0, EngineTuning.current.rendersStyledSubtitles else { return }
-        let made: StyledSubtitleRenderer? = if let externalScript {
+        guard let current else { return }
+        let (ordinal, streamIndex, headers, fonts, frameRate) = (
+            current.ordinal, current.streamIndex, current.headers, current.fonts, current.frameRate
+        )
+        current.old?.stop()
+        let made: StyledSubtitleRenderer? = if ordinal <= 0 || !EngineTuning.current.rendersStyledSubtitles {
+            nil
+        } else if let externalScript {
             StyledSubtitleRenderer(script: externalScript, fonts: fonts, videoSize: videoSize)
         } else if let header = headers[streamIndex] {
             StyledSubtitleRenderer(header: header, fonts: fonts, videoSize: videoSize)
         } else {
             nil
         }
-        guard let renderer = made else { return }
         let installed = shared.withLock { state -> Bool in
-            // A newer selection won while libass was starting.
-            guard state.selectedSubtitleOrdinal == ordinal else { return false }
-            state.styledSubtitleRenderer = renderer
-            return true
+            // A newer selection, or shutdown, won while libass was starting.
+            guard state.styledSubtitleGeneration == generation else { return false }
+            state.styledSubtitlePending = false
+            state.styledSubtitleRenderer = made
+            return made != nil
         }
-        guard installed else { return }
+        guard installed, let renderer = made else { return }
         renderer.start(
             timebase: synchronizer.timebase,
             frameRate: frameRate > 0 ? frameRate : nil
@@ -2411,7 +2447,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             return (state.externalSubtitles, state.embeddedSubtitleMetadata, ordinal)
         }
         // Before the first packet, so the opening lines reach libass too.
-        replaceStyledSubtitleRenderer(videoSize: size)
+        let generation = shared.withLock { state in
+            state.styledSubtitleGeneration += 1
+            return state.styledSubtitleGeneration
+        }
+        styledSubtitleQueue.sync {
+            replaceStyledSubtitleRenderer(videoSize: size, generation: generation)
+        }
         let subtitleTracks = embeddedSubtitles.enumerated().map { offset, stream in
             let metadata = subtitleMetadata.indices.contains(offset) ? subtitleMetadata[offset] : nil
             return PlayerTrack(
@@ -3654,6 +3696,12 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// off, the track is not ASS, or libass would not start; the cue
         /// parser covers those.
         var styledSubtitleRenderer: StyledSubtitleRenderer?
+        /// Bumped by every selection and by shutdown; a renderer started for
+        /// an older one is dropped instead of installed.
+        var styledSubtitleGeneration = 0
+        /// A renderer is being started for the selection, so the plain cues
+        /// stay hidden meanwhile rather than flash up unstyled.
+        var styledSubtitlePending = false
         var styledSubtitleHeaders: [Int32: String] = [:]
         var subtitleFonts: [SubtitleFontAttachment] = []
         var videoFrameRate: Double = 0
