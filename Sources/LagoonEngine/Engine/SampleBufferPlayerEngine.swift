@@ -850,6 +850,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             state.selectedSubtitleStreamIndex = ordinal > 0 && ordinal <= embeddedSubtitleCount
                 ? state.embeddedSubtitleStreamIndices[ordinal - 1] : -1
             state.styledSubtitleGeneration += 1
+            state.pendingStyledChunks.removeAll()
             state.styledSubtitlePending = ordinal > 0 && EngineTuning.current.rendersStyledSubtitles
                 && (styledScript != nil || state.styledSubtitleHeaders[state.selectedSubtitleStreamIndex] != nil)
             // The demux subtitle callback holds this lock through its cue
@@ -960,6 +961,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let styled = shared.withLock { state in
             state.styledSubtitleGeneration += 1
             state.styledSubtitlePending = false
+            state.pendingStyledChunks.removeAll()
             let styled = state.styledSubtitleRenderer
             state.styledSubtitleRenderer = nil
             return styled
@@ -2172,6 +2174,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// queued from the main actor on a track change. The demux callback reads
     /// the renderer under the same lock, so no chunk reaches the wrong one,
     /// and `generation` drops the work of a selection already replaced.
+    /// Well past the events a seek re-demuxes; a renderer that never starts
+    /// cannot grow the backlog without bound.
+    nonisolated static let pendingStyledChunkLimit = 4_096
+
     private struct Selection {
         let old: StyledSubtitleRenderer?
         let ordinal: Int
@@ -2212,6 +2218,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             guard state.styledSubtitleGeneration == generation else { return false }
             state.styledSubtitlePending = false
             state.styledSubtitleRenderer = made
+            // Under the lock, so they reach libass before any later chunk.
+            for chunk in state.pendingStyledChunks { made?.add(chunk) }
+            state.pendingStyledChunks.removeAll()
             return made != nil
         }
         guard installed, let renderer = made else { return }
@@ -2857,7 +2866,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     case .clear(let seconds):
                         subtitleStore.closeOpenCues(at: seconds)
                     case .styledChunk(let chunk):
-                        styled?.add(chunk)
+                        if let styled {
+                            styled.add(chunk)
+                        } else if state.styledSubtitlePending,
+                                  state.pendingStyledChunks.count < Self.pendingStyledChunkLimit {
+                            state.pendingStyledChunks.append(chunk)
+                        }
                     }
                 }
             }
@@ -3702,6 +3716,10 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// A renderer is being started for the selection, so the plain cues
         /// stay hidden meanwhile rather than flash up unstyled.
         var styledSubtitlePending = false
+        /// Events the demuxer delivered for the selection while its renderer
+        /// was starting. Selecting an embedded track seeks to re-demux the
+        /// lines already due, and those arrive before libass is ready.
+        var pendingStyledChunks: [StyledSubtitleChunk] = []
         var styledSubtitleHeaders: [Int32: String] = [:]
         var subtitleFonts: [SubtitleFontAttachment] = []
         var videoFrameRate: Double = 0
