@@ -314,11 +314,14 @@ nonisolated enum ASSSubtitleTextParser {
         var alignment: SubtitleTextAlignment?
         var position: SubtitleTextPosition?
         var style = Style()
+        // `\p1` and above turn the text that follows into vector drawing
+        // commands, until `\p0`; only libass can show those.
+        var isDrawing = false
         var runs: [SubtitleTextRun] = []
         var cursor = raw.startIndex
 
         func appendText(_ fragment: Substring) {
-            guard !fragment.isEmpty else { return }
+            guard !fragment.isEmpty, !isDrawing else { return }
             let text = String(fragment)
                 .replacingOccurrences(of: "\\N", with: "\n")
                 .replacingOccurrences(of: "\\n", with: "\n")
@@ -361,6 +364,9 @@ nonisolated enum ASSSubtitleTextParser {
                 position: &position,
                 style: &style
             )
+            if let raw = lastCapture(#"\\p(\d+)"#, in: block), let scale = Int(raw) {
+                isDrawing = scale > 0
+            }
             cursor = raw.index(after: close)
         }
         if cursor < raw.endIndex {

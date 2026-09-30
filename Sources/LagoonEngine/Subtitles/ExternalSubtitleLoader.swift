@@ -52,6 +52,13 @@ public nonisolated enum ExternalSubtitleLoader {
         return Data(text.utf8)
     }
 
+    /// An ASS or SSA script with at least one Dialogue event.
+    static func hasScriptEvents(_ data: Data, language: String?) -> Bool {
+        guard let text = SubtitleTextDecoder.text(from: data, languageHint: language),
+              text.prefix(4_096).contains("[Script Info]") else { return false }
+        return text.contains("\nDialogue:")
+    }
+
     static func parse(_ data: Data, language: String?) async throws -> [SubtitleCue] {
         try Task.checkCancellation()
         guard data.count <= DownloadLimit.subtitle else { throw SubtitleFileError.tooLarge }
@@ -64,7 +71,11 @@ public nonisolated enum ExternalSubtitleLoader {
             }
             let cues = SubtitleParser.cues(from: data, languageHint: language)
             try Task.checkCancellation()
-            guard !cues.isEmpty else { throw SubtitleFileError.unsupportedFile }
+            // A signs-only script can be all drawings, with no text to parse;
+            // libass still draws it.
+            guard !cues.isEmpty || hasScriptEvents(data, language: language) else {
+                throw SubtitleFileError.unsupportedFile
+            }
             return cues
         }
         return try await withTaskCancellationHandler {
