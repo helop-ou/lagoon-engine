@@ -860,6 +860,24 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 subtitleStore.replaceExternalTrack(with: cues)
             } else {
                 subtitleStore.resetForEmbeddedPlayback()
+                // A text stream's recent lines are already here; replay them
+                // rather than seek. libass takes its share once it starts.
+                let stream = state.selectedSubtitleStreamIndex
+                if state.textSubtitleStreamIndices.contains(stream) {
+                    for event in state.subtitleBacklog.events(for: stream) {
+                        switch event {
+                        case .cue(let cue):
+                            subtitleStore.add(cue)
+                        case .clear(let seconds):
+                            subtitleStore.closeOpenCues(at: seconds)
+                        case .styledChunk(let chunk):
+                            if state.styledSubtitlePending,
+                               state.pendingStyledChunks.count < Self.pendingStyledChunkLimit {
+                                state.pendingStyledChunks.append(chunk)
+                            }
+                        }
+                    }
+                }
             }
             return state.styledSubtitleGeneration
         }
@@ -883,9 +901,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             )
         }
         onTrackSelectionChanged?()
-        if ordinal >= 1, ordinal <= embeddedSubtitleCount {
-            // Re-demux from the previous keyframe so a line already due
-            // appears now, not at the next cue.
+        let replayed = shared.withLock { $0.textSubtitleStreamIndices.contains($0.selectedSubtitleStreamIndex) }
+        if ordinal >= 1, ordinal <= embeddedSubtitleCount, !replayed {
+            // A bitmap stream has no backlog: re-demux from the previous
+            // keyframe so a line already due appears now, not at the next cue.
             seek(to: timePosition)
         } else {
             refreshSubtitles(at: timePosition)
@@ -1209,6 +1228,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             $0.pendingSeekSeconds = clamped
             $0.videoBufferedTo = clamped
             $0.playbackGeneration += 1
+            // The demuxer delivers these again from the new position.
+            $0.subtitleBacklog.removeAll()
         }
         // Enqueue, flush and reset share the pump queue, so no old sample
         // can race in after the flush (Apple's post-flush keyframe rule).
@@ -2444,6 +2465,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let (externals, subtitleMetadata, subtitleOrdinal) = shared.withLock { state -> ([ExternalSubtitleTrack], [PlayerTrackMetadata], Int) in
             state.embeddedSubtitleStreamIndices = embeddedSubtitles.map(\.streamIndex)
             state.styledSubtitleHeaders = demuxer.styledSubtitleHeaders
+            state.textSubtitleStreamIndices = demuxer.textSubtitleStreamIndices
+            state.subtitleBacklog.removeAll()
             state.subtitleFonts = demuxer.subtitleFonts
             state.videoFrameRate = demuxer.videoFrameRate
             if state.selectedSubtitleOrdinal < 0 {
@@ -2857,6 +2880,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
         case .subtitle(let events, let streamIndex):
             shared.withLock { state in
+                if state.textSubtitleStreamIndices.contains(streamIndex) {
+                    state.subtitleBacklog.record(events, streamIndex: streamIndex)
+                }
                 guard streamIndex == state.selectedSubtitleStreamIndex else { return }
                 let styled = state.styledSubtitleRenderer
                 for event in events {
@@ -3721,6 +3747,9 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// lines already due, and those arrive before libass is ready.
         var pendingStyledChunks: [StyledSubtitleChunk] = []
         var styledSubtitleHeaders: [Int32: String] = [:]
+        var textSubtitleStreamIndices: Set<Int32> = []
+        /// What choosing a text stream replays instead of seeking.
+        var subtitleBacklog = SubtitleBacklog()
         var subtitleFonts: [SubtitleFontAttachment] = []
         var videoFrameRate: Double = 0
         /// Highest video pts the demuxer has delivered, for stall detection.

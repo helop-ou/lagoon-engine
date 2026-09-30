@@ -145,6 +145,9 @@ nonisolated final class FFmpegDemuxer {
     private(set) var styledSubtitleHeaders: [Int32: String] = [:]
     /// Fonts attached to the container, for styled subtitles that name them.
     private(set) var subtitleFonts: [SubtitleFontAttachment] = []
+    /// Decodable text subtitle streams. Demuxed even while unselected, so
+    /// the engine's `SubtitleBacklog` has their recent lines.
+    private(set) var textSubtitleStreamIndices: Set<Int32> = []
     // Sample-exact timing for passthrough audio; see `PassthroughAudioTimeline`.
     private var passthroughTimelines: [Int32: PassthroughAudioTimeline] = [:]
     // Removes Matroska's millisecond quantization from video PTS.
@@ -773,11 +776,15 @@ nonisolated final class FFmpegDemuxer {
                 ))
             case AVMEDIA_TYPE_SUBTITLE:
                 // List every subtitle stream, decodable or not, so per-type
-                // ordinals match the host's stream list. Unselected streams
-                // stay discarded.
+                // ordinals match the host's stream list. Unselected bitmap
+                // streams stay discarded; text streams are always read.
                 stream.pointee.discard = AVDISCARD_ALL
                 if let decoder = SubtitleDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
                     subtitleDecoders[Int32(index)] = decoder
+                    if Self.isTextSubtitle(par.pointee.codec_id) {
+                        textSubtitleStreamIndices.insert(Int32(index))
+                        stream.pointee.discard = AVDISCARD_DEFAULT
+                    }
                 }
                 if let header = Self.styledSubtitleHeader(par) {
                     styledSubtitleHeaders[Int32(index)] = header
@@ -833,13 +840,21 @@ nonisolated final class FFmpegDemuxer {
             discarded ? AVDISCARD_ALL : AVDISCARD_DEFAULT
     }
 
-    /// The same for embedded subtitles; nil when off or external.
+    /// The same for embedded subtitles; nil when off or external. Text
+    /// streams stay on whatever is selected.
     func selectSubtitle(streamIndex: Int32?) {
         guard let ctx = formatContext else { return }
         for stream in subtitleStreams {
-            ctx.pointee.streams[Int(stream.streamIndex)]?.pointee.discard =
-                stream.streamIndex == streamIndex ? AVDISCARD_DEFAULT : AVDISCARD_ALL
+            let read = stream.streamIndex == streamIndex || textSubtitleStreamIndices.contains(stream.streamIndex)
+            ctx.pointee.streams[Int(stream.streamIndex)]?.pointee.discard = read ? AVDISCARD_DEFAULT : AVDISCARD_ALL
         }
+    }
+
+    /// A codec whose events are text, not bitmaps: SubRip, ASS, WebVTT,
+    /// mov_text and the like.
+    static func isTextSubtitle(_ codec: AVCodecID) -> Bool {
+        guard let descriptor = avcodec_descriptor_get(codec) else { return false }
+        return descriptor.pointee.props & AV_CODEC_PROP_TEXT_SUB != 0
     }
 
     /// Packets to read looking for in-band parameter sets. They open the first
@@ -1455,6 +1470,7 @@ nonisolated final class FFmpegDemuxer {
         audioDecoders.removeAll(keepingCapacity: false)
         subtitleDecoders.removeAll(keepingCapacity: false)
         styledSubtitleHeaders.removeAll(keepingCapacity: false)
+        textSubtitleStreamIndices.removeAll(keepingCapacity: false)
         subtitleFonts.removeAll(keepingCapacity: false)
         softwareVideoDecoder = nil
         audioStreams.removeAll(keepingCapacity: false)
