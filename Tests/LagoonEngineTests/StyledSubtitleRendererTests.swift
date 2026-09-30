@@ -126,6 +126,53 @@ struct StyledSubtitleRendererTests {
         #expect(abs(position.y - 200.0 / 1080) < 0.001)
     }
 
+    @Test func aSignsOnlySidecarOfDrawingsLoadsForLibass() async throws {
+        let drawings = """
+        [Script Info]
+        ScriptType: v4.00+
+        PlayResX: 1920
+        PlayResY: 1080
+
+        [V4+ Styles]
+        Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+        Style: Sign,Helvetica Neue,56,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
+
+        [Events]
+        Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+        Dialogue: 0,0:00:01.00,0:00:03.00,Sign,,0,0,0,,{\\pos(200,200)\\p1}m 0 0 l 300 0 300 120 0 120{\\p0}
+        """
+        let track = ExternalSubtitleTrack(
+            url: URL(string: "https://example.test/Signs.ass")!,
+            preloadedData: Data(drawings.utf8),
+            title: nil, language: "eng", select: true
+        )
+        let loaded = try await ExternalSubtitleLoader.load(track, using: .shared)
+        #expect(loaded.cues.allSatisfy { $0.text?.isEmpty ?? true })
+        let script = try #require(loaded.styledScript)
+        #expect(StyledSubtitleRenderer(script: script, fonts: [], videoSize: nil)?
+            .render(atMilliseconds: 1_500).isEmpty == false)
+
+        // Text after the drawing still reads; the commands never do.
+        let mixed = ASSSubtitleTextParser.cue(from: "0,0,Sign,,0,0,0,,{\\p1}m 0 0 l 10 10{\\p0}Exit")
+        #expect(mixed?.runs.map(\.text).joined() == "Exit")
+
+        // A script with no events at all is still nothing to show.
+        let empty = Data(drawings.components(separatedBy: "Dialogue:").first!.utf8)
+        await #expect(throws: SubtitleFileError.self) {
+            _ = try await ExternalSubtitleLoader.parse(empty, language: nil)
+        }
+    }
+
+    @Test func attachedFontsStopAtTheBudget() {
+        func font(_ megabytes: Int) -> SubtitleFontAttachment {
+            SubtitleFontAttachment(name: "f.ttf", data: Data(count: megabytes << 20))
+        }
+        #expect(FFmpegDemuxer.fits(font(64), besides: []))
+        #expect(!FFmpegDemuxer.fits(font(65), besides: []))
+        #expect(FFmpegDemuxer.fits(font(4), besides: [font(40), font(20)]))
+        #expect(!FFmpegDemuxer.fits(font(5), besides: [font(40), font(20)]))
+    }
+
     @Test func scriptTimesAndCommasInTextParse() {
         let script = """
         [Script Info]
