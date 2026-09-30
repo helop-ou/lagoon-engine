@@ -32,6 +32,12 @@ nonisolated final class StyledSubtitleRenderer: @unchecked Sendable {
     /// Subtitle animation needs no more than this, even on 50 and 60 fps
     /// video.
     static let maximumRefreshRate: Double = 30
+    /// libass's own defaults (10,000 glyphs, 128 MB of bitmaps and half again
+    /// of composites per renderer) are sized for a desktop player; these hold
+    /// a busy karaoke scene without letting a heavily typeset file grow toward
+    /// the decode budgets. See docs/engine.md, "Memory".
+    static let glyphCacheLimit = 2_000
+    static let bitmapCacheMegabytes = 24
 
     private let queue = DispatchQueue(label: "ee.helop.lagoon.subtitles.libass", qos: .userInitiated)
     private let library: OpaquePointer
@@ -106,6 +112,7 @@ nonisolated final class StyledSubtitleRenderer: @unchecked Sendable {
             ass_library_done(library)
             return nil
         }
+        ass_set_cache_limits(renderer, Int32(Self.glyphCacheLimit), Int32(Self.bitmapCacheMegabytes))
         guard let track = makeTrack(library) else {
             ass_renderer_done(renderer)
             ass_library_done(library)

@@ -332,6 +332,16 @@ nonisolated final class FFmpegDemuxer {
         return header.contains("[Script Info]") ? header : nil
     }
 
+    /// What the attached fonts may add up to. Each is held here and again
+    /// inside every libass library made from them, on top of FFmpeg's copy
+    /// in the stream's extradata; a font past the budget is skipped, and a
+    /// script naming it falls back to CoreText.
+    static let subtitleFontBudget = 64 << 20
+
+    static func fits(_ font: SubtitleFontAttachment, besides kept: [SubtitleFontAttachment]) -> Bool {
+        kept.reduce(font.data.count) { $0 + $1.data.count } <= subtitleFontBudget
+    }
+
     /// A font attachment, recognised by MIME type or file extension.
     private static func fontAttachment(_ stream: UnsafeMutablePointer<AVStream>) -> SubtitleFontAttachment? {
         guard let par = stream.pointee.codecpar,
@@ -791,7 +801,7 @@ nonisolated final class FFmpegDemuxer {
                 // Matroska delivers each attachment whole in the stream's
                 // extradata while the header is read.
                 stream.pointee.discard = AVDISCARD_ALL
-                if let font = Self.fontAttachment(stream) {
+                if let font = Self.fontAttachment(stream), Self.fits(font, besides: subtitleFonts) {
                     subtitleFonts.append(font)
                 }
             default:
