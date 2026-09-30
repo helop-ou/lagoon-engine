@@ -8,6 +8,29 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.1.2
+
+September 2026. No API change; upgrading is a version bump. `Libass` is
+rebuilt from the same library versions.
+
+### Fixed
+
+- Styled subtitles keep to a memory budget. Each libass renderer caches at
+  most 2,000 glyphs and 24 MB of bitmaps instead of libass's desktop
+  defaults, and a file's attached fonts are kept up to 64 MB in all; a font
+  past that is skipped and falls back to CoreText.
+- Choosing a subtitle track no longer blocks the main thread while libass
+  starts, copies the fonts and parses a sidecar, or while the previous
+  renderer finishes a frame. The plain text stays hidden meanwhile, so it
+  never flashes up unstyled.
+- ASS drawings (`\p1` … `\p0`) no longer reach `currentSubtitleText` or the
+  fallback cues as vector commands, and a signs-only sidecar made of drawings
+  loads for libass instead of being rejected as empty.
+- `Libass` no longer imports `fstat`: FreeType reads fonts through stdio and
+  HarfBuzz is built without mmap, so neither calls a file-timestamp API
+  covered by the privacy manifest. libavformat and libavutil still do, so a
+  host's `FileTimestamp` declaration stays.
+
 ## 1.1.1
 
 September 2026. No API change and no change to the libraries; upgrading is a
