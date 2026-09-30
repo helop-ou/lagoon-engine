@@ -330,11 +330,18 @@ by joining same-codec clips of two sizes with ffmpeg's concat demuxer
   combined space. Server Forced/SDH/language metadata is merged into embedded
   and sidecar tracks, exposed to Now Playing, and kept when a downloaded
   subtitle is inserted into a running engine.
-- **Selection.** Selecting an embedded track re-demuxes from the current
-  position, as audio switching does, so the active line appears at once. PGS
-  cues are open-ended and close on the next composition. Not covered: an
-  embedded subtitle rendition inside an HLS master (downloads arrive as
-  external files and work).
+- **Selection.** Text streams (SubRip, ASS, WebVTT, mov_text) are demuxed
+  even while unselected, and `SubtitleBacklog` keeps each one's recent events
+  (120 s behind its newest, at most 4,096). Selecting one replays them into
+  `SubtitleStore` and libass, so the line already on screen appears at once,
+  with no seek. A seek re-demuxed only from the keyframe before the position,
+  missing a line that started earlier, and flushed the video on the main
+  actor (57–76 ms per switch on an Apple TV 4K). The backlog restarts on a
+  seek. Bitmap streams (PGS, DVD, DVB) are still discarded while unselected
+  and still re-demux from the current position when chosen. PGS cues are
+  open-ended and close on the next composition. Not covered: an embedded
+  subtitle rendition inside an HLS master (downloads arrive as external files
+  and work).
 - **Cue lifetime.** For embedded tracks `SubtitleStore` is a window, not an
   archive. The demux loop appends cues as it reads ahead, and the 10 Hz
   display refresh removes every cue whose end has passed the playhead, so an

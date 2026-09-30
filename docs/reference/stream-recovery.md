@@ -48,7 +48,8 @@ opening NALs and builds through
 ### A seek that lands in an open GOP
 
 Symptom: an H.264 MKV that plays fine reports `.undecodable` on the first
-seek (a scrub, an embedded subtitle switch, which re-seeks, or a resume point).
+seek (a scrub, a switch to an embedded bitmap subtitle track, which re-seeks,
+or a resume point).
 
 `avformat_seek_file` lands on a block flagged `AV_PKT_FLAG_KEY` whose slices
 are NAL type **1**, a non-IDR picture: an **open GOP**. That picture decodes.
