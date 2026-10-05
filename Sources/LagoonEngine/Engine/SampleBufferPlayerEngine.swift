@@ -2018,6 +2018,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         if cause == .audio {
             audioStallCount += 1
         }
+        // The fill loop, which publishes the cache's state, stands down for a
+        // stall; a host reading the link's rate now should see it current.
+        publishBufferState(cacheSessionForFill?.metrics)
         EngineDiagnostics.record(.playbackStallBegin, [
             "position": .double(timePosition.rounded(toPlaces: 1)),
             "stallCause": .string(cause.rawValue),

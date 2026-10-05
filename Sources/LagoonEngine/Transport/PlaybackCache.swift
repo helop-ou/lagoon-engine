@@ -209,6 +209,9 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
     /// Foreground reads that waited for an in-flight prefetch of their
     /// bytes instead of downloading them again.
     public let sharedFetchCount: Int
+    /// What the link delivered while busy, over about the last ten seconds of
+    /// transfers. Nil before the first completes.
+    public let networkBytesPerSecond: Double?
 
     public init(
         cachedBytes: Int64,
@@ -227,7 +230,8 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
         isWindowed: Bool = false,
         cachedBytesAheadOfPlayhead: Int64 = 0,
         duplicateNetworkBytes: Int64 = 0,
-        sharedFetchCount: Int = 0
+        sharedFetchCount: Int = 0,
+        networkBytesPerSecond: Double? = nil
     ) {
         self.cachedBytes = cachedBytes
         self.networkBytes = networkBytes
@@ -246,6 +250,7 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
         self.cachedBytesAheadOfPlayhead = cachedBytesAheadOfPlayhead
         self.duplicateNetworkBytes = duplicateNetworkBytes
         self.sharedFetchCount = sharedFetchCount
+        self.networkBytesPerSecond = networkBytesPerSecond
     }
 
     public var bufferedFraction: Double? {
@@ -320,7 +325,10 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
             contentLength: nil,
             playheadPrefetchCount: playheadPrefetchCount + other.playheadPrefetchCount,
             timelineAnchor: nil,
-            isWindowed: isWindowed || other.isWindowed
+            isWindowed: isWindowed || other.isWindowed,
+            // An HLS item's scopes share one monitor, so either reading is
+            // the item's.
+            networkBytesPerSecond: other.networkBytesPerSecond ?? networkBytesPerSecond
         )
     }
 
@@ -339,7 +347,8 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
             cachedByteRanges: cachedByteRanges,
             playheadPrefetchCount: playheadPrefetchCount,
             timelineAnchor: timelineAnchor,
-            isWindowed: isWindowed
+            isWindowed: isWindowed,
+            networkBytesPerSecond: networkBytesPerSecond
         )
     }
 }
@@ -806,6 +815,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     private let loader: PlaybackRangeLoading
     private let cancelsLoaderOnRemoval: Bool
     private let storageBudget: PlaybackCacheStorageBudget?
+    private let throughput: PlaybackThroughputMonitor
     private let lock = NSCondition()
     private let cancellationLock = NSLock()
     private var file: FileHandle?
@@ -849,10 +859,12 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         loader: PlaybackRangeLoading? = nil,
         storageBudget: PlaybackCacheStorageBudget? = nil,
         cancelsLoaderOnRemoval: Bool = true,
+        throughput: PlaybackThroughputMonitor? = nil,
         authorization: MediaRequestAuthorization? = nil
     ) throws {
         self.itemID = itemID
         self.sourceURL = sourceURL
+        self.throughput = throughput ?? PlaybackThroughputMonitor()
         self.knownLength = expectedLength.flatMap { $0 > 0 ? $0 : nil }
         self.byteLimit = max(byteLimit, 0)
         self.requestSize = max(requestSize, 1)
@@ -918,7 +930,8 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
                 cached.contiguousUpperBound(from: preferredPrefetchOffset) - preferredPrefetchOffset, 0
             ),
             duplicateNetworkBytes: duplicateNetworkBytes,
-            sharedFetchCount: sharedFetchCount
+            sharedFetchCount: sharedFetchCount,
+            networkBytesPerSecond: throughput.bytesPerSecond
         )
     }
 
@@ -1055,14 +1068,17 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         requestCount += 1
         lock.unlock()
         let requestStarted = ProcessInfo.processInfo.systemUptime
+        throughput.requestStarted()
         let response: PlaybackRangeResponse
         do {
             response = try loader.load(url: sourceURL, range: fetchRange, priority: priority)
             try checkCancellation()
         } catch {
+            throughput.requestAbandoned()
             finishFetch(fetchID)
             throw error
         }
+        throughput.requestFinished(bytes: response.transferredBytes)
 
         lock.lock()
         do {
@@ -1445,6 +1461,8 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
     private let storageBudget: PlaybackCacheStorageBudget
     private let resourceLoader: PlaybackRangeLoading
     private let playlistLoader: PlaybackRangeLoading
+    /// One reading for the item, whichever segment carried the bytes.
+    private let throughput = PlaybackThroughputMonitor()
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private var accessCounter: UInt64 = 0
@@ -1563,7 +1581,8 @@ nonisolated final class HLSPlaybackCacheScope: @unchecked Sendable {
                 requestSize: requestSize,
                 loader: resourceLoader,
                 storageBudget: storageBudget,
-                cancelsLoaderOnRemoval: false
+                cancelsLoaderOnRemoval: false,
+                throughput: throughput
             )
         } catch {
             lock.unlock()

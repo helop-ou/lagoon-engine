@@ -27,17 +27,24 @@ public nonisolated struct PlaybackBufferState: Equatable, Sendable {
     /// Fetches aimed at the playhead rather than filling forward. A high count
     /// means seeks are outrunning the fill.
     public let playheadPrefetchCount: Int
+    /// What the link delivered while busy, over about the last ten seconds of
+    /// transfers: idle gaps between requests do not count. Compare it with
+    /// the title's bitrate to tell a slow link from anything else. Nil before
+    /// the first transfer completes and without a cache.
+    public let networkBytesPerSecond: Double?
 
     public init(
         isActive: Bool = false,
         bufferedFraction: Double? = nil,
         bufferedRanges: [PlaybackBufferedRange] = [],
-        playheadPrefetchCount: Int = 0
+        playheadPrefetchCount: Int = 0,
+        networkBytesPerSecond: Double? = nil
     ) {
         self.isActive = isActive
         self.bufferedFraction = bufferedFraction
         self.bufferedRanges = bufferedRanges
         self.playheadPrefetchCount = playheadPrefetchCount
+        self.networkBytesPerSecond = networkBytesPerSecond
     }
 
     public static let empty = PlaybackBufferState()
@@ -49,7 +56,8 @@ extension PlaybackCacheMetrics {
             isActive: true,
             bufferedFraction: bufferedFraction,
             bufferedRanges: bufferedRanges,
-            playheadPrefetchCount: playheadPrefetchCount
+            playheadPrefetchCount: playheadPrefetchCount,
+            networkBytesPerSecond: networkBytesPerSecond
         )
     }
 }
