@@ -6,8 +6,9 @@ import Testing
 
 /// Verdicts the engine reaches alone: whether a decode failure is about the
 /// stream or only the restart point, and what a lost VideoToolbox session
-/// means. Each allows one recovery per playback generation, so a truly
-/// undecodable stream still descends the host's ladder, one seek later.
+/// means. A restart point gets one recovery per playback generation and a
+/// session one per fault burst, so a truly undecodable stream still descends
+/// the host's ladder, one seek later.
 @Suite("Playback engine policies")
 struct PlaybackEnginePolicyTests {
     @Test func aDecodeFailureRightAfterAFlushEarnsOneRetryBeforeTheLadder() {
@@ -52,91 +53,91 @@ struct PlaybackEnginePolicyTests {
         )
     }
 
+    private func session(
+        cancelled: Bool = false,
+        suspended: Bool = false,
+        recovering: Bool = false,
+        background: Bool = false,
+        generation: Int = 7,
+        rebuiltGeneration: Int? = nil,
+        framesSinceRebuild: Int = 0
+    ) -> PlaybackDecodeSessionPolicy.Resolution {
+        PlaybackDecodeSessionPolicy.resolve(
+            cancelled: cancelled,
+            videoOutputSuspended: suspended,
+            recoveryInFlight: recovering,
+            hostInBackground: background,
+            playbackGeneration: generation,
+            rebuiltGeneration: rebuiltGeneration,
+            framesSinceRebuild: framesSinceRebuild
+        )
+    }
+
     /// A decoder the system took away is rebuilt, not transcoded: `-12903` only
     /// means "make another session".
     @Test func aLostDecodeSessionIsRebuiltRatherThanDescended() {
-        #expect(
-            PlaybackDecodeSessionPolicy.resolve(
-                cancelled: false,
-                videoOutputSuspended: false,
-                recoveryInFlight: false,
-                playbackGeneration: 7,
-                rebuiltGeneration: nil
-            ) == .rebuild
-        )
-        // A generation that spent its rebuild descends, so a session that
+        #expect(session() == .rebuild)
+        // A rebuilt session that fails at once descends, so a session that
         // cannot be made still reaches the ladder.
-        #expect(
-            PlaybackDecodeSessionPolicy.resolve(
-                cancelled: false,
-                videoOutputSuspended: false,
-                recoveryInFlight: false,
-                playbackGeneration: 7,
-                rebuiltGeneration: 7
-            ) == .descend
-        )
+        #expect(session(rebuiltGeneration: 7) == .descend)
         // A later seek is a new generation with its own rebuild.
+        #expect(session(generation: 8, rebuiltGeneration: 7) == .rebuild)
+    }
+
+    /// HEL-261: an iPhone in picture in picture lost its session twice, five
+    /// minutes apart with no seek between, and the second fault fell back to
+    /// a transcode. A rebuild is spent per burst, not per generation.
+    @Test func aFaultLongAfterARebuildEarnsAnotherRebuild() {
+        let proven = PlaybackDecodeSessionPolicy.provenFrames
+        #expect(session(rebuiltGeneration: 7, framesSinceRebuild: proven) == .rebuild)
+        #expect(session(rebuiltGeneration: 7, framesSinceRebuild: 7_200) == .rebuild)
+        // An immediate repeat is the session that cannot be made.
+        #expect(session(rebuiltGeneration: 7, framesSinceRebuild: proven - 1) == .descend)
+    }
+
+    /// In the background the system can refuse any new session, so a failed
+    /// rebuild waits for the foreground rather than reaching the ladder.
+    @Test func aBackgroundFaultThatARebuildCannotFixParksVideo() {
+        #expect(session(background: true, rebuiltGeneration: 7) == .park)
+        // It still tries a rebuild first: picture in picture can make one.
+        #expect(session(background: true) == .rebuild)
         #expect(
-            PlaybackDecodeSessionPolicy.resolve(
-                cancelled: false,
-                videoOutputSuspended: false,
-                recoveryInFlight: false,
-                playbackGeneration: 8,
-                rebuiltGeneration: 7
+            session(
+                background: true,
+                rebuiltGeneration: 7,
+                framesSinceRebuild: PlaybackDecodeSessionPolicy.provenFrames
             ) == .rebuild
         )
+        // Once parked, video reads as suspended and the rest are ignored.
+        #expect(session(suspended: true, background: true, rebuiltGeneration: 7) == .ignore)
     }
 
     @Test func everySampleInADeadDecoderIsTheSameOneFault() {
         // Each buffer in the decoder reports the lost session on its way out;
         // without this each would queue a rebuild seek.
-        #expect(
-            PlaybackDecodeSessionPolicy.resolve(
-                cancelled: false,
-                videoOutputSuspended: false,
-                recoveryInFlight: true,
-                playbackGeneration: 7,
-                rebuiltGeneration: nil
-            ) == .alreadyRecovering
-        )
+        #expect(session(recovering: true) == .alreadyRecovering)
     }
 
     @Test func suspendedVideoHasNoSessionWorthSaving() {
         // Backgrounding keeps the old session and the resume seek builds a new
         // one, so a sample reaching a torn-down session says nothing and must
         // not end playback.
-        #expect(
-            PlaybackDecodeSessionPolicy.resolve(
-                cancelled: false,
-                videoOutputSuspended: true,
-                recoveryInFlight: false,
-                playbackGeneration: 7,
-                rebuiltGeneration: 7
-            ) == .ignore
-        )
+        #expect(session(suspended: true, rebuiltGeneration: 7) == .ignore)
     }
 
     /// A rebuild is a seek, which needs a running demux loop. After
     /// cancellation there is none, so asking would swap a reported failure for
     /// a spinner.
     @Test func aFaultAfterPlaybackEndedAsksForNothing() {
-        #expect(
-            PlaybackDecodeSessionPolicy.resolve(
-                cancelled: true,
-                videoOutputSuspended: false,
-                recoveryInFlight: false,
-                playbackGeneration: 7,
-                rebuiltGeneration: nil
-            ) == .tooLate
-        )
+        #expect(session(cancelled: true) == .tooLate)
         // Cancellation wins: samples draining from a torn-down decoder report
         // the session going with it.
         #expect(
-            PlaybackDecodeSessionPolicy.resolve(
+            session(
                 cancelled: true,
-                videoOutputSuspended: true,
-                recoveryInFlight: true,
-                playbackGeneration: 7,
+                suspended: true,
+                recovering: true,
+                background: true,
                 rebuiltGeneration: 7
             ) == .tooLate
         )
