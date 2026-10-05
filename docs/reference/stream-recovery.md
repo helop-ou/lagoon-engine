@@ -199,12 +199,26 @@ was taken away: `kVTInvalidSessionErr`, `kVTVideoDecoderMalfunctionErr`,
 `kVTVideoDecoderNotAvailableNowErr`, and, because VideoToolbox decodes out of
 process, `kVTVideoDecoderRemovedErr`, `kVTSessionMalfunctionErr` and
 `kVTVideoDecoderCallbackMessagingErr`. `kVTAllocationFailedErr` joins them:
-memory pressure says nothing about the samples. `PlaybackDecodeSessionPolicy` decides,
-bounded like `PlaybackRestartPointPolicy`: one rebuild per playback
-generation, recorded against the generation the re-seek starts. A session
-that actually cannot be made is reported as `.undecodable` one seek later.
-While video output is suspended, the fault is ignored: there is nothing to
-rebuild for, and the resume seek makes a fresh session anyway.
+memory pressure says nothing about the samples. `PlaybackDecodeSessionPolicy`
+decides, and spends a rebuild per fault burst. A rebuild is recorded against
+the generation its re-seek starts, and counts the pictures decoded after it.
+Once the rebuilt session has decoded `provenFrames` (48, two seconds at
+24 fps), a later fault earns another rebuild; a viewer seek always does. Only
+an immediate repeat, a rebuilt session that dies before it proves itself, is
+reported as `.undecodable`, so a session that actually cannot be made still
+reaches the ladder one seek later. While video output is suspended, the fault
+is ignored: there is nothing to rebuild for, and the resume seek makes a fresh
+session anyway.
+
+**In the background, a fault a rebuild cannot fix parks video.** The host
+says it is in the background with `setHostInBackground(_:)`. There the
+policy's immediate repeat resolves to `park` rather than `descend`, and the
+seek branch's second failed `reset()` parks instead of failing. Parking
+suspends video exactly as `setVideoOutputSuspended(true)` does, set under the
+lock that resolved the fault so every sample behind it reads as suspended,
+and audio plays on. The host's return to the foreground lifts it with the
+usual resume seek. A park is never lifted while the host still asks for
+suspension, and lifting a host suspension leaves a park in place.
 
 Two field shapes:
 
@@ -217,6 +231,12 @@ Two field shapes:
   not reproduced.
 - Apple TV, active, 178 ms after a seek: the seek branch's own
   `videoDecoder?.reset()` failed to build a session.
+- iPhone 13 Pro Max in the background with video still decoding, most likely
+  picture in picture or a phone locked during it (HEL-261). The session was
+  rebuilt, then lost again five minutes later with no seek between. With one
+  rebuild per generation the second fault descended to a transcode, which
+  decodes through VideoToolbox too and in another playback ran the ladder out.
+  Hence the per-burst rebuild and the park.
 
 **A rebuild is a seek, and a seek needs a running demux loop.** Absorbing a
 fault on a path that is about to stop the loop turns a reported failure into
@@ -245,9 +265,10 @@ Reporting:
 - The near-the-end branch that declines to seek still spends the generation's
   rebuild, or every remaining sample would ask for another.
 - Outcomes go out on the renderer-recovery channel as `recovery:
-  decodeSessionRebuilt` and `decodeSessionIgnored`. Only a rebuild is an
-  incident. The `rendererRecoveries` counter comes from engine counters, not
-  these events, so degradation thresholds are unaffected.
+  decodeSessionRebuilt`, `decodeSessionParked` and `decodeSessionIgnored`.
+  A rebuild or a park is an incident. The `rendererRecoveries` counter comes
+  from engine counters, not these events, so degradation thresholds are
+  unaffected.
 
 Still owed: a device run showing a rebuilt session actually resumes, and a
 reproduction of the background race. `-12909` (bad data in one access unit

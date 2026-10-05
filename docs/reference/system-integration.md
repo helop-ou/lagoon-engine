@@ -118,6 +118,13 @@ the background.
   invalidated meanwhile.
 - A successor engine started while the previous one was suspended inherits
   the suspension.
+- `setHostInBackground(_:)` says the app is in the background, whether or not
+  picture in picture or AirPlay still shows video. A host calls it on every
+  background and foreground transition, independent of suspension. There the
+  system may take the decode session and refuse a new one, so a session fault
+  a rebuild cannot fix suspends video (it *parks*) instead of failing
+  playback. Returning to the foreground lifts a park the same way it lifts a
+  suspension. See [stream recovery](stream-recovery.md#a-decode-session-the-system-took-back).
 
 ## Display mode matching (tvOS)
 
