@@ -108,6 +108,10 @@ public protocol PlayerEngine: AnyObject, Observable {
     func setAudioDelay(_ seconds: Double)
     /// Audio-only playback while the app is in the background.
     func setVideoOutputSuspended(_ suspended: Bool)
+    /// The app is in the background, picture showing or not. A decode
+    /// session the system takes there suspends video until the app returns,
+    /// rather than failing playback.
+    func setHostInBackground(_ background: Bool)
     /// Starts or resumes so the current position is presented exactly at
     /// `hostTime` on `CMClockGetHostTimeClock()`; a past time starts now.
     /// For group playback, where members agree on one instant.
@@ -126,6 +130,7 @@ public extension PlayerEngine {
     var subtitleSelectionRevision: Int { 0 }
     func retrySubtitleLoad() {}
     func setVideoOutputSuspended(_ suspended: Bool) {}
+    func setHostInBackground(_ background: Bool) {}
     var audioOutputPathDiagnostic: String { "unknown" }
     var videoOutputPathDiagnostic: String { "unknown" }
     var idleRequestCallbacks: Int { 0 }

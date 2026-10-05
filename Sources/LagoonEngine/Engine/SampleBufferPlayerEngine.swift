@@ -1267,10 +1267,28 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// on. Resuming seeks in place so the picture restarts on a keyframe
     /// with a fresh decoder session.
     public func setVideoOutputSuspended(_ suspended: Bool) {
-        let changed = shared.withLock { state -> Bool in
-            guard state.videoOutputSuspended != suspended else { return false }
-            state.videoOutputSuspended = suspended
-            return true
+        updateVideoSuspension { $0.videoSuspendedByHost = suspended }
+    }
+
+    /// The app is in the background, with or without the picture showing.
+    /// A decode session fault there that a rebuild cannot fix suspends video
+    /// until this turns false, instead of failing playback.
+    public func setHostInBackground(_ background: Bool) {
+        updateVideoSuspension { state in
+            state.hostInBackground = background
+            if !background { state.videoParkedForForeground = false }
+        }
+    }
+
+    /// Applies a change to what suspends video. Suspending flushes the video
+    /// path; resuming seeks in place for a fresh session.
+    private func updateVideoSuspension(_ change: (inout SharedState.State) -> Void) {
+        let (changed, suspended) = shared.withLock { state -> (Bool, Bool) in
+            let was = state.videoOutputSuspended
+            change(&state)
+            state.videoOutputSuspended = state.videoSuspendedByHost
+                || state.videoParkedForForeground
+            return (state.videoOutputSuspended != was, state.videoOutputSuspended)
         }
         guard changed, !shutdownRequested else { return }
         if suspended {
@@ -2779,6 +2797,17 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 recordVideoSessionFault(status, recovery: "decodeSessionRebuilt")
                 return true
             } catch {
+                // In the background the system may refuse any new session:
+                // wait for the foreground, whose resume seek tries again.
+                let parked = shared.withLock { state -> Bool in
+                    guard state.hostInBackground else { return false }
+                    Self.parkVideo(&state)
+                    return true
+                }
+                if parked {
+                    recordVideoSessionFault(status, recovery: "decodeSessionParked")
+                    return true
+                }
                 // Two failures at the same point: report it.
                 failVideoDecode(error, allowSessionRecovery: false)
                 return false
@@ -2959,7 +2988,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     nonisolated private func acceptDecodedVideo(_ buffer: CMSampleBuffer) {
-        let shouldDrop = shared.withLock { $0.cancelled || $0.pendingSeekSeconds != nil }
+        let shouldDrop = shared.withLock { state -> Bool in
+            guard !state.cancelled, state.pendingSeekSeconds == nil else { return true }
+            state.videoFramesSinceSessionRebuild += 1
+            return false
+        }
         guard !shouldDrop else { return }
         publishVideoSizeIfChanged(buffer)
         videoQueue.enqueue(buffer)
@@ -3026,12 +3059,18 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 cancelled: state.cancelled,
                 videoOutputSuspended: state.videoOutputSuspended,
                 recoveryInFlight: state.videoSessionRecoveryInFlight,
+                hostInBackground: state.hostInBackground,
                 playbackGeneration: state.playbackGeneration,
-                rebuiltGeneration: state.videoSessionRebuiltGeneration
+                rebuiltGeneration: state.videoSessionRebuiltGeneration,
+                framesSinceRebuild: state.videoFramesSinceSessionRebuild
             )
             // Claim under the same lock, or every queued sample starts a
-            // rebuild.
-            if resolution == .rebuild { state.videoSessionRecoveryInFlight = true }
+            // rebuild or a park.
+            switch resolution {
+            case .rebuild: state.videoSessionRecoveryInFlight = true
+            case .park: Self.parkVideo(&state)
+            default: break
+            }
             return resolution
         }
         switch resolution {
@@ -3050,7 +3089,25 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             // Recorded on the main actor, where the outcome is known.
             Task { @MainActor in self.rebuildVideoDecodeSession(after: status) }
             return true
+        case .park:
+            recordVideoSessionFault(status, recovery: "decodeSessionParked")
+            Task { @MainActor in
+                // As `setVideoOutputSuspended`: the demux loop may be waiting
+                // on a video backlog the dead session will never drain.
+                guard !self.shutdownRequested,
+                      self.shared.withLock({ $0.videoParkedForForeground }) else { return }
+                self.pumpQueue.sync { self.flushVideoPath() }
+            }
+            return true
         }
+    }
+
+    /// Suspends video until the host returns to the foreground, whose resume
+    /// seek makes a new session. Under the shared lock, so the samples behind
+    /// this one read as suspended.
+    nonisolated private static func parkVideo(_ state: inout SharedState.State) {
+        state.videoParkedForForeground = true
+        state.videoOutputSuspended = true
     }
 
     /// Rebuilds by seeking in place: the seek resets the decoder, so the new
@@ -3065,6 +3122,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 // Mark spent anyway, or every remaining sample asks for
                 // another rebuild.
                 $0.videoSessionRebuiltGeneration = $0.playbackGeneration
+                $0.videoFramesSinceSessionRebuild = 0
                 $0.videoSessionRecoveryInFlight = false
             }
             return
@@ -3081,15 +3139,19 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         )
         seek(to: position)
         // After the seek, which bumps the generation: a second dead session
-        // here descends the ladder, a later viewer seek earns a rebuild.
+        // before this one decodes `provenFrames` descends the ladder (or
+        // parks video in the background); a later fault or viewer seek earns
+        // a rebuild.
         shared.withLock {
             $0.videoSessionRebuiltGeneration = $0.playbackGeneration
+            $0.videoFramesSinceSessionRebuild = 0
             $0.videoSessionRecoveryInFlight = false
         }
     }
 
     /// A session fault that did not fail playback. Always recorded; reported
-    /// only when it cost a rebuild, since ignored ones are expected noise.
+    /// only when it cost a rebuild or parked video, since ignored ones are
+    /// expected noise.
     nonisolated private func recordVideoSessionFault(_ status: OSStatus, recovery: String) {
         let detail = PlaybackFailureDetail(
             stage: .decode,
@@ -3100,7 +3162,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             "recovery": .string(recovery),
         ]) { _, new in new }
         EngineDiagnostics.record(.playbackRendererRecovery, fields)
-        guard recovery == "decodeSessionRebuilt" else { return }
+        guard recovery != "decodeSessionIgnored" else { return }
         EngineDiagnostics.report(
             .playbackRendererRecovery,
             level: .warning,
@@ -3755,8 +3817,16 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// Highest video pts the demuxer has delivered, for stall detection.
         var videoBufferedTo: Double = 0
         /// Audio-only background playback: video is discarded, and anything
-        /// that would wait for video treats it as finished.
+        /// that would wait for video treats it as finished. Set while the
+        /// host asks for it or a session fault parked video.
         var videoOutputSuspended = false
+        var videoSuspendedByHost = false
+        /// A session fault in the background parked video until the host
+        /// returns to the foreground.
+        var videoParkedForForeground = false
+        /// The host is in the background, where the system may take the
+        /// decode session at any time and refuse a new one.
+        var hostInBackground = false
         /// Whether the stream got a playback cache; decides the demux cushion.
         var deliveryIsCached = true
         /// Furthest presentation end across audio and video; the EOF
@@ -3781,10 +3851,11 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// Presentation size of the last decoded frame, to notice a stream
         /// changing size mid-way.
         var decodedVideoSize: CGSize?
-        /// One VideoToolbox session rebuild per generation, and whether one
-        /// is in flight: every sample in a dead decoder reports the same
-        /// fault.
+        /// The generation of the last VideoToolbox session rebuild, the
+        /// pictures decoded since, and whether one is in flight: every
+        /// sample in a dead decoder reports the same fault.
         var videoSessionRebuiltGeneration: Int?
+        var videoFramesSinceSessionRebuild = 0
         var videoSessionRecoveryInFlight = false
         /// Furthest audio presentation end handed to AVFoundation, compared
         /// with the clock for starvation.

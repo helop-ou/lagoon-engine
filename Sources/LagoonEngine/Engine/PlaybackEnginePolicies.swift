@@ -152,9 +152,16 @@ nonisolated enum PlaybackRendererStartPolicy {
 
 /// What to do about a VideoToolbox *session* fault (`kVTInvalidSessionErr`
 /// and siblings). The system reclaimed the session; the samples were never
-/// judged, so this must not descend the ladder on its own. One rebuild per
-/// playback generation; a second fault descends.
+/// judged, so this must not descend the ladder on its own. A rebuild is
+/// spent per fault burst: once the rebuilt session has decoded
+/// `provenFrames` pictures, a later fault earns another. Only an immediate
+/// repeat descends, and in the background not even that: video waits for
+/// the foreground instead.
 nonisolated enum PlaybackDecodeSessionPolicy {
+    /// Pictures a rebuilt session must decode before the burst is over: two
+    /// seconds at 24 fps, as for `PlaybackCorruptFramePolicy.proofFrames`.
+    static let provenFrames = 48
+
     enum Resolution: Equatable {
         /// Playback is already over; the fault is its echo.
         case tooLate
@@ -164,7 +171,12 @@ nonisolated enum PlaybackDecodeSessionPolicy {
         case alreadyRecovering
         /// Seek to the current position, which makes a new session.
         case rebuild
-        /// This generation has spent its rebuild: tell the ladder.
+        /// The host is in the background and the rebuild did not hold:
+        /// suspend video until the host returns, whose resume seek makes a
+        /// new session.
+        case park
+        /// The rebuilt session failed before decoding anything worth the
+        /// name: tell the ladder.
         case descend
     }
 
@@ -172,13 +184,17 @@ nonisolated enum PlaybackDecodeSessionPolicy {
         cancelled: Bool,
         videoOutputSuspended: Bool,
         recoveryInFlight: Bool,
+        hostInBackground: Bool,
         playbackGeneration: Int,
-        rebuiltGeneration: Int?
+        rebuiltGeneration: Int?,
+        framesSinceRebuild: Int
     ) -> Resolution {
         if cancelled { return .tooLate }
         if videoOutputSuspended { return .ignore }
         if recoveryInFlight { return .alreadyRecovering }
-        guard rebuiltGeneration != playbackGeneration else { return .descend }
-        return .rebuild
+        let immediateRepeat = rebuiltGeneration == playbackGeneration
+            && framesSinceRebuild < provenFrames
+        guard immediateRepeat else { return .rebuild }
+        return hostInBackground ? .park : .descend
     }
 }
