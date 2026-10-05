@@ -26,6 +26,40 @@ struct PlaybackCacheTests {
         #expect(loader.requestedRanges.last == PlaybackByteRange(4_096, 4_096 + 1_024 * 1_024))
     }
 
+    @Test func aScopeReportsTheRateItsTransfersReachedTheHostThrough() throws {
+        let loader = PlaybackCacheLoaderStub(payload: Data(repeating: 0, count: 2 * 1_024 * 1_024))
+        let scope = try PlaybackCacheScope(
+            itemID: "rate", sourceURL: URL(string: "https://media.test/film.mkv")!,
+            expectedLength: nil, directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            byteLimit: 2 * 1_024 * 1_024, requestSize: 1_024 * 1_024, loader: loader
+        )
+        defer { scope.cancelAndRemove() }
+        #expect(scope.metrics.networkBytesPerSecond == nil)
+        _ = try scope.read(offset: 0, length: 4_096)
+        let rate = try #require(scope.metrics.networkBytesPerSecond)
+        #expect(rate > 0)
+        #expect(scope.metrics.bufferState.networkBytesPerSecond == rate)
+    }
+
+    @Test func anHLSItemReportsOneRateAcrossItsSegments() throws {
+        let cache = try HLSPlaybackCacheScope(
+            itemID: "rate-hls",
+            sourceURL: URL(string: "https://media.test/master.m3u8")!,
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true),
+            byteLimit: 1_024 * 1_024,
+            requestSize: 64 * 1_024,
+            resourceLoader: PlaybackCacheLoaderStub(payload: Data(repeating: 0xCD, count: 64 * 1_024))
+        )
+        defer { cache.cancelAndRemove() }
+        #expect(cache.metrics.networkBytesPerSecond == nil)
+        for name in ["one.ts", "two.ts"] {
+            let lease = try #require(try cache.leaseResource(at: URL(string: "https://media.test/\(name)")!))
+            _ = try lease.scope.read(offset: 0, length: 1_024)
+            lease.close()
+        }
+        #expect((cache.metrics.networkBytesPerSecond ?? 0) > 0)
+    }
+
     @Test func directFilesUseCachedTransportWhileManifestsStayNative() {
         // Nothing installed gets the safe answer.
         #expect(PlaybackBufferPolicy.customIOEnabled(for: .stableFile, tuning: EngineTuning()))
