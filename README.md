@@ -107,7 +107,9 @@ engine.prepare(
 )
 ```
 
-- `bufferState` has the buffered fraction and cached ranges, for a scrub bar.
+- `bufferState` has the buffered fraction and cached ranges, for a scrub bar,
+  and the rate the link delivers while busy, to tell a slow link from
+  anything else.
 - `suspendBufferFill()` and `resumeBufferFill()` pause and resume filling
   without losing what is cached, for an app going to the background.
 - `stageSuccessor` warms a second scope for what plays next. A later `prepare`

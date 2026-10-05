@@ -130,6 +130,16 @@ evicted:** eviction runs only from a read that is short of capacity.
 - The HUD reports contiguous MiB of total MiB, percentage, hit rate, request
   count and latency. A `Playback Buffer Progress` signpost carries the same
   fraction and the stall count for Instruments.
+- `networkBytesPerSecond` (on the metrics and `PlaybackBufferState`) is what
+  the link delivers while busy, from `PlaybackThroughputMeter`. Only time
+  with a range request in flight counts, so the fill's pacing gaps do not
+  read as a slow link, and overlapping requests share one busy period, so a
+  foreground read beside a prefetch does not halve it. Bytes and busy seconds
+  decay together over a ten-second window and the rate is their ratio. A
+  cancelled or failed request leaves no sample. An HLS item's segment scopes
+  share one meter. It exists so a host can tell a link that cannot carry the
+  title's bitrate from anything else (HEL-262). The fill loop stands down
+  during a stall, so the engine republishes `bufferState` when a stall begins.
 
 ## Scope ownership and teardown
 
