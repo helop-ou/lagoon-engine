@@ -8,6 +8,35 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.2.0
+
+October 2026. Adds API; nothing is removed and no library changes, so
+upgrading is a version bump. `PlayerEngine` gains a requirement with a
+default, so a host's own conformance still compiles.
+
+### Added
+
+- `setHostInBackground(_:)`. A host calls it on every background and
+  foreground transition, whether or not picture in picture or AirPlay still
+  shows video. In the background, a decode session fault that a rebuild
+  cannot fix suspends video until the host returns, instead of failing
+  playback. Audio plays on and the return restarts the picture at the
+  playhead. Reported as `recovery: decodeSessionParked`.
+- `PlaybackBufferState.networkBytesPerSecond` and
+  `PlaybackCacheMetrics.networkBytesPerSecond`: what the link delivers while
+  a request is in flight, over about the last ten seconds of transfers.
+  Compared with the title's bitrate, it separates a link too slow for the
+  title from anything else. `bufferState` is republished when a stall
+  begins, so the figure is current then.
+
+### Fixed
+
+- A lost VideoToolbox session is rebuilt once per fault burst, not once per
+  playback generation. A session the system took twice, minutes apart and
+  with no seek between, used to be reported as `.undecodable` on the second
+  loss, and a host would fall back to a transcode. Now only a rebuilt session
+  that fails before decoding 48 pictures is a verdict.
+
 ## 1.1.3
 
 September 2026. No API change and no change to the libraries; upgrading is a
