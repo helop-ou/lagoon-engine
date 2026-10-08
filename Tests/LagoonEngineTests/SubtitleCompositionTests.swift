@@ -43,6 +43,27 @@ struct SubtitleCompositionTests {
         #expect(!cue.runs[1].isItalic)
     }
 
+    @Test func assResetOnlyClearsTheOverridesBeforeIt() throws {
+        // Override tags apply left to right, so `{\i1\r}` ends up plain.
+        let resetLast = try #require(ASSSubtitleTextParser.cue(
+            from: #"0,0,Default,,0,0,0,,{\b1\i1\r}Plain"#
+        ))
+        #expect(resetLast.usesDefaultStyle)
+
+        let resetFirst = try #require(ASSSubtitleTextParser.cue(
+            from: #"0,0,Default,,0,0,0,,{\r\i1}Italic"#
+        ))
+        #expect(resetFirst.runs.first?.isItalic == true)
+        #expect(resetFirst.runs.first?.isBold == false)
+
+        // A reset keeps the alignment; placement is not an inline style.
+        let placed = try #require(ASSSubtitleTextParser.cue(
+            from: #"0,0,Default,,0,0,0,,{\an8\b1\r}Top"#
+        ))
+        #expect(placed.alignment == .topCenter)
+        #expect(placed.usesDefaultStyle)
+    }
+
     @Test func subtitleStoreKeepsSimultaneousAuthoredCompositionsSeparate() {
         let store = SubtitleStore()
         let left = SubtitleTextCue(
