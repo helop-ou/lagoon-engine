@@ -64,6 +64,15 @@ struct SubtitleCompositionTests {
         #expect(placed.usesDefaultStyle)
     }
 
+    @Test func ordinaryASSDialogueKeepsTheLegacyBottomCentrePresentation() throws {
+        let cue = try #require(ASSSubtitleTextParser.cue(
+            from: #"0,0,Default,,0,0,0,,Hello\Nworld"#
+        ))
+        #expect(cue.text == "Hello\nworld")
+        #expect(cue.usesDefaultPlacement)
+        #expect(cue.usesDefaultStyle)
+    }
+
     @Test func subtitleStoreKeepsSimultaneousAuthoredCompositionsSeparate() {
         let store = SubtitleStore()
         let left = SubtitleTextCue(
