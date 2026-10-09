@@ -473,6 +473,40 @@ nonisolated final class FFmpegDemuxer {
             // this pointer and frees it on failure.
             if !completedOpen { close() }
         }
+        installTransport(on: allocated, cacheSession: cacheSession, authorization: authorization)
+        try attachByteSource(to: allocated, cacheSession: cacheSession, disc: disc)
+        let ctx = try openInput(url: url)
+
+        if ctx.pointee.duration > 0 {
+            durationSeconds = Double(ctx.pointee.duration) / avTimeBase
+        }
+        recordStreamStartOffsets(ctx)
+
+        let bestVideo = av_find_best_stream(ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0)
+        guard bestVideo >= 0, let stream = ctx.pointee.streams[Int(bestVideo)] else {
+            throw DemuxError.openFailed("no video stream")
+        }
+        let programStreams = hlsProgramStreams(ctx, containing: bestVideo)
+        try configureVideoStream(
+            ctx,
+            stream: stream,
+            index: bestVideo,
+            recommendedPixelBufferAttributes: recommendedPixelBufferAttributes
+        )
+        configureOtherStreams(ctx, bestVideo: bestVideo, programStreams: programStreams)
+
+        guard let packet = av_packet_alloc() else {
+            throw DemuxError.openFailed("out of memory")
+        }
+        self.packet = packet
+        completedOpen = true
+    }
+
+    private func installTransport(
+        on allocated: UnsafeMutablePointer<AVFormatContext>,
+        cacheSession: PlaybackCacheSession?,
+        authorization: MediaRequestAuthorization?
+    ) {
         allocated.pointee.interrupt_callback = AVIOInterruptCB(
             callback: { opaque in
                 guard let opaque else { return 0 }
@@ -490,6 +524,13 @@ nonisolated final class FFmpegDemuxer {
         )
         self.transport = transport
         transport.install(on: allocated)
+    }
+
+    private func attachByteSource(
+        to allocated: UnsafeMutablePointer<AVFormatContext>,
+        cacheSession: PlaybackCacheSession?,
+        disc: DiscPlaybackRequest?
+    ) throws {
         if let disc, let cacheScope = cacheSession?.directScope {
             // Mount the disc image, pick the title, and hand libavformat its
             // clips end to end. Failures here are delivery failures.
@@ -517,7 +558,10 @@ nonisolated final class FFmpegDemuxer {
             allocated.pointee.flags |= customIOFlag
             self.cachedIO = cachedIO
         }
+    }
 
+    /// Opens the input and probes its streams; returns the opened context.
+    private func openInput(url: String) throws -> UnsafeMutablePointer<AVFormatContext> {
         // Without FFmpeg's HTTP protocol, persistent HLS connections leak one
         // AVIOContext per segment. Off, hls.c closes each via io_close2.
         var options: OpaquePointer?
@@ -535,11 +579,10 @@ nonisolated final class FFmpegDemuxer {
         guard status >= 0 else {
             throw DemuxError.openFailed(Self.errorText(status), code: status)
         }
+        return ctx
+    }
 
-        if ctx.pointee.duration > 0 {
-            durationSeconds = Double(ctx.pointee.duration) / avTimeBase
-        }
-
+    private func recordStreamStartOffsets(_ ctx: UnsafeMutablePointer<AVFormatContext>) {
         // Use the format's origin, not each stream's, to keep the offsets
         // between streams: a late-starting audio track is content, not clock.
         for index in 0..<Int(ctx.pointee.nb_streams) {
@@ -552,12 +595,14 @@ nonisolated final class FFmpegDemuxer {
                 streamStartOffsets[stream.pointee.index] = offset
             }
         }
+    }
 
-        let bestVideo = av_find_best_stream(ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0)
-        guard bestVideo >= 0, let stream = ctx.pointee.streams[Int(bestVideo)] else {
-            throw DemuxError.openFailed("no video stream")
-        }
-
+    /// The stream indexes of the program holding the chosen video; empty when
+    /// no program does.
+    private func hlsProgramStreams(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>,
+        containing bestVideo: Int32
+    ) -> Set<Int32> {
         // In an HLS master each variant is a program. Keep only the chosen
         // video's program, or other variants duplicate the track list and
         // keep downloading.
@@ -572,6 +617,15 @@ nonisolated final class FFmpegDemuxer {
                 break
             }
         }
+        return programStreams
+    }
+
+    private func configureVideoStream(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>,
+        stream: UnsafeMutablePointer<AVStream>,
+        index bestVideo: Int32,
+        recommendedPixelBufferAttributes: CVPixelBufferAttributes
+    ) throws {
         let videoPar = stream.pointee.codecpar!
         videoStreamIndex = bestVideo
         videoTimeBase = stream.pointee.time_base
@@ -614,31 +668,10 @@ nonisolated final class FFmpegDemuxer {
                     )
                     : nil
             }
-        // Dolby Vision profile 7: convert to 8.1 or strip to HDR10 (see
-        // `DolbyVisionProfileConverter`). Needs a known NAL length size.
-        var dolbyVisionOverride: AVDOVIDecoderConfigurationRecord?
-        if videoPar.pointee.codec_id == AV_CODEC_ID_HEVC,
-           let dovi = SampleBufferFactory.doviConfiguration(codecpar: videoPar),
-           dovi.dv_profile == 7,
-           let lengthSize = filterNALLengthSize {
-            videoNALLengthSize = lengthSize
-            switch dolbyVisionProfile7Mode {
-            case .convert:
-                profile7Converter = DolbyVisionProfileConverter(record: dovi)
-                dolbyVisionOverride = profile7Converter?.synthesizedRecord
-            case .stripToHDR10:
-                stripStatsLock.lock()
-                stripStats = DolbyVisionRewriteStats(mode: .stripToHDR10)
-                stripStatsLock.unlock()
-            }
-        } else if videoPar.pointee.codec_id == AV_CODEC_ID_HEVC,
-                  let dovi = SampleBufferFactory.doviConfiguration(codecpar: videoPar),
-                  DolbyVisionRPURepeater.applies(toProfile: dovi.dv_profile),
-                  dovi.rpu_present_flag != 0,
-                  let lengthSize = filterNALLengthSize {
-            videoNALLengthSize = lengthSize
-            rpuRepeater = DolbyVisionRPURepeater()
-        }
+        let dolbyVisionOverride = configureDolbyVisionRewrite(
+            videoPar: videoPar,
+            filterNALLengthSize: filterNALLengthSize
+        )
         var videoDescription: CMFormatDescription? = if usesCompressedVideo {
             SampleBufferFactory.videoFormatDescription(
                 codecpar: videoPar,
@@ -683,32 +716,7 @@ nonisolated final class FFmpegDemuxer {
             throw DemuxError.unsupportedVideo(String(cString: avcodec_get_name(videoPar.pointee.codec_id)))
         }
         if !outputsDecodedVideo {
-            videoTimeline = VideoFrameTimeline(
-                frameRateNum: guessedRate.num,
-                frameRateDen: guessedRate.den
-            )
-            // The only length-prefixed NAL codecs on the compressed path.
-            switch videoPar.pointee.codec_id {
-            case AV_CODEC_ID_H264: videoRandomAccessCodec = .h264
-            case AV_CODEC_ID_HEVC: videoRandomAccessCodec = .hevc
-            default: videoRandomAccessCodec = nil
-            }
-            if let codec = videoRandomAccessCodec {
-                // Converted start-code payloads carry four-byte lengths.
-                videoPayloadNALLengthSize = videoUsesStartCodes
-                    ? Int(AnnexBStream.nalUnitHeaderLength)
-                    : videoPar.pointee.extradata.flatMap { extradata in
-                        videoPar.pointee.extradata_size > 0
-                            ? VideoRandomAccessPoint.nalLengthSize(
-                                configurationRecord: Data(
-                                    bytes: extradata,
-                                    count: Int(videoPar.pointee.extradata_size)
-                                ),
-                                codec: codec
-                            )
-                            : nil
-                    }
-            }
+            configureVideoRandomAccess(videoPar: videoPar, guessedRate: guessedRate)
         }
         videoStream = DemuxedStream(
             streamIndex: bestVideo,
@@ -721,7 +729,82 @@ nonisolated final class FFmpegDemuxer {
             fallbackPacketDuration: 0,
             videoReorderDepth: Int(videoPar.pointee.video_delay)
         )
+    }
 
+    /// Sets up the profile 7 converter or the RPU repeater when the stream
+    /// needs one; returns the record that overrides the description's
+    /// Dolby Vision configuration, if any.
+    private func configureDolbyVisionRewrite(
+        videoPar: UnsafeMutablePointer<AVCodecParameters>,
+        filterNALLengthSize: Int?
+    ) -> AVDOVIDecoderConfigurationRecord? {
+        // Dolby Vision profile 7: convert to 8.1 or strip to HDR10 (see
+        // `DolbyVisionProfileConverter`). Needs a known NAL length size.
+        var dolbyVisionOverride: AVDOVIDecoderConfigurationRecord?
+        if videoPar.pointee.codec_id == AV_CODEC_ID_HEVC,
+           let dovi = SampleBufferFactory.doviConfiguration(codecpar: videoPar),
+           dovi.dv_profile == 7,
+           let lengthSize = filterNALLengthSize {
+            videoNALLengthSize = lengthSize
+            switch dolbyVisionProfile7Mode {
+            case .convert:
+                profile7Converter = DolbyVisionProfileConverter(record: dovi)
+                dolbyVisionOverride = profile7Converter?.synthesizedRecord
+            case .stripToHDR10:
+                stripStatsLock.lock()
+                stripStats = DolbyVisionRewriteStats(mode: .stripToHDR10)
+                stripStatsLock.unlock()
+            }
+        } else if videoPar.pointee.codec_id == AV_CODEC_ID_HEVC,
+                  let dovi = SampleBufferFactory.doviConfiguration(codecpar: videoPar),
+                  DolbyVisionRPURepeater.applies(toProfile: dovi.dv_profile),
+                  dovi.rpu_present_flag != 0,
+                  let lengthSize = filterNALLengthSize {
+            videoNALLengthSize = lengthSize
+            rpuRepeater = DolbyVisionRPURepeater()
+        }
+        return dolbyVisionOverride
+    }
+
+    private func configureVideoRandomAccess(
+        videoPar: UnsafeMutablePointer<AVCodecParameters>,
+        guessedRate: AVRational
+    ) {
+        videoTimeline = VideoFrameTimeline(
+            frameRateNum: guessedRate.num,
+            frameRateDen: guessedRate.den
+        )
+        // The only length-prefixed NAL codecs on the compressed path.
+        switch videoPar.pointee.codec_id {
+        case AV_CODEC_ID_H264: videoRandomAccessCodec = .h264
+        case AV_CODEC_ID_HEVC: videoRandomAccessCodec = .hevc
+        default: videoRandomAccessCodec = nil
+        }
+        if let codec = videoRandomAccessCodec {
+            // Converted start-code payloads carry four-byte lengths.
+            videoPayloadNALLengthSize = videoUsesStartCodes
+                ? Int(AnnexBStream.nalUnitHeaderLength)
+                : videoPar.pointee.extradata.flatMap { extradata in
+                    videoPar.pointee.extradata_size > 0
+                        ? VideoRandomAccessPoint.nalLengthSize(
+                            configurationRecord: Data(
+                                bytes: extradata,
+                                count: Int(videoPar.pointee.extradata_size)
+                            ),
+                            codec: codec
+                        )
+                        : nil
+                }
+        }
+    }
+
+    /// Describes the audio and subtitle streams, collects font attachments,
+    /// and discards every stream that is not read.
+    private func configureOtherStreams(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>,
+        bestVideo: Int32,
+        programStreams: Set<Int32>
+    ) {
         for index in 0..<Int(ctx.pointee.nb_streams) {
             guard let stream = ctx.pointee.streams[index], let par = stream.pointee.codecpar else { continue }
             if !programStreams.isEmpty, !programStreams.contains(Int32(index)) {
@@ -730,76 +813,9 @@ nonisolated final class FFmpegDemuxer {
             }
             switch par.pointee.codec_type {
             case AVMEDIA_TYPE_AUDIO:
-                // Passthrough codecs stay compressed; the rest decode to
-                // LPCM. Only codecs FFmpeg cannot decode are dropped.
-                var description: CMFormatDescription?
-                var fallbackDuration: Double = 0
-                if Self.audioDisabledForDiagnostics {
-                    stream.pointee.discard = AVDISCARD_ALL
-                    continue
-                }
-                let requiresLocalPCM = AudioDecodePolicy.requiresLocalPCM(
-                    codecID: par.pointee.codec_id,
-                    softwareVideoDecoded: outputsDecodedVideo,
-                    hasCodecConfiguration: par.pointee.extradata != nil && par.pointee.extradata_size > 0
-                )
-                if !requiresLocalPCM,
-                   let (passthrough, framesPerPacket) = SampleBufferFactory.audioFormatDescription(codecpar: par) {
-                    description = passthrough
-                    fallbackDuration = Double(framesPerPacket) / Double(max(par.pointee.sample_rate, 1))
-                    passthroughTimelines[Int32(index)] = PassthroughAudioTimeline(
-                        sampleRate: par.pointee.sample_rate,
-                        framesPerPacket: framesPerPacket
-                    )
-                } else if let decoder = AudioDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
-                    description = decoder.formatDescription
-                    audioDecoders[Int32(index)] = decoder
-                }
-                guard let description else {
-                    stream.pointee.discard = AVDISCARD_ALL
-                    continue
-                }
-                audioTimeBases[Int32(index)] = stream.pointee.time_base
-                audioStreams.append(DemuxedStream(
-                    streamIndex: Int32(index),
-                    codecName: String(cString: avcodec_get_name(par.pointee.codec_id)),
-                    language: Self.metadata(stream, key: "language"),
-                    title: Self.metadata(stream, key: "title"),
-                    channels: Int(par.pointee.ch_layout.nb_channels),
-                    // AV_PROFILE_EAC3_DDP_ATMOS and AV_PROFILE_TRUEHD_ATMOS
-                    // share the value 30.
-                    isAtmos: (par.pointee.codec_id == AV_CODEC_ID_EAC3 || par.pointee.codec_id == AV_CODEC_ID_TRUEHD)
-                        && par.pointee.profile == 30,
-                    formatDescription: description,
-                    fallbackPacketDuration: fallbackDuration,
-                    videoReorderDepth: 0
-                ))
+                configureAudioStream(stream, par: par, index: index)
             case AVMEDIA_TYPE_SUBTITLE:
-                // List every subtitle stream, decodable or not, so per-type
-                // ordinals match the host's stream list. Unselected bitmap
-                // streams stay discarded; text streams are always read.
-                stream.pointee.discard = AVDISCARD_ALL
-                if let decoder = SubtitleDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
-                    subtitleDecoders[Int32(index)] = decoder
-                    if Self.isTextSubtitle(par.pointee.codec_id) {
-                        textSubtitleStreamIndices.insert(Int32(index))
-                        stream.pointee.discard = AVDISCARD_DEFAULT
-                    }
-                }
-                if let header = Self.styledSubtitleHeader(par) {
-                    styledSubtitleHeaders[Int32(index)] = header
-                }
-                subtitleStreams.append(DemuxedStream(
-                    streamIndex: Int32(index),
-                    codecName: String(cString: avcodec_get_name(par.pointee.codec_id)),
-                    language: Self.metadata(stream, key: "language"),
-                    title: Self.metadata(stream, key: "title"),
-                    channels: 0,
-                    isAtmos: false,
-                    formatDescription: nil,
-                    fallbackPacketDuration: 0,
-                    videoReorderDepth: 0
-                ))
+                configureSubtitleStream(stream, par: par, index: index)
             case AVMEDIA_TYPE_VIDEO:
                 if Int32(index) != bestVideo {
                     stream.pointee.discard = AVDISCARD_ALL
@@ -815,12 +831,89 @@ nonisolated final class FFmpegDemuxer {
                 stream.pointee.discard = AVDISCARD_ALL
             }
         }
+    }
 
-        guard let packet = av_packet_alloc() else {
-            throw DemuxError.openFailed("out of memory")
+    private func configureAudioStream(
+        _ stream: UnsafeMutablePointer<AVStream>,
+        par: UnsafeMutablePointer<AVCodecParameters>,
+        index: Int
+    ) {
+        // Passthrough codecs stay compressed; the rest decode to
+        // LPCM. Only codecs FFmpeg cannot decode are dropped.
+        var description: CMFormatDescription?
+        var fallbackDuration: Double = 0
+        if Self.audioDisabledForDiagnostics {
+            stream.pointee.discard = AVDISCARD_ALL
+            return
         }
-        self.packet = packet
-        completedOpen = true
+        let requiresLocalPCM = AudioDecodePolicy.requiresLocalPCM(
+            codecID: par.pointee.codec_id,
+            softwareVideoDecoded: outputsDecodedVideo,
+            hasCodecConfiguration: par.pointee.extradata != nil && par.pointee.extradata_size > 0
+        )
+        if !requiresLocalPCM,
+           let (passthrough, framesPerPacket) = SampleBufferFactory.audioFormatDescription(codecpar: par) {
+            description = passthrough
+            fallbackDuration = Double(framesPerPacket) / Double(max(par.pointee.sample_rate, 1))
+            passthroughTimelines[Int32(index)] = PassthroughAudioTimeline(
+                sampleRate: par.pointee.sample_rate,
+                framesPerPacket: framesPerPacket
+            )
+        } else if let decoder = AudioDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
+            description = decoder.formatDescription
+            audioDecoders[Int32(index)] = decoder
+        }
+        guard let description else {
+            stream.pointee.discard = AVDISCARD_ALL
+            return
+        }
+        audioTimeBases[Int32(index)] = stream.pointee.time_base
+        audioStreams.append(DemuxedStream(
+            streamIndex: Int32(index),
+            codecName: String(cString: avcodec_get_name(par.pointee.codec_id)),
+            language: Self.metadata(stream, key: "language"),
+            title: Self.metadata(stream, key: "title"),
+            channels: Int(par.pointee.ch_layout.nb_channels),
+            // AV_PROFILE_EAC3_DDP_ATMOS and AV_PROFILE_TRUEHD_ATMOS
+            // share the value 30.
+            isAtmos: (par.pointee.codec_id == AV_CODEC_ID_EAC3 || par.pointee.codec_id == AV_CODEC_ID_TRUEHD)
+                && par.pointee.profile == 30,
+            formatDescription: description,
+            fallbackPacketDuration: fallbackDuration,
+            videoReorderDepth: 0
+        ))
+    }
+
+    private func configureSubtitleStream(
+        _ stream: UnsafeMutablePointer<AVStream>,
+        par: UnsafeMutablePointer<AVCodecParameters>,
+        index: Int
+    ) {
+        // List every subtitle stream, decodable or not, so per-type
+        // ordinals match the host's stream list. Unselected bitmap
+        // streams stay discarded; text streams are always read.
+        stream.pointee.discard = AVDISCARD_ALL
+        if let decoder = SubtitleDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
+            subtitleDecoders[Int32(index)] = decoder
+            if Self.isTextSubtitle(par.pointee.codec_id) {
+                textSubtitleStreamIndices.insert(Int32(index))
+                stream.pointee.discard = AVDISCARD_DEFAULT
+            }
+        }
+        if let header = Self.styledSubtitleHeader(par) {
+            styledSubtitleHeaders[Int32(index)] = header
+        }
+        subtitleStreams.append(DemuxedStream(
+            streamIndex: Int32(index),
+            codecName: String(cString: avcodec_get_name(par.pointee.codec_id)),
+            language: Self.metadata(stream, key: "language"),
+            title: Self.metadata(stream, key: "title"),
+            channels: 0,
+            isAtmos: false,
+            formatDescription: nil,
+            fallbackPacketDuration: 0,
+            videoReorderDepth: 0
+        ))
     }
 
     /// Demuxes only the chosen audio stream; libavformat discards the rest.
