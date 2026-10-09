@@ -1624,6 +1624,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
+    // MARK: - Fault injection
+
     #if DEBUG
     /// Debug fault injection: withholds audio from AVFoundation while demux
     /// and video continue, isolating audio starvation.
@@ -1685,6 +1687,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         replaceAudioRenderer(audioRenderer, for: .rendererFailed)
     }
     #endif
+
+    // MARK: - Video renderer recovery
 
     private func recoverVideoRendererIfRequired(_ renderer: AVSampleBufferVideoRenderer) {
         // A suspended picture is flushed on resume anyway.
@@ -1820,6 +1824,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         guard stamp.isValid, stamp.seconds.isFinite else { return nil }
         return Int((stamp.seconds * 1_000).rounded())
     }
+
+    // MARK: - Clock observation
 
     private func observeTime(_ time: CMTime) {
         // Soak diagnostic into `mainTick`; costs one Bool read when off.
@@ -2008,6 +2014,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
     }
 
+    // MARK: - Stall recovery
+
     /// Pauses the clock, polls until the cushion is rebuilt, then restarts.
     /// Needs its own loop: the periodic observer stops at rate 0.
     private func beginStallRecovery(cause: PlaybackStarvation) {
@@ -2189,6 +2197,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         ))
     }
 
+    // MARK: - Subtitle presentation
+
     private func refreshSubtitles(at seconds: Double) {
         let active = subtitleStore.active(at: seconds)
         // libass draws the picture on its own clock; the parsed cues only
@@ -2278,6 +2288,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
         }
     }
+
+    // MARK: - Stream publication
 
     private func publishStreams(
         duration: Double,
