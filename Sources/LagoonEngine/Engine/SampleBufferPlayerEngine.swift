@@ -2316,12 +2316,55 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         defer {
             PlaybackLifecycleDiagnostics.demuxEnded(lifecycleID)
         }
-        // Whether a cache ended up in front: this, not the delivery,
-        // decides the demux cushion.
-        var deliveryIsCached = cacheSession != nil
         // libavformat's file protocol takes a path; it does not
         // percent-decode a URL.
         let openTarget = url.isFileURL ? url.path(percentEncoded: false) : url.absoluteString
+        guard let deliveryIsCached = openDemuxer(
+            openTarget: openTarget,
+            cacheSession: cacheSession,
+            disc: disc,
+            recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
+            authorization: authorization
+        ), reopenRefusedAV1InSoftware(
+            openTarget: openTarget,
+            cacheSession: deliveryIsCached ? cacheSession : nil,
+            disc: disc,
+            recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
+            authorization: authorization
+        ) else { return }
+        makeSoftwareDecodeStageIfNeeded()
+        guard makeVideoToolboxDecoderIfNeeded(
+            recommendedPixelBufferAttributes: recommendedPixelBufferAttributes
+        ) else { return }
+        publishOpenedStreams()
+
+        var progress = DemuxLoopProgress()
+        while !shared.withLock({ $0.cancelled }) {
+            applyTrackChanges(&progress)
+            let seek = applyPendingSeek(&progress)
+            if seek == .stop { break }
+            if seek == .handled { continue }
+            if videoQueue.isFinished {
+                // EOF reached; idle until a seek arrives or we shut down.
+                Thread.sleep(forTimeInterval: 0.1)
+                continue
+            }
+            readOrWait(deliveryIsCached: deliveryIsCached)
+        }
+        closeDemux()
+    }
+
+    /// Opens the demuxer, falling back to an uncached open when the cache
+    /// cannot. Returns whether a cache ended up in front: this, not the
+    /// delivery, decides the demux cushion. Nil after reporting a failure.
+    nonisolated private func openDemuxer(
+        openTarget: String,
+        cacheSession: PlaybackCacheSession?,
+        disc: DiscPlaybackRequest?,
+        recommendedPixelBufferAttributes: CVPixelBufferAttributes,
+        authorization: MediaRequestAuthorization?
+    ) -> Bool? {
+        var deliveryIsCached = cacheSession != nil
         do {
             do {
                 try demuxer.open(
@@ -2349,103 +2392,123 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 )
             }
         } catch {
-            let demuxError = error as? DemuxError
-            let failure = PlaybackEngineFailure(
-                cause: demuxError?.cause ?? .delivery,
-                message: demuxError?.errorDescription ?? "The stream could not be opened.",
-                detail: demuxError?.diagnosticDetail ?? PlaybackFailureDetail(stage: .open, error: error)
-            )
-            Task { @MainActor in self.onError?(failure) }
-            return
+            reportOpenFailure(error)
+            return nil
         }
         shared.withLock { $0.deliveryIsCached = deliveryIsCached }
-        // A refused VideoToolbox AV1 session reopens once on libdav1d rather
-        // than failing the title. Never for HEVC, which has no fallback and
-        // must fail loudly.
-        if demuxer.videoStream?.codecName == "av1",
-           !demuxer.outputsDecodedVideo,
-           let description = demuxer.videoStream?.formatDescription,
-           !VideoToolboxDecoder.canDecode(description) {
-            demuxer.close()
-            demuxer.disableVideoToolboxAV1()
-            do {
-                try demuxer.open(
-                    url: openTarget,
-                    cacheSession: deliveryIsCached ? cacheSession : nil,
-                    disc: disc,
-                    recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
-                    authorization: authorization
-                )
-            } catch {
-                let demuxError = error as? DemuxError
-                let failure = PlaybackEngineFailure(
-                    cause: demuxError?.cause ?? .delivery,
-                    message: demuxError?.errorDescription
-                        ?? "The stream could not be opened.",
-                    detail: demuxError?.diagnosticDetail ?? PlaybackFailureDetail(stage: .open, error: error)
-                )
-                Task { @MainActor in self.onError?(failure) }
-                return
-            }
-        }
-        // The demuxer builds the software decoder but a separate stage
-        // drives it, so reading and decoding overlap; 4K AV1 needs that.
-        if demuxer.outputsDecodedVideo, let decoder = demuxer.takeSoftwareVideoDecoder() {
-            softwareDecodeStage = SoftwareVideoDecodeStage(
-                decoder: decoder,
-                outputHandler: { [weak self] buffer in
-                    self?.acceptSoftwareDecodedVideo(buffer)
-                },
-                errorHandler: { [weak self] error in
-                    self?.failVideoDecode(error)
-                },
-                packetCompletionHandler: { [weak self] in
-                    // Waiters on the in-flight count must re-read it.
-                    self?.videoQueue.signalWaiters()
-                }
+        return deliveryIsCached
+    }
+
+    /// A refused VideoToolbox AV1 session reopens once on libdav1d rather
+    /// than failing the title. Never for HEVC, which has no fallback and
+    /// must fail loudly. False after reporting a failure.
+    nonisolated private func reopenRefusedAV1InSoftware(
+        openTarget: String,
+        cacheSession: PlaybackCacheSession?,
+        disc: DiscPlaybackRequest?,
+        recommendedPixelBufferAttributes: CVPixelBufferAttributes,
+        authorization: MediaRequestAuthorization?
+    ) -> Bool {
+        guard demuxer.videoStream?.codecName == "av1",
+              !demuxer.outputsDecodedVideo,
+              let description = demuxer.videoStream?.formatDescription,
+              !VideoToolboxDecoder.canDecode(description) else { return true }
+        demuxer.close()
+        demuxer.disableVideoToolboxAV1()
+        do {
+            try demuxer.open(
+                url: openTarget,
+                cacheSession: cacheSession,
+                disc: disc,
+                recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
+                authorization: authorization
             )
+        } catch {
+            reportOpenFailure(error)
+            return false
         }
-        if let codecName = demuxer.videoStream?.codecName,
-           codecName == "hevc" || codecName == "av1",
-           !demuxer.outputsDecodedVideo,
-           let description = demuxer.videoStream?.formatDescription {
-            do {
-                // AV1 may have only Apple's software decoder here; demand
-                // hardware only where the silicon has it.
-                let requiresHardware = codecName != "av1"
-                    || PlaybackCapabilities.current.hardwareAV1
-                let reorderDepth = demuxer.videoStream?.videoReorderDepth ?? 0
-                let makeDecoder = {
-                    try VideoToolboxDecoder(
-                        formatDescription: description,
-                        recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
-                        reportedReorderDepth: reorderDepth,
-                        requiresHardware: requiresHardware,
-                        outputHandler: { [weak self] buffer in
-                            self?.acceptDecodedVideo(buffer)
-                        },
-                        errorHandler: { [weak self] error in
-                            self?.failVideoDecode(error)
-                        }
-                    )
-                }
-                do {
-                    videoDecoder = try makeDecoder()
-                } catch let failure as VideoToolboxDecoder.DecoderError
-                    where VideoToolboxDecoder.isSessionFault(failure.status) {
-                    // The decoder was busy or being torn down, as right after
-                    // another title's engine let go of it: one more try
-                    // before the stream is judged.
-                    Thread.sleep(forTimeInterval: 0.25)
-                    videoDecoder = try makeDecoder()
-                }
-            } catch {
-                // No demux loop yet to run a rebuild's seek, so report it.
-                failVideoDecode(error, allowSessionRecovery: false)
-                demuxer.close()
-                return
+        return true
+    }
+
+    nonisolated private func reportOpenFailure(_ error: Error) {
+        let demuxError = error as? DemuxError
+        let failure = PlaybackEngineFailure(
+            cause: demuxError?.cause ?? .delivery,
+            message: demuxError?.errorDescription ?? "The stream could not be opened.",
+            detail: demuxError?.diagnosticDetail ?? PlaybackFailureDetail(stage: .open, error: error)
+        )
+        Task { @MainActor in self.onError?(failure) }
+    }
+
+    /// The demuxer builds the software decoder but a separate stage
+    /// drives it, so reading and decoding overlap; 4K AV1 needs that.
+    nonisolated private func makeSoftwareDecodeStageIfNeeded() {
+        guard demuxer.outputsDecodedVideo, let decoder = demuxer.takeSoftwareVideoDecoder() else { return }
+        softwareDecodeStage = SoftwareVideoDecodeStage(
+            decoder: decoder,
+            outputHandler: { [weak self] buffer in
+                self?.acceptSoftwareDecodedVideo(buffer)
+            },
+            errorHandler: { [weak self] error in
+                self?.failVideoDecode(error)
+            },
+            packetCompletionHandler: { [weak self] in
+                // Waiters on the in-flight count must re-read it.
+                self?.videoQueue.signalWaiters()
             }
+        )
+    }
+
+    /// False after reporting a failure and closing the demuxer.
+    nonisolated private func makeVideoToolboxDecoderIfNeeded(
+        recommendedPixelBufferAttributes: CVPixelBufferAttributes
+    ) -> Bool {
+        guard let codecName = demuxer.videoStream?.codecName,
+              codecName == "hevc" || codecName == "av1",
+              !demuxer.outputsDecodedVideo,
+              let description = demuxer.videoStream?.formatDescription else { return true }
+        do {
+            // AV1 may have only Apple's software decoder here; demand
+            // hardware only where the silicon has it.
+            let requiresHardware = codecName != "av1"
+                || PlaybackCapabilities.current.hardwareAV1
+            let reorderDepth = demuxer.videoStream?.videoReorderDepth ?? 0
+            let makeDecoder = {
+                try VideoToolboxDecoder(
+                    formatDescription: description,
+                    recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
+                    reportedReorderDepth: reorderDepth,
+                    requiresHardware: requiresHardware,
+                    outputHandler: { [weak self] buffer in
+                        self?.acceptDecodedVideo(buffer)
+                    },
+                    errorHandler: { [weak self] error in
+                        self?.failVideoDecode(error)
+                    }
+                )
+            }
+            do {
+                videoDecoder = try makeDecoder()
+            } catch let failure as VideoToolboxDecoder.DecoderError
+                where VideoToolboxDecoder.isSessionFault(failure.status) {
+                // The decoder was busy or being torn down, as right after
+                // another title's engine let go of it: one more try
+                // before the stream is judged.
+                Thread.sleep(forTimeInterval: 0.25)
+                videoDecoder = try makeDecoder()
+            }
+        } catch {
+            // No demux loop yet to run a rebuild's seek, so report it.
+            failVideoDecode(error, allowSessionRecovery: false)
+            demuxer.close()
+            return false
         }
+        return true
+    }
+
+    /// Applies the initial track selections and hands the opened streams
+    /// to the main actor.
+    nonisolated private func publishOpenedStreams() {
         // Ordinals are 1-based positions in the demuxed audio list. One
         // lock acquisition: nesting withLock deadlocks.
         let initialOrdinal = shared.withLock { state -> Int in
@@ -2456,8 +2519,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
         applyAudioSelection(ordinal: initialOrdinal)
 
-        let streams = demuxer.audioStreams
-        let audioMetadata = shared.withLock { $0.audioTrackMetadata }
+        let tracks = audioTracks(selectedOrdinal: initialOrdinal)
         let demuxedDuration = demuxer.durationSeconds
         let size = videoDimensions()
         // Without a known rate there is no meaningful mode to request.
@@ -2467,18 +2529,6 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         } else {
             nil
         }
-        let tracks = Self.disambiguated(streams.enumerated().map { offset, stream in
-            let metadata = audioMetadata.indices.contains(offset) ? audioMetadata[offset] : nil
-            return PlayerTrack(
-                engineID: offset + 1,
-                kind: .audio,
-                displayName: Self.trackName(for: stream),
-                isSelected: offset + 1 == initialOrdinal,
-                languageTag: metadata?.languageTag ?? stream.language,
-                isForced: metadata?.isForced ?? false,
-                isHearingImpaired: metadata?.isHearingImpaired ?? false
-            )
-        })
 
         // Subtitle ordinals: embedded streams in demux order, then external
         // tracks.
@@ -2507,195 +2557,243 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         styledSubtitleQueue.sync {
             replaceStyledSubtitleRenderer(videoSize: size, generation: generation)
         }
-        let subtitleTracks = embeddedSubtitles.enumerated().map { offset, stream in
-            let metadata = subtitleMetadata.indices.contains(offset) ? subtitleMetadata[offset] : nil
-            return PlayerTrack(
-                engineID: offset + 1,
-                kind: .subtitle,
-                displayName: Self.trackName(for: stream),
-                isSelected: offset + 1 == subtitleOrdinal,
-                languageTag: metadata?.languageTag ?? stream.language,
-                isForced: metadata?.isForced ?? false,
-                isHearingImpaired: metadata?.isHearingImpaired ?? false
-            )
-        } + externals.enumerated().map { offset, track in
-            PlayerTrack(
-                engineID: embeddedSubtitles.count + offset + 1,
-                kind: .subtitle,
-                displayName: Self.externalTrackName(for: track),
-                isSelected: embeddedSubtitles.count + offset + 1 == subtitleOrdinal,
-                languageTag: track.language,
-                isForced: track.isForced,
-                isHearingImpaired: track.isHearingImpaired,
-                source: track.isDownloaded ? .downloaded : .external
-            )
-        }
+        let subtitleTracks = Self.subtitleTracks(
+            embedded: embeddedSubtitles,
+            metadata: subtitleMetadata,
+            externals: externals,
+            selectedOrdinal: subtitleOrdinal
+        )
         Task { @MainActor in
             self.publishStreams(
                 duration: demuxedDuration,
                 videoSize: size,
                 displayMatch: displayMatch,
-                videoTiming: demuxer.videoGridDescription.map {
-                    if demuxer.outputsDecodedVideo {
-                        "grid \($0) · libavcodec \(demuxer.videoStream?.codecName ?? "?") SW"
-                    } else if let videoDecoder {
-                        "grid \($0) · VideoToolbox \(videoDecoder.requiresHardware ? "HW" : "system")"
-                            + " · reorder \(videoDecoder.reorderDepth)"
-                    } else {
-                        "grid \($0)"
-                    }
-                },
+                videoTiming: self.videoTimingDescription(),
                 tracks: tracks,
                 subtitles: subtitleTracks,
                 embeddedSubtitleCount: embeddedSubtitles.count,
                 activeSubtitleOrdinal: subtitleOrdinal
             )
         }
+    }
 
-        // Last applied subtitle stream, compared each pass so main-actor
-        // switches land without a queue hop.
+    nonisolated private func audioTracks(selectedOrdinal: Int) -> [PlayerTrack] {
+        let streams = demuxer.audioStreams
+        let audioMetadata = shared.withLock { $0.audioTrackMetadata }
+        return Self.disambiguated(streams.enumerated().map { offset, stream in
+            let metadata = audioMetadata.indices.contains(offset) ? audioMetadata[offset] : nil
+            return PlayerTrack(
+                engineID: offset + 1,
+                kind: .audio,
+                displayName: Self.trackName(for: stream),
+                isSelected: offset + 1 == selectedOrdinal,
+                languageTag: metadata?.languageTag ?? stream.language,
+                isForced: metadata?.isForced ?? false,
+                isHearingImpaired: metadata?.isHearingImpaired ?? false
+            )
+        })
+    }
+
+    nonisolated private static func subtitleTracks(
+        embedded: [DemuxedStream],
+        metadata: [PlayerTrackMetadata],
+        externals: [ExternalSubtitleTrack],
+        selectedOrdinal: Int
+    ) -> [PlayerTrack] {
+        embedded.enumerated().map { offset, stream in
+            let metadata = metadata.indices.contains(offset) ? metadata[offset] : nil
+            return PlayerTrack(
+                engineID: offset + 1,
+                kind: .subtitle,
+                displayName: trackName(for: stream),
+                isSelected: offset + 1 == selectedOrdinal,
+                languageTag: metadata?.languageTag ?? stream.language,
+                isForced: metadata?.isForced ?? false,
+                isHearingImpaired: metadata?.isHearingImpaired ?? false
+            )
+        } + externals.enumerated().map { offset, track in
+            PlayerTrack(
+                engineID: embedded.count + offset + 1,
+                kind: .subtitle,
+                displayName: externalTrackName(for: track),
+                isSelected: embedded.count + offset + 1 == selectedOrdinal,
+                languageTag: track.language,
+                isForced: track.isForced,
+                isHearingImpaired: track.isHearingImpaired,
+                source: track.isDownloaded ? .downloaded : .external
+            )
+        }
+    }
+
+    nonisolated private func videoTimingDescription() -> String? {
+        demuxer.videoGridDescription.map {
+            if demuxer.outputsDecodedVideo {
+                "grid \($0) · libavcodec \(demuxer.videoStream?.codecName ?? "?") SW"
+            } else if let videoDecoder {
+                "grid \($0) · VideoToolbox \(videoDecoder.requiresHardware ? "HW" : "system")"
+                    + " · reorder \(videoDecoder.reorderDepth)"
+            } else {
+                "grid \($0)"
+            }
+        }
+    }
+
+    /// What the loop last applied, compared each pass so main-actor
+    /// switches land without a queue hop.
+    nonisolated private struct DemuxLoopProgress {
         var appliedSubtitleStreamIndex: Int32 = -1
         // Same for audio-only mode; the resume seek restores video.
         var appliedVideoOutputSuspended = false
         // Opening at zero needs no seek. Every later request, even to zero,
         // must reposition so the first sample after a flush is a keyframe.
         var hasPrimedPlayback = false
+    }
 
-        while !shared.withLock({ $0.cancelled }) {
-            let desiredSubtitle = shared.withLock { $0.selectedSubtitleStreamIndex }
-            if desiredSubtitle != appliedSubtitleStreamIndex {
-                demuxer.selectSubtitle(streamIndex: desiredSubtitle >= 0 ? desiredSubtitle : nil)
-                appliedSubtitleStreamIndex = desiredSubtitle
-            }
-            let desiredVideoSuspended = shared.withLock { $0.videoOutputSuspended }
-            if desiredVideoSuspended != appliedVideoOutputSuspended {
-                demuxer.setVideoDiscarded(desiredVideoSuspended)
-                if desiredVideoSuspended {
-                    // Leave a VideoToolbox session alone: creating one in the
-                    // background can be refused.
-                    softwareDecodeStage?.reset()
-                    pumpQueue.sync { self.flushVideoPath() }
-                }
-                appliedVideoOutputSuspended = desiredVideoSuspended
-            }
-            if let target = shared.withLock({ state -> Double? in
-                defer {
-                    if let target = state.pendingSeekSeconds {
-                        // Everything buffered so far is being flushed.
-                        state.videoBufferedTo = target
-                        state.mediaEndSeconds = target
-                        state.pendingSeekSeconds = nil
-                    }
-                }
-                return state.pendingSeekSeconds
-            }) {
-                if hasPrimedPlayback || target > 0 {
-                    var seekError: Error?
-                    do { try demuxer.seek(toSeconds: target) } catch { seekError = error }
-                    if let first = seekError as? DemuxError, first.cause == .delivery {
-                        // The transport has already ridden out a network fault;
-                        // one more try covers a server that refused the one
-                        // request. A newer seek replaces this one instead.
-                        if NetworkRetryPolicy.pause(0.5, unless: {
-                            shared.withLock { $0.cancelled || $0.pendingSeekSeconds != nil }
-                        }) {
-                            do {
-                                try demuxer.seek(toSeconds: target)
-                                seekError = nil
-                            } catch {
-                                seekError = error
-                            }
-                        } else if shared.withLock({ $0.cancelled }) {
-                            break
-                        } else {
-                            continue
-                        }
-                    }
-                    if let error = seekError {
-                        let demuxError = error as? DemuxError
-                        let failure = PlaybackEngineFailure(
-                            cause: demuxError?.cause ?? .delivery,
-                            message: demuxError?.errorDescription
-                                ?? "The stream could not seek to that position.",
-                            detail: demuxError?.diagnosticDetail ?? PlaybackFailureDetail(stage: .seek, error: error)
-                        )
-                        shared.withLock { $0.cancelled = true }
-                        videoQueue.markFinished()
-                        audioQueue.markFinished()
-                        Task { @MainActor in self.onError?(failure) }
-                        break
-                    }
-                }
-                guard prepareVideoDecoderForSeek() else { break }
-                // First and synchronously: a frame still in libavcodec is
-                // pre-seek and must not land in the emptied queues.
+    nonisolated private enum DemuxSeekOutcome {
+        case noneRequested
+        /// Seeked and primed, or left to a newer request.
+        case handled
+        /// Cancelled, or the seek failed and was reported.
+        case stop
+    }
+
+    nonisolated private func applyTrackChanges(_ progress: inout DemuxLoopProgress) {
+        let desiredSubtitle = shared.withLock { $0.selectedSubtitleStreamIndex }
+        if desiredSubtitle != progress.appliedSubtitleStreamIndex {
+            demuxer.selectSubtitle(streamIndex: desiredSubtitle >= 0 ? desiredSubtitle : nil)
+            progress.appliedSubtitleStreamIndex = desiredSubtitle
+        }
+        let desiredVideoSuspended = shared.withLock { $0.videoOutputSuspended }
+        if desiredVideoSuspended != progress.appliedVideoOutputSuspended {
+            demuxer.setVideoDiscarded(desiredVideoSuspended)
+            if desiredVideoSuspended {
+                // Leave a VideoToolbox session alone: creating one in the
+                // background can be refused.
                 softwareDecodeStage?.reset()
-                // Flush again: anything enqueued since the request-time
-                // flush is pre-seek (see the helper).
-                pumpQueue.sync { self.flushRenderersAndQueues() }
-                applyAudioSelection(ordinal: shared.withLock { $0.selectedAudioOrdinal })
-                hasPrimedPlayback = true
-                primeAndStart(at: target)
-                continue
+                pumpQueue.sync { self.flushVideoPath() }
             }
+            progress.appliedVideoOutputSuspended = desiredVideoSuspended
+        }
+    }
 
-            if videoQueue.isFinished {
-                // EOF reached; idle until a seek arrives or we shut down.
-                Thread.sleep(forTimeInterval: 0.1)
-                continue
+    nonisolated private func applyPendingSeek(_ progress: inout DemuxLoopProgress) -> DemuxSeekOutcome {
+        guard let target = shared.withLock({ state -> Double? in
+            defer {
+                if let target = state.pendingSeekSeconds {
+                    // Everything buffered so far is being flushed.
+                    state.videoBufferedTo = target
+                    state.mediaEndSeconds = target
+                    state.pendingSeekSeconds = nil
+                }
             }
-            // Streams share one demux cursor, so blocking on full video also
-            // starves audio; the policy handles that. Parked video goes
-            // first: it is older than the next read.
-            drainVideoIntake()
-            let decodedFrameBytes = softwareDecodeStage?.decodedFrameBytes ?? 0
-            let videoIsDecoded = videoDecoder != nil || demuxer.outputsDecodedVideo
-            let videoIsSoftwareDecoded = demuxer.outputsDecodedVideo
-            let videoHardLimit = DemuxBackpressurePolicy.videoHardLimit(
-                videoIsDecoded: videoIsDecoded,
-                videoIsSoftwareDecoded: videoIsSoftwareDecoded,
-                decodedFrameBytes: decodedFrameBytes
-            )
-            let videoBacklog = recordVideoBacklog(hardLimit: videoHardLimit)
-            let (playbackRate, endOfFilePending) = shared.withLock {
-                ($0.playbackRate, $0.endOfFilePendingIntake)
-            }
-            if endOfFilePending {
-                // Nothing left to read; finish once the intake has drained.
-                if videoIntake.isEmpty {
-                    finishVideoInput()
-                } else {
-                    videoQueue.waitUntilBelow(videoHardLimit, timeout: Self.demuxWaitTimeout) {
-                        self.softwareDecodeStage?.pendingCount ?? 0
+            return state.pendingSeekSeconds
+        }) else { return .noneRequested }
+        if progress.hasPrimedPlayback || target > 0 {
+            var seekError: Error?
+            do { try demuxer.seek(toSeconds: target) } catch { seekError = error }
+            if let first = seekError as? DemuxError, first.cause == .delivery {
+                // The transport has already ridden out a network fault;
+                // one more try covers a server that refused the one
+                // request. A newer seek replaces this one instead.
+                if NetworkRetryPolicy.pause(0.5, unless: {
+                    shared.withLock { $0.cancelled || $0.pendingSeekSeconds != nil }
+                }) {
+                    do {
+                        try demuxer.seek(toSeconds: target)
+                        seekError = nil
+                    } catch {
+                        seekError = error
                     }
+                } else if shared.withLock({ $0.cancelled }) {
+                    return .stop
+                } else {
+                    return .handled
                 }
-                continue
             }
-            switch DemuxBackpressurePolicy.decision(
-                videoCount: videoBacklog,
-                audioCount: audioQueue.count,
-                audioBufferedSeconds: audioQueue.bufferedDuration,
-                videoFrameRate: demuxer.videoFrameRate,
-                videoIsDecoded: videoIsDecoded,
-                videoIsSoftwareDecoded: videoIsSoftwareDecoded,
-                hasAudio: !demuxer.audioStreams.isEmpty,
-                deliveryIsCached: deliveryIsCached,
-                playbackRate: playbackRate,
-                decodedFrameBytes: decodedFrameBytes,
-                videoIntakeCount: videoIntake.count,
-                videoIntakeBytes: videoIntake.byteCount
-            ) {
-            case .read:
-                performDemuxStep()
-            case .waitForVideo(let target):
-                // Bounded: with the clock stopped nothing dequeues.
-                videoQueue.waitUntilBelow(target, timeout: Self.demuxWaitTimeout) {
-                    self.softwareDecodeStage?.pendingCount ?? 0
-                }
-            case .waitForAudio(let target):
-                audioQueue.waitUntilBelow(target, timeout: Self.demuxWaitTimeout)
+            if let error = seekError {
+                let demuxError = error as? DemuxError
+                let failure = PlaybackEngineFailure(
+                    cause: demuxError?.cause ?? .delivery,
+                    message: demuxError?.errorDescription
+                        ?? "The stream could not seek to that position.",
+                    detail: demuxError?.diagnosticDetail ?? PlaybackFailureDetail(stage: .seek, error: error)
+                )
+                shared.withLock { $0.cancelled = true }
+                videoQueue.markFinished()
+                audioQueue.markFinished()
+                Task { @MainActor in self.onError?(failure) }
+                return .stop
             }
         }
+        guard prepareVideoDecoderForSeek() else { return .stop }
+        // First and synchronously: a frame still in libavcodec is
+        // pre-seek and must not land in the emptied queues.
+        softwareDecodeStage?.reset()
+        // Flush again: anything enqueued since the request-time
+        // flush is pre-seek (see the helper).
+        pumpQueue.sync { self.flushRenderersAndQueues() }
+        applyAudioSelection(ordinal: shared.withLock { $0.selectedAudioOrdinal })
+        progress.hasPrimedPlayback = true
+        primeAndStart(at: target)
+        return .handled
+    }
+
+    /// Reads one packet, or waits on whichever queue the policy says is full.
+    nonisolated private func readOrWait(deliveryIsCached: Bool) {
+        // Streams share one demux cursor, so blocking on full video also
+        // starves audio; the policy handles that. Parked video goes
+        // first: it is older than the next read.
+        drainVideoIntake()
+        let decodedFrameBytes = softwareDecodeStage?.decodedFrameBytes ?? 0
+        let videoIsDecoded = videoDecoder != nil || demuxer.outputsDecodedVideo
+        let videoIsSoftwareDecoded = demuxer.outputsDecodedVideo
+        let videoHardLimit = DemuxBackpressurePolicy.videoHardLimit(
+            videoIsDecoded: videoIsDecoded,
+            videoIsSoftwareDecoded: videoIsSoftwareDecoded,
+            decodedFrameBytes: decodedFrameBytes
+        )
+        let videoBacklog = recordVideoBacklog(hardLimit: videoHardLimit)
+        let (playbackRate, endOfFilePending) = shared.withLock {
+            ($0.playbackRate, $0.endOfFilePendingIntake)
+        }
+        if endOfFilePending {
+            // Nothing left to read; finish once the intake has drained.
+            if videoIntake.isEmpty {
+                finishVideoInput()
+            } else {
+                videoQueue.waitUntilBelow(videoHardLimit, timeout: Self.demuxWaitTimeout) {
+                    self.softwareDecodeStage?.pendingCount ?? 0
+                }
+            }
+            return
+        }
+        switch DemuxBackpressurePolicy.decision(
+            videoCount: videoBacklog,
+            audioCount: audioQueue.count,
+            audioBufferedSeconds: audioQueue.bufferedDuration,
+            videoFrameRate: demuxer.videoFrameRate,
+            videoIsDecoded: videoIsDecoded,
+            videoIsSoftwareDecoded: videoIsSoftwareDecoded,
+            hasAudio: !demuxer.audioStreams.isEmpty,
+            deliveryIsCached: deliveryIsCached,
+            playbackRate: playbackRate,
+            decodedFrameBytes: decodedFrameBytes,
+            videoIntakeCount: videoIntake.count,
+            videoIntakeBytes: videoIntake.byteCount
+        ) {
+        case .read:
+            performDemuxStep()
+        case .waitForVideo(let target):
+            // Bounded: with the clock stopped nothing dequeues.
+            videoQueue.waitUntilBelow(target, timeout: Self.demuxWaitTimeout) {
+                self.softwareDecodeStage?.pendingCount ?? 0
+            }
+        case .waitForAudio(let target):
+            audioQueue.waitUntilBelow(target, timeout: Self.demuxWaitTimeout)
+        }
+    }
+
+    nonisolated private func closeDemux() {
         os_signpost(
             .begin,
             log: PlaybackPerformance.log,
