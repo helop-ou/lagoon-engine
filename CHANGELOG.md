@@ -8,6 +8,20 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.2.1
+
+October 2026. No API change and no change to the libraries; upgrading is a
+version bump. Playback behaves as in 1.2.0: frame loss and CPU measured the
+same on an Apple TV 4K.
+
+### Changed
+
+- The demuxer's open and its read loop run as named steps, and the engine's
+  support types live in their own files. Nothing a host can reach moved.
+- Tests now cover stall and starvation recovery, the playback rate policy,
+  audio renderer replacement, bounded downloads, failure detail and track
+  naming, and external and ASS subtitle presentation.
+
 ## 1.2.0
 
 October 2026. Adds API; nothing is removed and no library changes, so
