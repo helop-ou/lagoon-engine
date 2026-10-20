@@ -48,11 +48,11 @@ The unit suite covers the engine's pure logic and runs on a booted simulator:
 
 ```sh
 xcodebuild test -scheme LagoonEngine -destination 'platform=tvOS Simulator,name=Apple TV 4K (3rd generation)'
+xcodebuild test -scheme LagoonEngine -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
 ```
 
 ## Commits
 
-- Work goes straight to `main`.
 - Subjects are conventional and lowercase imperative, with no scope
   parentheses: `feat: move the demux, decode, render and transport core`,
   `fix:`, `chore:`, `docs:`.
@@ -63,6 +63,43 @@ xcodebuild test -scheme LagoonEngine -destination 'platform=tvOS Simulator,name=
   documentation, where it can be found and kept current.
 - Keep structural moves separate from behaviour changes.
 
+## Pull requests
+
+Work reaches `main` through a pull request from a feature branch. The types
+are the commit types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`,
+`build`, `chore`, `ci`, `style` and `revert`.
+
+- **Branch:** `<type>/<kebab-case-words>`, such as `fix/subtitle-backlog`.
+- **Title:** written like a commit subject, `<type>: <lowercase start>`, at
+  most 72 characters, no full stop.
+- **Commits:** a conventional subject line and nothing else: no body, no
+  trailers.
+- **Description:** `Changes:` and then one `- ` line per change, nothing
+  more. Something the reviewer must act on is one more line.
+- **No Sentry issue ids or Jira keys** in any of them.
+
+`.github/workflows/conventions.yml` runs `scripts/check-pull-request.sh` on
+every pull request and again when its title or description is edited. The
+script reads the pull request from the environment, so it runs locally the
+same way (usage is at its top). `.github/CODEOWNERS` names the owner of every
+file, whose review GitHub requests on each pull request.
+
+## Continuous integration
+
+`.github/workflows/tests.yml` runs the unit suite on tvOS and iOS for every
+pull request, the same `xcodebuild test` as a local run. `main` accepts only
+pull requests whose conventions check and two test jobs passed, merged by
+rebase so history stays linear. Nothing runs on a schedule. CI reports after
+the push, so run the tests before pushing.
+
+- It uses GitHub's `xcode-27` runner image with Xcode 27.1. When the local
+  Xcode moves, move `DEVELOPER_DIR` in the workflow in the same change.
+- iOS runs on iPhone 17, as the image has no iPhone 17 Pro.
+- The image lacks the Metal toolchain the engine's shader needs, so each run
+  installs it first.
+- A failed run keeps its `.xcresult` and full log for 14 days, under the
+  run's artifacts.
+
 ## Releasing
 
 The package version is a git tag. A consumer cannot ask SwiftPM what it
@@ -70,14 +107,14 @@ resolved, so `EngineVersion.current` carries the same number for a host to
 report. The two move together:
 
 ```sh
-# 1. set EngineVersion.current and add a CHANGELOG.md entry; commit and push
-# 2. tag and release that commit
+# 1. set EngineVersion.current and add a CHANGELOG.md entry, in a pull request
+# 2. once it is merged, tag and release that commit
 scripts/publish-release.sh 1.2.0 --dry-run
 scripts/publish-release.sh 1.2.0
 ```
 
 The script refuses a release it cannot stand behind: a version or changelog
-mismatch, an unpushed commit, missing licence materials, a stale codec table,
+mismatch, a commit not yet on `main`, missing licence materials, a stale codec table,
 or a package that does not build and test. It attaches FFmpeg's and FriBidi's
 corresponding source to the release (`scripts/ffmpeg-source-bundle.sh`,
 `scripts/fribidi-source-bundle.sh`), which the LGPL asks for wherever the
