@@ -128,6 +128,12 @@ corresponding source to the release (`scripts/ffmpeg-source-bundle.sh`,
 `scripts/fribidi-source-bundle.sh`), which the LGPL asks for wherever the
 binaries are offered.
 
+Release in batches. Merged work waits on `main` without a version bump until
+a release gathers it. New features ship together in one minor version, never
+one release per feature. Only a fix a host needs now goes out on its own, as
+a patch. Before cutting a release, check what else is nearly done and could
+join it.
+
 Real semantic versioning: a breaking change to anything `public` is a major
 bump. Public means a host names the type or can reach it from one it does; a
 type nothing outside can reach is internal, and changing it is not breaking.
