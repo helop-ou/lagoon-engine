@@ -106,16 +106,24 @@ The package version is a git tag. A consumer cannot ask SwiftPM what it
 resolved, so `EngineVersion.current` carries the same number for a host to
 report. The two move together:
 
+1. Set `EngineVersion.current` and add a `CHANGELOG.md` entry, in a pull
+   request.
+2. Once it is merged, run **Actions → Release** on `main`. It runs
+   `scripts/publish-release.sh` for the version `main` declares, or the one
+   given. It starts as a dry run, so untick that to publish.
+
+The workflow uses a `release` environment that only `main` may deploy to, on
+the same runner image as CI. The script still runs locally the same way, for
+a dry run or when Actions is down:
+
 ```sh
-# 1. set EngineVersion.current and add a CHANGELOG.md entry, in a pull request
-# 2. once it is merged, tag and release that commit
 scripts/publish-release.sh 1.2.0 --dry-run
 scripts/publish-release.sh 1.2.0
 ```
 
 The script refuses a release it cannot stand behind: a version or changelog
 mismatch, a commit not yet on `main`, missing licence materials, a stale codec table,
-or a package that does not build and test. It attaches FFmpeg's and FriBidi's
+or a package that does not build and pass its tests on tvOS and iOS. It attaches FFmpeg's and FriBidi's
 corresponding source to the release (`scripts/ffmpeg-source-bundle.sh`,
 `scripts/fribidi-source-bundle.sh`), which the LGPL asks for wherever the
 binaries are offered.
