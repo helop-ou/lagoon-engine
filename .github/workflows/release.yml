@@ -1,0 +1,48 @@
+# See CONTRIBUTING.md, "Releasing".
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to tag and release. Empty releases the one main declares in EngineVersion.current."
+        required: false
+      dry_run:
+        description: "Run every guard and print the release, but tag and publish nothing."
+        type: boolean
+        default: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: ${{ inputs.dry_run && 'dry run' || 'publish' }}
+    # Only main may use it, so a branch cannot cut a tag.
+    environment: release
+    runs-on: xcode-27
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      VERSION: ${{ inputs.version }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Release
+        run: |
+          version="${VERSION:-$(grep -m1 -oE 'current = "[0-9]+\.[0-9]+\.[0-9]+"' Sources/LagoonEngine/EngineVersion.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')}"
+          if [ "$DRY_RUN" = true ]; then
+            scripts/publish-release.sh "$version" --dry-run
+          else
+            scripts/publish-release.sh "$version"
+          fi
