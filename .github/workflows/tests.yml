@@ -1,0 +1,70 @@
+# See CONTRIBUTING.md, "Continuous integration".
+name: Tests
+
+on:
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests (${{ matrix.platform }})
+    # macos-26 tops out at Xcode 26.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: tvOS
+            destination: platform=tvOS Simulator,name=Apple TV 4K (3rd generation)
+          # The image has no iPhone 17 Pro.
+          - platform: iOS
+            destination: platform=iOS Simulator,name=iPhone 17
+    env:
+      # Keep in step with the local Xcode.
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v7
+
+      # The image lacks it, and the engine compiles a Metal shader.
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun simctl list devices available | grep -E "iPhone 17 \(|Apple TV 4K \(3rd generation\) \("
+
+      # Serial: in parallel on the runner's three cores, tests that wait on
+      # a clock starve. Collecting diagnostics adds ten minutes to a failure.
+      - name: Test
+        run: |
+          mkdir -p build
+          status=0
+          xcodebuild test \
+            -scheme LagoonEngine \
+            -destination "${{ matrix.destination }}" \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath build/TestResults.xcresult \
+            -collect-test-diagnostics never \
+            -parallel-testing-enabled NO \
+            > build/xcodebuild.log 2>&1 || status=$?
+          grep -E ": error: |^error: |✘|\*\* (BUILD|TEST) |Test run with" build/xcodebuild.log || true
+          exit "$status"
+
+      - name: Keep results of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.platform }}
+          path: |
+            build/TestResults.xcresult
+            build/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 14
