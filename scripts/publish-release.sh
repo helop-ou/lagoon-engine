@@ -71,7 +71,7 @@ sha="$(git -C "$root" rev-parse --verify "${rev}^{commit}")" \
     || die "cannot resolve revision ${rev}"
 git -C "$root" fetch --quiet origin || die "could not reach origin"
 git -C "$root" merge-base --is-ancestor "$sha" origin/main 2>/dev/null \
-    || die "${rev} (${sha:0:9}) is not on origin/main yet. Push before releasing."
+    || die "${rev} (${sha:0:9}) is not on origin/main yet. Merge its pull request before releasing."
 ok "${sha:0:9} is on origin/main"
 
 # 4. Re-tagging is the one thing that cannot be undone cleanly.
