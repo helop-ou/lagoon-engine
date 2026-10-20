@@ -118,10 +118,15 @@ if [ "$verify" = true ]; then
             || die "the package does not build for ${destination#generic/platform=}"
     done
     ok "builds for tvOS and iOS"
-    xcodebuild test -scheme LagoonEngine \
-        -destination 'platform=tvOS Simulator,name=Apple TV 4K (3rd generation)' \
-        >/dev/null 2>&1 || die "the test suite does not pass"
-    ok "the test suite passes"
+    # iPhone 17, not 17 Pro, so the release runner has it too.
+    for destination in \
+        "platform=tvOS Simulator,name=Apple TV 4K (3rd generation)" \
+        "platform=iOS Simulator,name=iPhone 17"; do
+        xcodebuild test -scheme LagoonEngine -destination "$destination" \
+            -collect-test-diagnostics never -parallel-testing-enabled NO \
+            >/dev/null 2>&1 || die "the test suite does not pass on ${destination%% Simulator*}"
+    done
+    ok "the test suite passes on tvOS and iOS"
 else
     note "skipping the build and test gate"
 fi
