@@ -3,6 +3,9 @@ name: Tests
 
 on:
   pull_request:
+  # Keeps SonarCloud's main dashboard and its coverage current.
+  push:
+    branches: [main]
 
 concurrency:
   group: tests-${{ github.ref }}
@@ -52,11 +55,22 @@ jobs:
             -destination "${{ matrix.destination }}" \
             -derivedDataPath build/DerivedData \
             -resultBundlePath build/TestResults.xcresult \
+            -enableCodeCoverage YES \
             -collect-test-diagnostics never \
             -parallel-testing-enabled NO \
             > build/xcodebuild.log 2>&1 || status=$?
           grep -E ": error: |^error: |✘|\*\* (BUILD|TEST) |Test run with" build/xcodebuild.log || true
           exit "$status"
+
+      - name: Export coverage
+        run: scripts/coverage-to-sonar.py "${{ matrix.platform }}"
+
+      - name: Keep coverage for the scan
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.platform }}
+          path: build/coverage-${{ matrix.platform }}.xml
+          retention-days: 1
 
       - name: Keep results of a failed run
         if: failure()
@@ -68,3 +82,26 @@ jobs:
             build/xcodebuild.log
           if-no-files-found: ignore
           retention-days: 14
+
+  sonar:
+    name: SonarCloud scan
+    needs: unit-tests
+    # A fork's pull request gets no secrets.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*
+          path: coverage
+          merge-multiple: true
+
+      - name: Scan
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
