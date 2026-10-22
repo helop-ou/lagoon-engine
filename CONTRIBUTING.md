@@ -89,8 +89,9 @@ file, whose review GitHub requests on each pull request.
 `.github/workflows/tests.yml` runs the unit suite on tvOS and iOS for every
 pull request, the same `xcodebuild test` as a local run. `main` accepts only
 pull requests whose conventions check and two test jobs passed, merged by
-rebase so history stays linear. Nothing runs on a schedule. CI reports after
-the push, so run the tests before pushing.
+rebase so history stays linear. It runs again on each merge to `main`, so
+SonarCloud's dashboard for `main` stays current. Nothing runs on a schedule.
+CI reports after the push, so run the tests before pushing.
 
 - It uses GitHub's `xcode-27` runner image with Xcode 27.1. When the local
   Xcode moves, move `DEVELOPER_DIR` in the workflow in the same change.
@@ -99,6 +100,14 @@ the push, so run the tests before pushing.
   installs it first.
 - A failed run keeps its `.xcresult` and full log for 14 days, under the
   run's artifacts.
+- Both test jobs collect coverage, and `scripts/coverage-to-sonar.py` turns
+  each result bundle into Sonar's format. A third job then runs the SonarCloud
+  scan with both reports, using the `SONAR_TOKEN` secret. The scan action is
+  pinned to a commit, so move the pin and its version comment together.
+  `sonar-project.properties` limits the analysis to the package's own code:
+  `Artifacts/` and the C pixel kernel stay out. Automatic analysis in
+  SonarCloud must stay off, or the two analyses collide. A fork's pull request
+  has no secrets, so it skips the scan.
 
 ## Releasing
 
