@@ -2331,6 +2331,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // libavformat's file protocol takes a path; it does not
         // percent-decode a URL.
         let openTarget = url.isFileURL ? url.path(percentEncoded: false) : url.absoluteString
+        demuxer.startSeconds = shared.withLock { $0.pendingSeekSeconds } ?? 0
         guard let deliveryIsCached = openDemuxer(
             openTarget: openTarget,
             cacheSession: cacheSession,

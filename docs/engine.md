@@ -55,6 +55,8 @@ second implementation.
   every streamed media path. The cap is a transport safeguard, not a download
   feature.
 - Credentials travel in the authorization header, never in the URL.
+- An HLS open with a start position begins at the segment holding it
+  (`vod_start_time`), so a server transcode starts once, at the resume point.
 - Cache incompatibility changes the byte source, never the security policy.
 - Failures stay failures: only a successfully read resource ends in EOF.
 

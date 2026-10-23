@@ -24,6 +24,13 @@ nonisolated enum ContainerTimeline {
         let seconds = Double(startTime) / microsecondsPerSecond
         return Int64((seconds * Double(timeBase.den) / Double(timeBase.num)).rounded())
     }
+
+    /// Where a playlist opened at a later segment begins: its first packets
+    /// are that segment's, so the segment's playlist time comes off.
+    static func playlistStartTime(startTime: Int64, openedSegmentStart: Int64) -> Int64 {
+        guard startTime != Int64.min, openedSegmentStart > 0 else { return startTime }
+        return startTime - openedSegmentStart
+    }
 }
 
 nonisolated private let avNoPTS = Int64.min // AV_NOPTS_VALUE
@@ -159,6 +166,10 @@ nonisolated final class FFmpegDemuxer {
 
     /// How Dolby Vision profile 7 is handled. Set before `open`.
     var dolbyVisionProfile7Mode: DolbyVisionProfile7Mode = .convert
+    /// Where playback starts. Set before `open`: an HLS playlist then opens
+    /// at the segment holding it, because a server may start its transcode
+    /// at whichever segment is asked for first.
+    var startSeconds: Double = 0
     /// Armed by the open-time gate in `.convert` mode; demux-queue use only.
     private var profile7Converter: DolbyVisionProfileConverter?
     /// Native profile 5 or 8: frames without an RPU get the previous one.
@@ -566,6 +577,9 @@ nonisolated final class FFmpegDemuxer {
         // AVIOContext per segment. Off, hls.c closes each via io_close2.
         var options: OpaquePointer?
         av_dict_set(&options, "http_persistent", "0", 0)
+        if startSeconds > 0 {
+            av_dict_set(&options, "vod_start_time", String(format: "%.3f", startSeconds), 0)
+        }
         defer { av_dict_free(&options) }
 
         var status = avformat_open_input(&formatContext, url, nil, &options)
@@ -585,10 +599,16 @@ nonisolated final class FFmpegDemuxer {
     private func recordStreamStartOffsets(_ ctx: UnsafeMutablePointer<AVFormatContext>) {
         // Use the format's origin, not each stream's, to keep the offsets
         // between streams: a late-starting audio track is content, not clock.
+        var openedSegmentStart: Int64 = 0
+        _ = av_opt_get_int(ctx, "vod_start_offset", AV_OPT_SEARCH_CHILDREN, &openedSegmentStart)
+        let startTime = ContainerTimeline.playlistStartTime(
+            startTime: ctx.pointee.start_time,
+            openedSegmentStart: openedSegmentStart
+        )
         for index in 0..<Int(ctx.pointee.nb_streams) {
             guard let stream = ctx.pointee.streams[index] else { continue }
             let offset = ContainerTimeline.startOffset(
-                startTime: ctx.pointee.start_time,
+                startTime: startTime,
                 timeBase: stream.pointee.time_base
             )
             if offset != 0 {
