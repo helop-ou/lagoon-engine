@@ -8,6 +8,28 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.3.0
+
+October 2026. No API change. FFmpeg gains a second patch and is rebuilt, and
+three native libraries move to newer releases under the same licences, so a
+host that lists their versions updates them. Otherwise upgrading is a version
+bump.
+
+### Changed
+
+- A resumed HLS playback asks for the segment holding the start position
+  first, not segment 0. A server that starts its transcode at the first
+  segment requested no longer runs a job from 0 before every resume: on a
+  Jellyfin remux, the first packet arrived in 1.2–1.3 s instead of 2.0–2.5 s.
+  Seeks after the resume, backwards ones included, land as they would after
+  a first-segment open.
+- lcms2 2.19.1, up from 2.17, with memory-safety fixes for malformed ICC
+  profiles.
+- FreeType 2.15.0, up from 2.14.3, and HarfBuzz 15.0.0, up from 14.5.0, inside
+  `Libass`: overflow and font-parsing fixes, and a fix for a possible deadlock
+  when a HarfBuzz font is destroyed. FreeType is built without Apple's HVF
+  format, so `Libass` links no new system library.
+
 ## 1.2.1
 
 October 2026. No API change and no change to the libraries; upgrading is a
