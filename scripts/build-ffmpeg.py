@@ -263,9 +263,7 @@ def main():
     with tarfile.open(archive) as tar:
         tar.extractall(work, filter="data")
     for patch in PATCHES:
-        # hls.c refuses a URL whose scheme has no registered protocol, which
-        # without the network stack is every http(s) URL. The patch classifies
-        # the scheme from the URL and hands the open to io_open.
+        # Artifacts/FFmpeg.README.md describes each one.
         print(f"Applying {patch.name}", flush=True)
         with patch.open() as stream:
             subprocess.run(["patch", "-p1", "--batch"], cwd=source, stdin=stream, check=True)

@@ -1,0 +1,81 @@
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -124,6 +124,9 @@
+     int64_t start_seq_no;
+     int time_offset_flag;
+     int64_t start_time_offset;
++    /* Lagoon: playlist time of the segment a vod_start_time open began
++     * at, so first_timestamp still names the start of the playlist. */
++    int64_t vod_start_offset;
+     int n_segments;
+     struct segment **segments;
+     int needed;
+@@ -217,6 +220,8 @@
+     int m3u8_hold_counters;
+     int live_start_index;
+     int prefer_x_start;
++    int64_t vod_start_time;
++    int64_t vod_start_offset;
+     int first_packet;
+     int64_t first_timestamp;
+     int64_t cur_timestamp;
+@@ -2049,6 +2054,16 @@
+             find_timestamp_in_playlist(c, pls, start_timestamp, &seq_no, NULL);
+         }
+         return seq_no;
++    }
++
++    /* Lagoon: a server that starts its transcode at the first segment asked
++     * for would otherwise run a job from 0 before every resume. */
++    if (c->first_packet && c->vod_start_time > 0) {
++        int64_t start;
++        if (find_timestamp_in_playlist(c, pls, c->vod_start_time, &seq_no, &start)) {
++            pls->vod_start_offset = start;
++            return seq_no;
++        }
+     }
+ 
+     /* Otherwise just start on the first segment. */
+@@ -2260,6 +2275,13 @@
+ 
+         pls->cur_seq_no = select_cur_seq_no(c, pls);
+         highest_cur_seq_no = FFMAX(highest_cur_seq_no, pls->cur_seq_no);
++        if (i == 0)
++            c->vod_start_offset = pls->vod_start_offset;
++        /* Lagoon: the wrap reference comes from the first packet read, so
++         * after a late start anything 60 s before it would read as wrapped.
++         * A playlist opened late cannot also cross the 33-bit wrap. */
++        if (pls->vod_start_offset > 0)
++            s->correct_ts_overflow = 0;
+     }
+ 
+     av_dict_set(&c->seg_format_opts, "prefer_hls_mpegts_pts", "1", 0);
+@@ -2274,6 +2296,7 @@
+ 
+         if (!(pls->ctx = avformat_alloc_context()))
+             return AVERROR(ENOMEM);
++        pls->ctx->correct_ts_overflow = s->correct_ts_overflow;
+ 
+         if (pls->n_segments == 0)
+             continue;
+@@ -2588,7 +2611,7 @@
+                     if (c->first_timestamp == AV_NOPTS_VALUE &&
+                         pls->pkt->dts       != AV_NOPTS_VALUE)
+                         c->first_timestamp = av_rescale_q(pls->pkt->dts,
+-                            get_timebase(pls), AV_TIME_BASE_Q);
++                            get_timebase(pls), AV_TIME_BASE_Q) - pls->vod_start_offset;
+                 }
+ 
+                 seg = current_segment(pls);
+@@ -2839,6 +2862,11 @@
+         OFFSET(live_start_index), AV_OPT_TYPE_INT, {.i64 = -3}, INT_MIN, INT_MAX, FLAGS},
+     {"prefer_x_start", "prefer to use #EXT-X-START if it's in playlist instead of live_start_index",
+         OFFSET(prefer_x_start), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, FLAGS},
++    {"vod_start_time", "time to open a finished playlist at, from the segment containing it",
++        OFFSET(vod_start_time), AV_OPT_TYPE_DURATION, {.i64 = 0}, 0, INT64_MAX, FLAGS},
++    {"vod_start_offset", "playlist time of the segment vod_start_time opened at",
++        OFFSET(vod_start_offset), AV_OPT_TYPE_INT64, {.i64 = 0}, 0, INT64_MAX,
++        FLAGS | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY},
+     {"allowed_extensions", "List of file extensions that hls is allowed to access",
+         OFFSET(allowed_extensions), AV_OPT_TYPE_STRING,
+         {.str = "3gp,aac,avi,ac3,eac3,flac,mkv,m3u8,m4a,m4s,m4v,mpg,mov,mp2,mp3,mp4,mpeg,mpegts,ogg,ogv,oga,ts,vob,vtt,wav,webvtt"
