@@ -27,15 +27,15 @@ set -euo pipefail
 LIBASS_VERSION="0.17.5"
 LIBASS_URL="https://github.com/libass/libass/releases/download/${LIBASS_VERSION}/libass-${LIBASS_VERSION}.tar.xz"
 LIBASS_SHA256="2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc"
-FREETYPE_VERSION="2.14.3"
+FREETYPE_VERSION="2.15.0"
 FREETYPE_URL="https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.xz"
-FREETYPE_SHA256="36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f"
+FREETYPE_SHA256="93cd47eb719c325107f2d3cf087d06299e944c3b48a40b55537302304dea1dd5"
 FRIBIDI_VERSION="1.0.17"
 FRIBIDI_URL="https://github.com/fribidi/fribidi/releases/download/v${FRIBIDI_VERSION}/fribidi-${FRIBIDI_VERSION}.tar.xz"
 FRIBIDI_SHA256="6949dcde27d41cebad1fd741fcafc36d55a1020d2d872d4a6eb3914caabbada2"
-HARFBUZZ_VERSION="14.5.0"
+HARFBUZZ_VERSION="15.0.0"
 HARFBUZZ_URL="https://github.com/harfbuzz/harfbuzz/releases/download/${HARFBUZZ_VERSION}/harfbuzz-${HARFBUZZ_VERSION}.tar.xz"
-HARFBUZZ_SHA256="b7132e148358a45185c9feafd049dbaf243649d3c44414b3534d9c95d18592b9"
+HARFBUZZ_SHA256="968536e9abd782f07f7954044c0c4020199fcdd39b41d221ec42d2a3be4a44df"
 # Matches the engine's deployment targets; the artifact cannot be used below
 # them.
 TVOS_MIN="26.0"
@@ -216,7 +216,7 @@ CROSS
     echo "== building $group $arch ($triple) =="
     meson_build freetype "$work/freetype-$FREETYPE_VERSION" \
         -Dbrotli=disabled -Dharfbuzz=disabled -Dpng=disabled -Dmmap=disabled \
-        -Dzlib=internal -Dtests=disabled
+        -Dzlib=internal -Dhvf=disabled -Dtests=disabled
     meson_build fribidi "$work/fribidi-$FRIBIDI_VERSION" \
         -Ddocs=false -Dbin=false -Dtests=false
     meson_build harfbuzz "$work/harfbuzz-$HARFBUZZ_VERSION" \

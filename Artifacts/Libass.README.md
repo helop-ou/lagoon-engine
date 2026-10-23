@@ -1,7 +1,7 @@
 # Lagoon's libass artifact
 
 `Libass.xcframework` is **libass 0.17.5** and the three libraries it renders
-with, **FreeType 2.14.3**, **FriBidi 1.0.17** and **HarfBuzz 14.5.0**, merged
+with, **FreeType 2.15.0**, **FriBidi 1.0.17** and **HarfBuzz 15.0.0**, merged
 into one static archive per slice. The engine uses it to draw styled ASS/SSA
 subtitles (`StyledSubtitleRenderer`); only libass's own API (`ass/ass.h`) is
 exposed.
@@ -15,7 +15,8 @@ carry (tvOS and iOS devices and simulators, and macOS for indexing). Choices:
 - **Fonts.** CoreText is libass's system font provider; fontconfig is not
   built. The media's own fonts come from its attachments at runtime.
 - **FreeType** without HarfBuzz, PNG or Brotli, with its internal zlib, and
-  without mmap: it reads font files through stdio, so it never calls `fstat`.
+  without mmap or Apple's HVF format: it reads font files through stdio, so
+  it never calls `fstat`, and links no system font library.
 - **HarfBuzz** with only the FreeType integration: no GLib, ICU, Cairo,
   CoreText, subsetter or utilities, and built with `HB_NO_MMAP`, which drops
   its only `fstat` caller. (Its source promotes the now-unused resource-fork
