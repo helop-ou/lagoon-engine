@@ -57,4 +57,23 @@ struct ContainerTimelineTests {
             timeBase: AVRational(num: 2, den: 90_000)
         ) == 90_000)
     }
+
+    @Test func aPlaylistOpenedAtALaterSegmentKeepsItsFirstSegmentsOrigin() {
+        // Measured on a Jellyfin remux: segment 200, at 1200.28 s on the
+        // playlist, starts at 1210.282 s on the stream's clock.
+        #expect(ContainerTimeline.playlistStartTime(
+            startTime: 1_210_282_000,
+            openedSegmentStart: 1_200_280_000
+        ) == 10_002_000)
+        // A first-segment open, and a container that does not say, pass
+        // through untouched.
+        #expect(ContainerTimeline.playlistStartTime(
+            startTime: 10_124_333,
+            openedSegmentStart: 0
+        ) == 10_124_333)
+        #expect(ContainerTimeline.playlistStartTime(
+            startTime: Int64.min,
+            openedSegmentStart: 1_200_280_000
+        ) == Int64.min)
+    }
 }

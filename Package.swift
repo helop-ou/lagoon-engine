@@ -41,6 +41,7 @@ let package = Package(
             name: "LagoonEngineTests",
             dependencies: ["LagoonEngine"],
             path: "Tests/LagoonEngineTests",
+            resources: [.copy("Fixtures/HLSResume")],
             swiftSettings: [
                 .defaultIsolation(MainActor.self),
                 .swiftLanguageMode(.v5),
