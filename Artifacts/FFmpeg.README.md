@@ -79,7 +79,7 @@ FFmpeg's `COPYING.LGPLv2.1` and `LICENSE.md` accompany each artifact.
 
 Every GitHub release carries the complete corresponding source as
 `lagoon-engine-<version>-ffmpeg-8.1.3-source.tar.gz`: upstream's tarball,
-`changes.diff` with the patch, and this revision's build script and
+`changes.diff` with the patches, and this revision's build script and
 `BUILD.json` records. `scripts/ffmpeg-source-bundle.sh` makes it, and
 `scripts/publish-release.sh` attaches it.
 
@@ -128,14 +128,30 @@ make it play; see `docs/codec-support.md`.
 
 ## Patches
 
-One patch is applied before configure:
+Two patches are applied before configure, in order.
+
 `Patches/0001-hls-scheme-without-network-protocols.patch`. hls.c checks every
 child URL for a registered protocol matching its scheme, and without a network
 stack none matches http(s), so every playlist and segment failed with "Invalid
 data found when processing input" before `io_open` was asked. The patch lets
 `open_url` classify `http:`/`https:` (also behind `crypto+`/`data+`) from the
-URL text and hand the open to the application's `io_open`. `BUILD.json`
-records the patch hash, and `--verify-only` fails if it changes.
+URL text and hand the open to the application's `io_open`.
+
+`Patches/0002-hls-vod-start-time.patch`. hls.c opens a finished playlist at
+its first segment and only then seeks, and Jellyfin starts its transcode at
+whichever segment is asked for first, so every resume ran a job from 0 before
+the real one. The patch adds a `vod_start_time` option that opens the playlist
+at the segment holding that time, and exports that segment's playlist time as
+`vod_start_offset`. `first_timestamp` subtracts it, so seeks, backwards ones
+included, keep the clock a first-segment open would have used, and the demuxer
+subtracts it from the container's start time for the same reason. libavformat
+takes its MPEG-TS wrap reference from the first packet read, so after a late
+start any timestamp more than 60 s earlier would read as wrapped. A late start
+therefore turns `correct_ts_overflow` off for the playlist and its segments:
+such a playlist cannot also cross the 33-bit wrap at 26.5 hours.
+
+`BUILD.json` records the patch hashes, and `--verify-only` fails if one
+changes.
 
 ## Retired: the GnuTLS/Apple-trust patch
 

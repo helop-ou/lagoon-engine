@@ -104,7 +104,7 @@ complete corresponding source.
 - changes.diff holds every change made to it. Apply it with
   "patch -p1 < changes.diff" in the extracted source.
 - build/${script} is the script that configured and built the libraries. It
-  downloads the same tarball and applies the same patch. The configure line
+  downloads the same tarball and applies the same patches. The configure line
   for every platform and architecture is recorded in the BUILD.json files
   under build/Artifacts, and the provenance README beside them explains the
   choices.
