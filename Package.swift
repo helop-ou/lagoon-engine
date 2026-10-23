@@ -127,7 +127,7 @@ let package = Package(
         ),
         .binaryTarget(
             name: "lcms2",
-            // Little CMS 2.17, MIT. Rebuild/provenance: scripts/build-lcms2.sh.
+            // Little CMS 2.19.1, MIT. Rebuild/provenance: scripts/build-lcms2.sh.
             path: "Artifacts/lcms2.xcframework"
         ),
         // libass 0.17.5 with FreeType, FriBidi and HarfBuzz, for styled ASS/SSA

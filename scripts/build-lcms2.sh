@@ -17,9 +17,9 @@
 #
 set -euo pipefail
 
-LCMS2_VERSION="2.17"
+LCMS2_VERSION="2.19.1"
 LCMS2_URL="https://github.com/mm2/Little-CMS/releases/download/lcms${LCMS2_VERSION}/lcms2-${LCMS2_VERSION}.tar.gz"
-LCMS2_SHA256="d11af569e42a1baa1650d20ad61d12e41af4fead4aa7964a01f93b08b53ab074"
+LCMS2_SHA256="bfc54f7bab59fbc921012014a8032e4cba4abd46db47d46b76416a8c0b2815c8"
 # Matches the engine's deployment targets; the artifact cannot be used below
 # them.
 TVOS_MIN="26.0"
