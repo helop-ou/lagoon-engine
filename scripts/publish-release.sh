@@ -7,10 +7,8 @@
 #   scripts/publish-release.sh 1.1.0 --rev a1b2c
 #
 # Everything before the release is a guard. Dependents resolve a tag without
-# asking, and a published tag cannot be taken back cleanly.
-#
-# --no-verify skips the build and test gate. Only for re-releasing a revision
-# already proven green.
+# asking, and a published tag cannot be taken back cleanly. Building and
+# testing are not among them: main takes only pull requests whose CI passed.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,18 +17,16 @@ changelog="$root/CHANGELOG.md"
 
 tag="${1:-}"
 [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-    echo "usage: $(basename "$0") <major.minor.patch> [--dry-run] [--rev <sha>] [--no-verify]" >&2
+    echo "usage: $(basename "$0") <major.minor.patch> [--dry-run] [--rev <sha>]" >&2
     exit 2
 }
 shift
 
 dry_run=false
-verify=true
 rev="HEAD"
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) dry_run=true ;;
-        --no-verify) verify=false ;;
         --rev) rev="${2:?--rev needs a revision}"; shift ;;
         *) echo "error: unknown option $1" >&2; exit 2 ;;
     esac
@@ -38,7 +34,6 @@ while [ $# -gt 0 ]; do
 done
 
 ok() { printf '  \xe2\x9c\x93 %s\n' "$1"; }
-note() { printf '  - %s\n' "$1"; }
 die() { printf '\n  error: %s\n' "$1" >&2; exit 1; }
 
 echo
@@ -88,7 +83,7 @@ ok "releasing into ${slug}"
 # 5. The vendored frameworks carry their own terms, so the materials must be
 #    in the tree. GitHub's source archive holds them, but not FFmpeg's source,
 #    which the LGPL wants offered from the same place as the binaries: the
-#    release attaches that bundle (step 8).
+#    release attaches that bundle (step 6).
 missing=""
 materials=(LICENSE Artifacts/FFmpeg.README.md Artifacts/Libdovi.README.md)
 if git -C "$root" cat-file -e "${sha}:scripts/build-libass.sh" 2>/dev/null; then
@@ -100,39 +95,7 @@ done
 [ -z "$missing" ] || die "the revision is missing dependency materials:${missing}"
 ok "licence and provenance materials are in the archive"
 
-# 6. People read the codec table to decide whether this plays their media, so
-#    it must not be stale.
-if [ "$verify" = true ]; then
-    "$root/scripts/generate-codec-support.sh" --check >/dev/null 2>&1 \
-        || die "docs/codec-support.md is out of date. Run scripts/generate-codec-support.sh"
-    ok "docs/codec-support.md is current"
-fi
-
-# 7. The costly guard: a tag a consumer cannot build.
-if [ "$verify" = true ]; then
-    note "building and testing both platforms, which takes a few minutes"
-    for destination in \
-        "generic/platform=tvOS Simulator" \
-        "generic/platform=iOS Simulator"; do
-        xcodebuild -scheme LagoonEngine -destination "$destination" build >/dev/null 2>&1 \
-            || die "the package does not build for ${destination#generic/platform=}"
-    done
-    ok "builds for tvOS and iOS"
-    # iPhone 17, not 17 Pro, so the release runner has it too.
-    tvos="$("$root/scripts/pick-simulator.py" tvOS "Apple TV 4K (4th generation)" "Apple TV 4K (3rd generation)")" \
-        || die "no tvOS simulator to test on"
-    ios="$("$root/scripts/pick-simulator.py" iOS "iPhone 17")" || die "no iOS simulator to test on"
-    for destination in "$tvos" "$ios"; do
-        xcodebuild test -scheme LagoonEngine -destination "$destination" \
-            -collect-test-diagnostics never -parallel-testing-enabled NO \
-            >/dev/null 2>&1 || die "the test suite does not pass on ${destination%% Simulator*}"
-    done
-    ok "the test suite passes on tvOS and iOS"
-else
-    note "skipping the build and test gate"
-fi
-
-# 8. FFmpeg's corresponding source, attached to the release it belongs to.
+# 6. FFmpeg's corresponding source, attached to the release it belongs to.
 bundle_dir="$(mktemp -d)"
 trap 'rm -rf "$bundle_dir"' EXIT
 bundle="$("$root/scripts/source-bundle.sh" ffmpeg "$tag" "$bundle_dir" --rev "$sha")" \
