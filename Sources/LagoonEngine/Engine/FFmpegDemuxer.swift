@@ -155,6 +155,10 @@ nonisolated final class FFmpegDemuxer {
     /// Decodable text subtitle streams. Demuxed even while unselected, so
     /// the engine's `SubtitleBacklog` has their recent lines.
     private(set) var textSubtitleStreamIndices: Set<Int32> = []
+    /// HLS subtitle renditions: listed, never read, even when chosen.
+    /// libavformat fetches a rendition's segments inside the audio and video
+    /// read, so one the server is slow to produce stalls playback.
+    private(set) var unreadSubtitleStreamIndices: Set<Int32> = []
     // Sample-exact timing for passthrough audio; see `PassthroughAudioTimeline`.
     private var passthroughTimelines: [Int32: PassthroughAudioTimeline] = [:]
     // Removes Matroska's millisecond quantization from video PTS.
@@ -504,7 +508,12 @@ nonisolated final class FFmpegDemuxer {
             index: bestVideo,
             recommendedPixelBufferAttributes: recommendedPixelBufferAttributes
         )
-        configureOtherStreams(ctx, bestVideo: bestVideo, programStreams: programStreams)
+        configureOtherStreams(
+            ctx,
+            bestVideo: bestVideo,
+            programStreams: programStreams,
+            isHLS: ctx.pointee.iformat.map { String(cString: $0.pointee.name) == "hls" } ?? false
+        )
 
         guard let packet = av_packet_alloc() else {
             throw DemuxError.openFailed("out of memory")
@@ -823,7 +832,8 @@ nonisolated final class FFmpegDemuxer {
     private func configureOtherStreams(
         _ ctx: UnsafeMutablePointer<AVFormatContext>,
         bestVideo: Int32,
-        programStreams: Set<Int32>
+        programStreams: Set<Int32>,
+        isHLS: Bool
     ) {
         for index in 0..<Int(ctx.pointee.nb_streams) {
             guard let stream = ctx.pointee.streams[index], let par = stream.pointee.codecpar else { continue }
@@ -835,7 +845,7 @@ nonisolated final class FFmpegDemuxer {
             case AVMEDIA_TYPE_AUDIO:
                 configureAudioStream(stream, par: par, index: index)
             case AVMEDIA_TYPE_SUBTITLE:
-                configureSubtitleStream(stream, par: par, index: index)
+                configureSubtitleStream(stream, par: par, index: index, isHLS: isHLS)
             case AVMEDIA_TYPE_VIDEO:
                 if Int32(index) != bestVideo {
                     stream.pointee.discard = AVDISCARD_ALL
@@ -907,13 +917,17 @@ nonisolated final class FFmpegDemuxer {
     private func configureSubtitleStream(
         _ stream: UnsafeMutablePointer<AVStream>,
         par: UnsafeMutablePointer<AVCodecParameters>,
-        index: Int
+        index: Int,
+        isHLS: Bool
     ) {
         // List every subtitle stream, decodable or not, so per-type
         // ordinals match the host's stream list. Unselected bitmap
         // streams stay discarded; text streams are always read.
         stream.pointee.discard = AVDISCARD_ALL
-        if let decoder = SubtitleDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
+        // In an HLS input a WebVTT stream is a rendition with its own playlist.
+        if isHLS, par.pointee.codec_id == AV_CODEC_ID_WEBVTT {
+            unreadSubtitleStreamIndices.insert(Int32(index))
+        } else if let decoder = SubtitleDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
             subtitleDecoders[Int32(index)] = decoder
             if Self.isTextSubtitle(par.pointee.codec_id) {
                 textSubtitleStreamIndices.insert(Int32(index))
@@ -958,7 +972,8 @@ nonisolated final class FFmpegDemuxer {
     func selectSubtitle(streamIndex: Int32?) {
         guard let ctx = formatContext else { return }
         for stream in subtitleStreams {
-            let read = stream.streamIndex == streamIndex || textSubtitleStreamIndices.contains(stream.streamIndex)
+            let read = !unreadSubtitleStreamIndices.contains(stream.streamIndex)
+                && (stream.streamIndex == streamIndex || textSubtitleStreamIndices.contains(stream.streamIndex))
             ctx.pointee.streams[Int(stream.streamIndex)]?.pointee.discard = read ? AVDISCARD_DEFAULT : AVDISCARD_ALL
         }
     }
@@ -1584,6 +1599,7 @@ nonisolated final class FFmpegDemuxer {
         subtitleDecoders.removeAll(keepingCapacity: false)
         styledSubtitleHeaders.removeAll(keepingCapacity: false)
         textSubtitleStreamIndices.removeAll(keepingCapacity: false)
+        unreadSubtitleStreamIndices.removeAll(keepingCapacity: false)
         subtitleFonts.removeAll(keepingCapacity: false)
         softwareVideoDecoder = nil
         audioStreams.removeAll(keepingCapacity: false)
