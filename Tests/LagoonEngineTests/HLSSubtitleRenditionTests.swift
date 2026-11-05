@@ -61,16 +61,16 @@ struct HLSSubtitleRenditionTests {
         defer { fixture.remove() }
         let engine = SampleBufferPlayerEngine()
         var started = false
-        var seeks = 0
         var failure: String?
         engine.onPlaybackStarted = { started = true }
-        engine.onSeekReady = { seeks += 1 }
         engine.onError = { failure = $0.message }
         engine.prepare(url: fixture.master, startSeconds: 0, initialAudioOrdinal: nil)
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         engine.play()
 
-        let deadline = ContinuousClock.now + .seconds(10)
+        // Generous: other suites' main-actor tests run while this one waits,
+        // and a regression blocks the read for good, not for a while.
+        let deadline = ContinuousClock.now + .seconds(60)
         while !started, failure == nil, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -78,10 +78,9 @@ struct HLSSubtitleRenditionTests {
         #expect(failure == nil)
         #expect(engine.subtitleTracks.count == 2)
 
-        let seeksBefore = seeks
+        // A seek starts buffering at once, on the main actor.
         engine.selectSubtitleTrack(id: 1)
-        try await Task.sleep(for: .seconds(1))
-        #expect(seeks == seeksBefore, "choosing a rendition flushed and re-demuxed")
+        #expect(!engine.isBuffering, "choosing a rendition flushed and re-demuxed")
         #expect(engine.subtitleTracks.first?.isSelected == true)
 
         engine.shutdown()
