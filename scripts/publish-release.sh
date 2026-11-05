@@ -119,9 +119,10 @@ if [ "$verify" = true ]; then
     done
     ok "builds for tvOS and iOS"
     # iPhone 17, not 17 Pro, so the release runner has it too.
-    for destination in \
-        "platform=tvOS Simulator,name=Apple TV 4K (3rd generation)" \
-        "platform=iOS Simulator,name=iPhone 17"; do
+    tvos="$("$root/scripts/pick-simulator.py" tvOS "Apple TV 4K (4th generation)" "Apple TV 4K (3rd generation)")" \
+        || die "no tvOS simulator to test on"
+    ios="$("$root/scripts/pick-simulator.py" iOS "iPhone 17")" || die "no iOS simulator to test on"
+    for destination in "$tvos" "$ios"; do
         xcodebuild test -scheme LagoonEngine -destination "$destination" \
             -collect-test-diagnostics never -parallel-testing-enabled NO \
             >/dev/null 2>&1 || die "the test suite does not pass on ${destination%% Simulator*}"
