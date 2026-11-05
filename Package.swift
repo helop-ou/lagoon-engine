@@ -41,7 +41,11 @@ let package = Package(
             name: "LagoonEngineTests",
             dependencies: ["LagoonEngine"],
             path: "Tests/LagoonEngineTests",
-            resources: [.copy("Fixtures/HLSResume")],
+            resources: [
+                .copy("Fixtures/HLSResume"),
+                .copy("Fixtures/HLSVideoFirst"),
+                .copy("Fixtures/TextSubtitles"),
+            ],
             swiftSettings: [
                 .defaultIsolation(MainActor.self),
                 .swiftLanguageMode(.v5),
