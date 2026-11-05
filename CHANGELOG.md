@@ -8,6 +8,22 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.3.1
+
+November 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Fixed
+
+- An HLS stream whose master playlist lists subtitle renditions no longer
+  waits on them to start. libavformat fetched each rendition's segments inside
+  the audio and video read, so a server slow to produce subtitles held back
+  the picture and the sound: on a Jellyfin remux with 35 renditions, 4 s at
+  start with the subtitles cached and 32 s while the server extracted them.
+  The renditions are still listed, so track ordinals do not move, but they are
+  never read, and choosing one does not seek. Deliver HLS subtitles as
+  external files instead.
+
 ## 1.3.0
 
 October 2026. No API change. FFmpeg gains a second patch and is rebuilt, and
