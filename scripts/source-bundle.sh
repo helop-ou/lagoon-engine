@@ -83,7 +83,7 @@ cache="${TMPDIR:-/tmp}/lagoon-${kind}-source-cache"
 tarball="$cache/$upstream"
 mkdir -p "$cache"
 if [ ! -f "$tarball" ] || [ "$(sha256 "$tarball")" != "$sha" ]; then
-    curl -fsSL "$url" -o "$tarball.partial"
+    curl -fsSL --proto =https --proto-redir =https "$url" -o "$tarball.partial"
     mv "$tarball.partial" "$tarball"
 fi
 [ "$(sha256 "$tarball")" = "$sha" ] || die "downloaded source does not match ${sha}"
