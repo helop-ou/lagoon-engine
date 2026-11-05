@@ -80,7 +80,7 @@ FFmpeg's `COPYING.LGPLv2.1` and `LICENSE.md` accompany each artifact.
 Every GitHub release carries the complete corresponding source as
 `lagoon-engine-<version>-ffmpeg-8.1.3-source.tar.gz`: upstream's tarball,
 `changes.diff` with the patches, and this revision's build script and
-`BUILD.json` records. `scripts/ffmpeg-source-bundle.sh` makes it, and
+`BUILD.json` records. `scripts/source-bundle.sh ffmpeg` makes it, and
 `scripts/publish-release.sh` attaches it.
 
 libavcodec includes the Independent JPEG Group's DCT code (`jrevdct.c`,

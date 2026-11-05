@@ -42,6 +42,6 @@ would have to declare in its privacy manifest.
 | FriBidi | LGPL-2.1-or-later | `LICENSES/fribidi.COPYING` |
 
 FriBidi is linked statically, so, as for FFmpeg, every release attaches its
-complete corresponding source (`scripts/fribidi-source-bundle.sh`, run by
+complete corresponding source (`scripts/source-bundle.sh fribidi`, run by
 `scripts/publish-release.sh`). The FTL asks that documentation of a product
 using FreeType credit it; hosts do so in their acknowledgements.
