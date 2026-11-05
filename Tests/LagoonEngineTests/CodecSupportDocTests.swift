@@ -5,19 +5,18 @@ import Testing
 
 /// Renders `EngineCodecSupport` as the published codec table and pins it to the
 /// code that routes streams, so drift fails a test.
-/// `scripts/generate-codec-support.sh` runs this and copies the result into
-/// `docs/codec-support.md`; `--check` fails instead of copying.
 @Suite("Codec support document")
 struct CodecSupportDocTests {
-    @Test func writesTheCodecSupportDocument() {
-        // Printed, not written to a file: the runner's container is cleared
-        // when the run ends. Every line has its own markers because runner
-        // progress lands inside printed lines; the script trims that noise off
-        // either end.
-        for line in CodecSupportDocument.render().split(
-            separator: "\n", omittingEmptySubsequences: false
-        ) {
-            print("CODEC_DOC|\(line)|CODEC_DOC")
+    @Test func theCommittedDocumentMatchesTheTable() throws {
+        let document = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "docs/codec-support.md")
+        let rendered = CodecSupportDocument.render()
+        if (try? String(contentsOf: document, encoding: .utf8)) != rendered {
+            try rendered.write(to: document, atomically: true, encoding: .utf8)
+            Issue.record("docs/codec-support.md was out of date and has been rewritten. Review and commit it.")
         }
     }
 
@@ -88,8 +87,9 @@ enum CodecSupportDocument {
             "",
             "What the engine decodes, and by which path. Generated from"
             + " `EngineCodecSupport`",
-            "by `scripts/generate-codec-support.sh` — edit that table, not this"
-            + " file.",
+            "by `CodecSupportDocTests`: edit that table, not this file. The test"
+            + " fails and",
+            "rewrites this file when the two disagree.",
             "",
             "A codec reaching VideoToolbox is handed to AVFoundation in its"
             + " container's",

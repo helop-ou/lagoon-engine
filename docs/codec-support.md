@@ -1,7 +1,8 @@
 # Codec support
 
 What the engine decodes, and by which path. Generated from `EngineCodecSupport`
-by `scripts/generate-codec-support.sh` — edit that table, not this file.
+by `CodecSupportDocTests`: edit that table, not this file. The test fails and
+rewrites this file when the two disagree.
 
 A codec reaching VideoToolbox is handed to AVFoundation in its container's
 own bitstream form and never touches this engine's decoder. A software codec
@@ -61,4 +62,3 @@ interpolates along the best-matching direction where they do not.
 
 Interlaced HEVC is not deinterlaced. It stays on the compressed path,
 whatever its field order says.
-
