@@ -8,6 +8,21 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 1.3.2
+
+November 2026. No API change and no change to the libraries; upgrading is a
+version bump.
+
+### Fixed
+
+- Dolby Vision profile 8.6 (base layer compatibility id 6) now plays.
+  VideoToolbox refused a decoder for it (-12909 on an Apple TV 4K with
+  tvOS 27), so the stream never started. Its `dvvC` now declares compatibility
+  id 1, which is the same HDR10 base layer, and the RPUs pass through
+  unchanged. A display without Dolby Vision plays the base layer as HDR10.
+  Dolby Vision output from such a stream has not been checked on a Dolby
+  Vision display yet.
+
 ## 1.3.1
 
 November 2026. No API change and no change to the libraries; upgrading is a
