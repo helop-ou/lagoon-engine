@@ -901,8 +901,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             )
         }
         onTrackSelectionChanged?()
-        let replayed = shared.withLock { $0.textSubtitleStreamIndices.contains($0.selectedSubtitleStreamIndex) }
-        if ordinal >= 1, ordinal <= embeddedSubtitleCount, !replayed {
+        let (replayed, unread) = shared.withLock {
+            (
+                $0.textSubtitleStreamIndices.contains($0.selectedSubtitleStreamIndex),
+                $0.unreadSubtitleStreamIndices.contains($0.selectedSubtitleStreamIndex)
+            )
+        }
+        if ordinal >= 1, ordinal <= embeddedSubtitleCount, !replayed, !unread {
             // A bitmap stream has no backlog: re-demux from the previous
             // keyframe so a line already due appears now, not at the next cue.
             seek(to: timePosition)
@@ -2550,6 +2555,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             state.embeddedSubtitleStreamIndices = embeddedSubtitles.map(\.streamIndex)
             state.styledSubtitleHeaders = demuxer.styledSubtitleHeaders
             state.textSubtitleStreamIndices = demuxer.textSubtitleStreamIndices
+            state.unreadSubtitleStreamIndices = demuxer.unreadSubtitleStreamIndices
             state.subtitleBacklog.removeAll()
             state.subtitleFonts = demuxer.subtitleFonts
             state.videoFrameRate = demuxer.videoFrameRate
@@ -3755,6 +3761,7 @@ nonisolated private final class SharedState: @unchecked Sendable {
         var pendingStyledChunks: [StyledSubtitleChunk] = []
         var styledSubtitleHeaders: [Int32: String] = [:]
         var textSubtitleStreamIndices: Set<Int32> = []
+        var unreadSubtitleStreamIndices: Set<Int32> = []
         /// What choosing a text stream replays instead of seeking.
         var subtitleBacklog = SubtitleBacklog()
         var subtitleFonts: [SubtitleFontAttachment] = []
