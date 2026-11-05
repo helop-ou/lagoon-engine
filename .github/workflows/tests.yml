@@ -24,14 +24,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The image's tvOS 27.2 has the 4th generation. An image whose
+          # runtimes predate it has only the 3rd.
           - platform: tvOS
-            destination: platform=tvOS Simulator,name=Apple TV 4K (3rd generation)
+            simulator: Apple TV 4K (4th generation)
+            fallback: Apple TV 4K (3rd generation)
           # The image has no iPhone 17 Pro.
           - platform: iOS
-            destination: platform=iOS Simulator,name=iPhone 17
+            simulator: iPhone 17
+            fallback: iPhone 17
     env:
       # Keep in step with the local Xcode.
-      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7
 
@@ -40,9 +44,13 @@ jobs:
         run: xcodebuild -downloadComponent MetalToolchain
 
       - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Pick the simulator
+        id: simulator
         run: |
-          xcodebuild -version
-          xcrun simctl list devices available | grep -E "iPhone 17 \(|Apple TV 4K \(3rd generation\) \("
+          destination="$(scripts/pick-simulator.py "${{ matrix.platform }}" "${{ matrix.simulator }}" "${{ matrix.fallback }}")"
+          echo "destination=$destination" >> "$GITHUB_OUTPUT"
 
       # Serial: in parallel on the runner's three cores, tests that wait on
       # a clock starve. Collecting diagnostics adds ten minutes to a failure.
@@ -52,7 +60,7 @@ jobs:
           status=0
           xcodebuild test \
             -scheme LagoonEngine \
-            -destination "${{ matrix.destination }}" \
+            -destination "${{ steps.simulator.outputs.destination }}" \
             -derivedDataPath build/DerivedData \
             -resultBundlePath build/TestResults.xcresult \
             -enableCodeCoverage YES \
