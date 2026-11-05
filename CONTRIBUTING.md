@@ -93,9 +93,13 @@ rebase so history stays linear. It runs again on each merge to `main`, so
 SonarCloud's dashboard for `main` stays current. Nothing runs on a schedule.
 CI reports after the push, so run the tests before pushing.
 
-- It uses GitHub's `xcode-27` runner image with Xcode 27.1. When the local
-  Xcode moves, move `DEVELOPER_DIR` in the workflow in the same change.
-- iOS runs on iPhone 17, as the image has no iPhone 17 Pro.
+- It uses GitHub's `xcode-27` runner image with Xcode 27.2. When the local
+  Xcode moves, move `DEVELOPER_DIR` in both workflows in the same change.
+- iOS runs on iPhone 17, as the image has no iPhone 17 Pro. tvOS runs on the
+  Apple TV 4K (4th generation), or the 3rd on an image without tvOS 27.2.
+  `scripts/pick-simulator.py` chooses a device whose runtime is installed: an
+  image update once kept the 3rd generation listed after dropping its
+  runtime, and every tvOS job failed with "Unable to find a destination".
 - The image lacks the Metal toolchain the engine's shader needs, so each run
   installs it first.
 - A failed run keeps its `.xcresult` and full log for 14 days, under the
