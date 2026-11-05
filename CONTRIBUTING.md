@@ -94,7 +94,7 @@ SonarCloud's dashboard for `main` stays current. Nothing runs on a schedule.
 CI reports after the push, so run the tests before pushing.
 
 - It uses GitHub's `xcode-27` runner image with Xcode 27.2. When the local
-  Xcode moves, move `DEVELOPER_DIR` in both workflows in the same change.
+  Xcode moves, move `DEVELOPER_DIR` in `tests.yml` in the same change.
 - iOS runs on iPhone 17, as the image has no iPhone 17 Pro. tvOS runs on the
   Apple TV 4K (4th generation), or the 3rd on an image without tvOS 27.2.
   `scripts/pick-simulator.py` chooses a device whose runtime is installed: an
@@ -125,9 +125,10 @@ report. The two move together:
    `scripts/publish-release.sh` for the version `main` declares, or the one
    given. It starts as a dry run, so untick that to publish.
 
-The workflow uses a `release` environment that only `main` may deploy to, on
-the same runner image as CI. The script still runs locally the same way, for
-a dry run or when Actions is down:
+The workflow uses a `release` environment that only `main` may deploy to, and
+runs on Ubuntu in about a minute. It builds and tests nothing, because `main`
+takes only pull requests whose CI passed. The script still runs locally the
+same way, on macOS or Linux, for a dry run or when Actions is down:
 
 ```sh
 scripts/publish-release.sh 1.2.0 --dry-run
@@ -135,10 +136,10 @@ scripts/publish-release.sh 1.2.0
 ```
 
 The script refuses a release it cannot stand behind: a version or changelog
-mismatch, a commit not yet on `main`, missing licence materials, a stale codec table,
-or a package that does not build and pass its tests on tvOS and iOS. It attaches FFmpeg's and FriBidi's
-corresponding source to the release (`scripts/ffmpeg-source-bundle.sh`,
-`scripts/fribidi-source-bundle.sh`), which the LGPL asks for wherever the
+mismatch, a commit not yet on `main`, a tag already used locally or on the
+remote, or missing licence materials. Below 1.0 it marks the release as a
+pre-release. It attaches FFmpeg's and FriBidi's corresponding source to the
+release (`scripts/source-bundle.sh`), which the LGPL asks for wherever the
 binaries are offered.
 
 Release in batches. Merged work waits on `main` without a version bump until
@@ -152,8 +153,8 @@ bump. Public means a host names the type or can reach it from one it does; a
 type nothing outside can reach is internal, and changing it is not breaking.
 
 A consumer pins a version range, so a release that does not build from a
-clean checkout on both platforms is worse than no release. Build and test both
-before tagging.
+clean checkout on both platforms is worse than no release. That is why `main`
+takes only pull requests that passed CI on both.
 
 ## Dependencies
 

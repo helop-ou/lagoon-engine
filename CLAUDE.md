@@ -44,8 +44,9 @@ right and this file needs fixing.
   xcodebuild test -scheme LagoonEngine -destination 'platform=tvOS Simulator,name=Apple TV 4K (3rd generation)'
   ```
 
-- `docs/codec-support.md` is generated. After changing `EngineCodecSupport`,
-  run `scripts/generate-codec-support.sh`, or `CodecSupportDocTests` fails.
+- `docs/codec-support.md` is generated from `EngineCodecSupport`. When the
+  two drift, `CodecSupportDocTests` fails and rewrites the doc. Review and
+  commit it.
 - Versions are real semver: a breaking change to anything `public` is a major
   bump. A release moves the git tag, `EngineVersion.current` and
   `CHANGELOG.md` together through `scripts/publish-release.sh`; see
