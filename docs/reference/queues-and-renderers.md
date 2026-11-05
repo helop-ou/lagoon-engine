@@ -56,6 +56,11 @@ Without these tags the display renders BT.2020 PQ as washed-out SDR.
   supplementary `dvvC`, so non-DoVi displays fall back to the base layer's
   HDR10/HLG tags. Profile 4 gets no atom and plays as HDR10 from the base
   layer.
+- Profile 8.6 (compatibility id 6, a Blu-ray HDR10 base layer) is outside
+  Dolby's spec, and VideoToolbox refuses a session for it (`-12909` on an
+  Apple TV 4K with tvOS 27). Its `dvvC` says 8.1 instead, the same HDR10 base
+  layer, and the stream then decodes. On an HDR10 display it plays as HDR10.
+  Whether a Dolby Vision display engages from its RPUs is untested.
 
 ## Profile 7 conversion
 
