@@ -339,9 +339,16 @@ by joining same-codec clips of two sizes with ffmpeg's concat demuxer
   actor (57–76 ms per switch on an Apple TV 4K). The backlog restarts on a
   seek. Bitmap streams (PGS, DVD, DVB) are still discarded while unselected
   and still re-demux from the current position when chosen. PGS cues are
-  open-ended and close on the next composition. Not covered: an embedded
-  subtitle rendition inside an HLS master (downloads arrive as external files
-  and work).
+  open-ended and close on the next composition.
+- **HLS subtitle renditions are listed, never read**, chosen or not. libavformat
+  fetches a WebVTT rendition inside the audio and video read: before it hands
+  over the next packet it opens the rendition's segments one by one until it
+  has a cue. On an Apple TV 4K a remux with 35 renditions blocked 4 s at
+  start against a server that had the subtitles ready, and 32 s against one
+  extracting them, past a host's start watchdog. Every WebVTT stream in an
+  HLS input is taken to be a rendition. Choosing one does not seek.
+  A host delivers HLS subtitles as external files, which load beside
+  playback.
 - **Cue lifetime.** For embedded tracks `SubtitleStore` is a window, not an
   archive. The demux loop appends cues as it reads ahead, and the 10 Hz
   display refresh removes every cue whose end has passed the playhead, so an
