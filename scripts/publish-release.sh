@@ -135,13 +135,13 @@ fi
 # 8. FFmpeg's corresponding source, attached to the release it belongs to.
 bundle_dir="$(mktemp -d)"
 trap 'rm -rf "$bundle_dir"' EXIT
-bundle="$("$root/scripts/ffmpeg-source-bundle.sh" "$tag" "$bundle_dir" --rev "$sha")" \
+bundle="$("$root/scripts/source-bundle.sh" ffmpeg "$tag" "$bundle_dir" --rev "$sha")" \
     || die "could not assemble the FFmpeg source bundle"
 ok "FFmpeg source bundle: $(basename "$bundle")"
 bundles=("$bundle")
 # FriBidi, linked statically inside Libass, is LGPL too.
 if git -C "$root" cat-file -e "${sha}:scripts/build-libass.sh" 2>/dev/null; then
-    fribidi_bundle="$("$root/scripts/fribidi-source-bundle.sh" "$tag" "$bundle_dir" --rev "$sha")" \
+    fribidi_bundle="$("$root/scripts/source-bundle.sh" fribidi "$tag" "$bundle_dir" --rev "$sha")" \
         || die "could not assemble the FriBidi source bundle"
     ok "FriBidi source bundle: $(basename "$fribidi_bundle")"
     bundles+=("$fribidi_bundle")
