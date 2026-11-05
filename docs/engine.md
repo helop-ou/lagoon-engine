@@ -57,6 +57,9 @@ second implementation.
 - Credentials travel in the authorization header, never in the URL.
 - An HLS open with a start position begins at the segment holding it
   (`vod_start_time`), so a server transcode starts once, at the resume point.
+- An HLS subtitle rendition is never read. libavformat fetches it inside the
+  audio and video read, so one slow subtitle segment stalls playback. See
+  [subtitles](reference/codecs.md#subtitles).
 - Cache incompatibility changes the byte source, never the security policy.
 - Failures stay failures: only a successfully read resource ends in EOF.
 
