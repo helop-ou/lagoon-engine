@@ -42,6 +42,7 @@ nonisolated struct DolbyVisionRewriteStats: Equatable, Sendable {
 /// `dovi_tool -m 2`). Mode 2, not 4, because it resets a FEL source's mapping
 /// curves to identity; they only make sense with the residual. Type-63 units
 /// are dropped. A failed RPU is dropped and counted, never stalls the stream.
+/// One whose CRC32 is wrong never reaches libdovi (`DolbyVisionRPUChecksum`).
 ///
 /// Every frame leaves with an RPU once one has converted. The stream is
 /// tagged Dolby Vision 8.1, and VideoToolbox refuses a frame of it without
@@ -167,6 +168,10 @@ nonisolated final class DolbyVisionProfileConverter {
     /// no length prefix).
     private func convertRPU(unit: UnsafeRawBufferPointer) -> RPUOutcome {
         guard let base = unit.baseAddress else { return .failed }
+        guard DolbyVisionRPUChecksum.isIntact(unit: unit) else {
+            log.error("DoVi P7 RPU dropped: CRC32 mismatch")
+            return .failed
+        }
         guard let rpu = dovi_parse_unspec62_nalu(base.assumingMemoryBound(to: UInt8.self), unit.count) else {
             return .failed
         }

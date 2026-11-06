@@ -277,6 +277,25 @@ struct DolbyVisionProfileConverterTests {
         #expect(stats.rpusDropped == 1)
     }
 
+    /// One flipped bit that sets a mapping piece's `linear_interp_flag`,
+    /// which libdovi 3.4 meets with `unimplemented!()` before it compares the
+    /// CRC. Without the checksum this aborts the test process.
+    @Test(arguments: zip(fixtures, [177, 253]))
+    func anRPUThatWouldAbortLibdoviIsDroppedAndCounted(_ fixture: RPUFixture, flippedBit: Int) throws {
+        let shipped = try decodeFixture(fixture.originalBase64)
+        var corrupt = Data([0x7C, 0x01]) + shipped.dropFirst(4)
+        corrupt[flippedBit / 8] ^= UInt8(0x80 >> (flippedBit % 8))
+        let vclUnit = Data([0x02, 0x01]) + Data(repeating: 0xAB, count: 40)
+        let packet = lengthPrefixed(units: [vclUnit, corrupt], lengthSize: 4)
+
+        let converter = try #require(DolbyVisionProfileConverter(record: profileSevenRecord()))
+        let result = try #require(packet.withUnsafeBytes { converter.convert(payload: $0, lengthSize: 4) })
+
+        #expect(parseLengthPrefixedUnits(result, lengthSize: 4) == [vclUnit])
+        #expect(converter.stats.rpusDropped == 1)
+        #expect(converter.stats.errors == 1)
+    }
+
     /// A remux that lost a frame's metadata: tagged 8.1, VideoToolbox
     /// refuses that frame (-12704), so it takes the previous frame's RPU.
     @Test(arguments: fixtures)

@@ -83,6 +83,12 @@ track. `DolbyVisionProfileConverter` converts it to profile 8.1 in flight:
 - A libdovi failure drops that packet's RPU and counts an error; it never
   stalls the stream. The HUD reports converted RPUs, dropped EL units, bytes,
   the EL type (FEL/MEL, also logged once per playback) and the error count.
+- An RPU whose CRC32 is wrong is dropped the same way before libdovi sees it
+  (`DolbyVisionRPUChecksum`). libdovi 3.4 parses the whole RPU before it
+  compares the CRC, and a corrupt mapping can reach an `unimplemented!()`
+  there, which aborts the process because the library is built panic=abort.
+  Flipping each bit of dovi_tool's MEL and FEL fixture RPUs aborted it 11
+  times in 4,456. An RPU crafted with a valid CRC can still reach that panic.
 - Only a single-track profile 7 with a DoVi configuration record in the
   container is converted, which means MKV remuxes. Disc images (MPEG-TS, no
   record) play as HDR10.
