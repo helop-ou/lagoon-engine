@@ -77,10 +77,30 @@ public nonisolated struct PlaybackEngineFailure: Equatable, Sendable {
     public let message: String
     /// The same failure in codes, for a diagnostic report. Never the message.
     public let detail: PlaybackFailureDetail?
+    /// What the network last answered when a read failed, if it failed
+    /// there. A refused credential or a lost network fails the same way
+    /// however the media is delivered, which the host may want to know before
+    /// it asks again.
+    public let transport: PlaybackTransportFailure?
 
-    public init(cause: Cause, message: String, detail: PlaybackFailureDetail? = nil) {
+    public init(
+        cause: Cause,
+        message: String,
+        detail: PlaybackFailureDetail? = nil,
+        transport: PlaybackTransportFailure? = nil
+    ) {
         self.cause = cause
         self.message = message
         self.detail = detail
+        self.transport = transport
     }
+}
+
+/// Why the network stopped giving bytes, in the codes it gave.
+public nonisolated enum PlaybackTransportFailure: Equatable, Sendable {
+    /// The server answered with this status instead of the bytes asked for.
+    case httpStatus(Int)
+    /// The request failed before an answer, with this `NSURLErrorDomain`
+    /// code: offline, an unknown host, a refused certificate, a timeout.
+    case urlError(Int)
 }
