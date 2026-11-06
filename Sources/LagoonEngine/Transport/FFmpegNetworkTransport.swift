@@ -125,6 +125,11 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
     private let authorization: MediaRequestAuthorization?
     /// Handed to every byte source. Internal so tests can shorten it.
     var retryPolicy = NetworkRetryPolicy.playback
+    /// How long a waiting read may get less than
+    /// `URLSessionByteSource.minimumProgressBytes`. Internal for tests.
+    var stallTimeout: TimeInterval = 15
+    /// Handed to every byte source. Internal for tests.
+    var buffering = URLSessionByteSource.Buffering()
 
     private let stateLock = NSLock()
     private var tracked: [UInt: TrackedContext] = [:]
@@ -258,7 +263,7 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
               let iv = Self.decodeHex(ivHex), iv.count == 16 else {
             return ffmpegErrorInvalid
         }
-        let inner = URLSessionByteSource(url: innerURL, session: session, isInterrupted: isInterrupted, authorization: authorization, retryPolicy: retryPolicy)
+        let inner = URLSessionByteSource(url: innerURL, session: session, isInterrupted: isInterrupted, authorization: authorization, retryPolicy: retryPolicy, stallTimeout: stallTimeout, buffering: buffering)
         let decrypted = AES128CBCByteSource(inner: inner, key: key, iv: iv)
         do {
             let io = try FFmpegCachedIO(source: decrypted, bufferSize: 64 * 1_024, failures: failures)
@@ -317,7 +322,7 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
         url: URL,
         output: UnsafeMutablePointer<UnsafeMutablePointer<AVIOContext>?>
     ) -> Int32 {
-        let source = URLSessionByteSource(url: url, session: session, isInterrupted: isInterrupted, authorization: authorization, retryPolicy: retryPolicy)
+        let source = URLSessionByteSource(url: url, session: session, isInterrupted: isInterrupted, authorization: authorization, retryPolicy: retryPolicy, stallTimeout: stallTimeout, buffering: buffering)
         do {
             let io = try FFmpegCachedIO(source: source, failures: failures)
             guard let ioContext = io.context else {
@@ -399,9 +404,20 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
 /// reads at the stream position; a read elsewhere restarts the GET there. AVIO
 /// already buffers ahead, so a request per refill would be wasted overhead.
 nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Sendable {
-    private static let idleTimeout: TimeInterval = 15
-    private static let backpressureHighWaterMark = 8 * 1_024 * 1_024
-    private static let backpressureLowWaterMark = 2 * 1_024 * 1_024
+    /// Bytes buffered ahead of the reader.
+    struct Buffering: Sendable {
+        /// The task is suspended above this.
+        var suspendAbove = 8 * 1_024 * 1_024
+        /// A suspended task resumes, and an ended one is asked again, below
+        /// this.
+        var resumeBelow = 2 * 1_024 * 1_024
+        /// Past this, a ranged response is ended. URLSession's suspend is
+        /// advisory, and a fast link kept delivering into a suspended task.
+        var endAbove = 16 * 1_024 * 1_024
+    }
+    /// Less than this in `stallTimeout` while a read waits is a stalled
+    /// connection, even if bytes still trickle in.
+    static let minimumProgressBytes: Int64 = 64 * 1_024
     private static let discardCeiling: Int64 = 4 * 1_024 * 1_024
 
     private let url: URL
@@ -410,6 +426,8 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
     private let priority: Float
     private let authorization: MediaRequestAuthorization?
     private let retryPolicy: NetworkRetryPolicy
+    private let stallTimeout: TimeInterval
+    private let buffering: Buffering
 
     // Mutable fields below are touched only under `condition`: reads come from
     // the demux queue, callbacks from the session's delegate queue.
@@ -424,9 +442,15 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
     private var bodyEnded = false
     private var pendingError: Error?
     private var contentLengthStorage: Int64?
-    private var lastDataAt = Date()
+    /// Every byte delivered, discarded prefixes included: what the stall
+    /// check counts.
+    private var receivedBytes: Int64 = 0
+    /// A ranged response, which can be asked again from any offset.
+    private var responseRanged = false
+    /// Ended at `buffering.endAbove`; the buffer is still good.
+    private var parked = false
     private var retryCount = 0
-    /// When the current run of failures began; cleared by any data.
+    /// When the current run of failures began; cleared by a served read.
     private var firstFailureAt: Date?
     private var closed = false
 
@@ -445,7 +469,9 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         isInterrupted: @escaping @Sendable () -> Bool,
         priority: Float = URLSessionTask.highPriority,
         authorization: MediaRequestAuthorization? = nil,
-        retryPolicy: NetworkRetryPolicy = .playback
+        retryPolicy: NetworkRetryPolicy = .playback,
+        stallTimeout: TimeInterval = 15,
+        buffering: Buffering = Buffering()
     ) {
         self.url = url
         self.session = session
@@ -453,6 +479,8 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         self.priority = priority
         self.authorization = authorization
         self.retryPolicy = retryPolicy
+        self.stallTimeout = stallTimeout
+        self.buffering = buffering
     }
 
     deinit {
@@ -477,10 +505,14 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
             condition.unlock()
             throw FFmpegTransportError.closed
         }
-        if activeTask == nil || offset != currentPosition {
+        // Without a task, the buffer still serves a parked connection or a
+        // body that was all buffered when it was parked.
+        if offset != currentPosition || (activeTask == nil && !parked && !bodyEnded) {
             beginNewRequestLocked(at: offset, priority: priority)
         }
         let target = min(length, 64 * 1_024)
+        var waitStarted = Date()
+        var receivedAtWaitStart = receivedBytes
         while true {
             if closed {
                 condition.unlock()
@@ -519,6 +551,8 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
                     throw FFmpegTransportError.interrupted
                 }
                 resumeAfterErrorLocked(priority: priority)
+                waitStarted = Date()
+                receivedAtWaitStart = receivedBytes
                 continue
             }
             if isInterrupted() {
@@ -526,9 +560,13 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
                 condition.unlock()
                 throw FFmpegTransportError.interrupted
             }
-            if Date().timeIntervalSince(lastDataAt) > Self.idleTimeout {
-                pendingError = FFmpegTransportError.timeout
-                continue
+            if Date().timeIntervalSince(waitStarted) > stallTimeout {
+                if receivedBytes - receivedAtWaitStart < Self.minimumProgressBytes {
+                    pendingError = FFmpegTransportError.timeout
+                    continue
+                }
+                waitStarted = Date()
+                receivedAtWaitStart = receivedBytes
             }
             condition.wait(until: Date().addingTimeInterval(0.1))
         }
@@ -537,13 +575,26 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         if take > 0 {
             result = buffer.prefix(take)
             buffer.removeFirst(take)
+            // A served read ends a run of failures. A trickle of bytes does
+            // not, or it would renew the budget forever.
+            retryCount = 0
+            firstFailureAt = nil
         } else {
             result = Data()
         }
         currentPosition += Int64(take)
-        if buffer.count < Self.backpressureLowWaterMark, suspended, let task = activeTask {
+        if buffer.count < buffering.resumeBelow, suspended, let task = activeTask {
             task.resume()
             suspended = false
+        }
+        if parked, buffer.count < buffering.resumeBelow {
+            parked = false
+            let resumeOffset = currentPosition + Int64(buffer.count)
+            if let length = contentLengthStorage, resumeOffset >= length {
+                bodyEnded = true
+            } else {
+                issueRequestLocked(at: resumeOffset, priority: priority)
+            }
         }
         condition.unlock()
         return result
@@ -554,6 +605,7 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
     private func beginNewRequestLocked(at offset: Int64, priority: Float) {
         cancelActiveTaskLocked()
         buffer.removeAll(keepingCapacity: true)
+        parked = false
         currentPosition = offset
         retryCount = 0
         firstFailureAt = nil
@@ -572,7 +624,7 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         bodyEnded = false
         pendingError = nil
         discardRemaining = 0
-        lastDataAt = Date()
+        responseRanged = false
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.timeoutInterval = 15
@@ -632,6 +684,7 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
         condition.lock()
         defer { condition.unlock() }
         guard !closed, taskIdentifier == activeTask?.taskIdentifier, responseValidated else { return }
+        receivedBytes += Int64(data.count)
         var chunk = data
         if discardRemaining > 0 {
             let drop = Int(min(Int64(chunk.count), discardRemaining))
@@ -640,10 +693,10 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
             guard !chunk.isEmpty else { return }
         }
         buffer.append(chunk)
-        lastDataAt = Date()
-        retryCount = 0
-        firstFailureAt = nil
-        if buffer.count > Self.backpressureHighWaterMark, let task = activeTask, !suspended {
+        if buffer.count > buffering.endAbove, responseRanged {
+            cancelActiveTaskLocked()
+            parked = true
+        } else if buffer.count > buffering.suspendAbove, let task = activeTask, !suspended {
             task.suspend()
             suspended = true
         }
@@ -684,6 +737,7 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
             }
             contentLengthStorage = Self.contentRangeTotal(contentRange)
             responseValidated = true
+            responseRanged = true
             return .allow
         case 200:
             if requestStreamOffset == 0 {
