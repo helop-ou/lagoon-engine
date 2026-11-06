@@ -44,7 +44,17 @@ behind the `FFmpegCachedIO` bridge.
   reaching the network again.
 - The playback cache's range loads use the same budget. A 5xx, 408 or 429 is
   `PlaybackCacheError.serverStatus` and retried; it used to be reported as
-  `rangeUnsupported`, which never retries.
+  `rangeUnsupported`, which never retries. Any other status is
+  `serverStatus` too and fails at once. Only a 2xx that is not the range asked
+  for is `rangeUnsupported`: a 401 used to read as a server without ranges.
+- A `Retry-After` on a retried status (seconds or an HTTP date) stretches the
+  next pause to what the server asked. It never stretches the budget, so a
+  wait past it ends the retries at once.
+- A read that fails records what the network said, an HTTP status or an
+  `NSURLErrorDomain` code, in the demuxer's `TransportFailureRecorder`, until
+  a read succeeds again or the next open. The engine hands it to the host as
+  `PlaybackEngineFailure.transport`, because libavformat only ever sees
+  `AVERROR(EIO)`.
 - A seek that still fails after that gets one more try half a second later,
   unless playback closed or a newer seek replaced it.
 - A 15 s idle timeout applies, and the demuxer's interrupt callback is polled
