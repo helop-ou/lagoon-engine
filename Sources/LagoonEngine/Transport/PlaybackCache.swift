@@ -432,7 +432,8 @@ nonisolated enum PlaybackCacheError: LocalizedError, Equatable {
     case invalidResponse
     case rangeUnsupported
     case storageUnavailable
-    /// A status another attempt could change: a 5xx, 408 or 429.
+    /// Any status but the 206 asked for, apart from a server ignoring
+    /// `Range`: a refused credential as much as a restarting server.
     case serverStatus(Int, retryAfter: TimeInterval? = nil)
 
     var errorDescription: String? {
@@ -530,10 +531,11 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
             && Self.responseOffset(response: http) == requestedRange.lowerBound
         guard validPartial else {
             completionHandler(.cancel)
-            // A restarting server is not a server without ranges.
-            let error: PlaybackCacheError = NetworkRetryPolicy.isTransient(httpStatus: http.statusCode)
-                ? .serverStatus(http.statusCode, retryAfter: NetworkRetryPolicy.retryAfter(http))
-                : .rangeUnsupported
+            // Only a 2xx that is not the range asked for says the server
+            // ignores ranges. A refused token or a restarting server does not.
+            let error: PlaybackCacheError = (200...299).contains(http.statusCode)
+                ? .rangeUnsupported
+                : .serverStatus(http.statusCode, retryAfter: NetworkRetryPolicy.retryAfter(http))
             finish(.failure(error), cancelTask: true)
             return
         }
@@ -729,6 +731,11 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
                 removeActive(identifier)
                 // Retrying cannot change a server's range support.
                 throw PlaybackCacheError.rangeUnsupported
+            } catch PlaybackCacheError.serverStatus(let code, let retryAfter)
+                where !NetworkRetryPolicy.isTransient(httpStatus: code) {
+                removeActive(identifier)
+                // Nor a refusal: a 401 or a 404 answers the same way again.
+                throw PlaybackCacheError.serverStatus(code, retryAfter: retryAfter)
             } catch {
                 removeActive(identifier)
                 // A network or server fault is ridden out on the time budget;
