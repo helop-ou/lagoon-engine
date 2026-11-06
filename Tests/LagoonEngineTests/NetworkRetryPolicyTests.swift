@@ -41,6 +41,35 @@ struct NetworkRetryPolicyTests {
         #expect(!NetworkRetryPolicy.isTransient(PlaybackCacheError.rangeUnsupported))
     }
 
+    @Test func aServersRetryAfterStretchesThePauseButNotTheBudget() {
+        let policy = NetworkRetryPolicy(budget: 10, delays: [0.25])
+        let busy = FFmpegTransportError.httpStatus(503, retryAfter: 4)
+        #expect(policy.delay(beforeAttempt: 0, elapsedSinceFirstFailure: 0, after: busy) == 4)
+        #expect(policy.delay(beforeAttempt: 0, elapsedSinceFirstFailure: 7, after: busy) == nil)
+        let limited = PlaybackCacheError.serverStatus(429, retryAfter: 2)
+        #expect(policy.delay(beforeAttempt: 0, elapsedSinceFirstFailure: 0, after: limited) == 2)
+        let unasked = FFmpegTransportError.httpStatus(503)
+        #expect(policy.delay(beforeAttempt: 0, elapsedSinceFirstFailure: 0, after: unasked) == 0.25)
+    }
+
+    @Test func retryAfterIsReadInSecondsOrAsAnHTTPDate() {
+        func response(_ value: String?) -> HTTPURLResponse {
+            HTTPURLResponse(
+                url: URL(string: "https://retry.test")!,
+                statusCode: 503,
+                httpVersion: nil,
+                headerFields: value.map { ["Retry-After": $0] } ?? [:]
+            )!
+        }
+        let now = Date(timeIntervalSince1970: 1_700_000_000) // Tue, 14 Nov 2023 22:13:20 GMT
+        #expect(NetworkRetryPolicy.retryAfter(response("120"), now: now) == 120)
+        #expect(NetworkRetryPolicy.retryAfter(response("Tue, 14 Nov 2023 22:13:50 GMT"), now: now) == 30)
+        #expect(NetworkRetryPolicy.retryAfter(response("Tue, 14 Nov 2023 22:00:00 GMT"), now: now) == 0)
+        #expect(NetworkRetryPolicy.retryAfter(response("soon"), now: now) == nil)
+        #expect(NetworkRetryPolicy.retryAfter(response("-5"), now: now) == nil)
+        #expect(NetworkRetryPolicy.retryAfter(response(nil), now: now) == nil)
+    }
+
     @Test func aPauseEndsEarlyWhenTheReadIsNoLongerWanted() {
         let start = Date()
         #expect(!NetworkRetryPolicy.pause(5, unless: { Date().timeIntervalSince(start) > 0.15 }))
