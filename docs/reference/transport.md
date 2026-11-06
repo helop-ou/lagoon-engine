@@ -28,7 +28,10 @@ every HLS child playlist, segment and key, becomes a `URLSessionByteSource`
 behind the `FFmpegCachedIO` bridge.
 
 - A ranged GET streamed with backpressure: suspended above 8 MiB buffered,
-  resumed below 2 MiB.
+  resumed below 2 MiB. Suspending is advisory, and a fast link kept
+  delivering into a suspended task, so past 16 MiB a ranged response is ended
+  and asked again from where it stopped once the reader drains below 2 MiB.
+  A body already wholly buffered is not asked for again.
 - Accepted: a 206 at the requested offset, a 200 at offset 0, or a 200 with a
   bounded discard of up to 4 MiB. Any other status is an I/O error, never EOF.
 - Transient errors retry from the current position on a time budget
@@ -57,8 +60,11 @@ behind the `FFmpegCachedIO` bridge.
   `AVERROR(EIO)`.
 - A seek that still fails after that gets one more try half a second later,
   unless playback closed or a newer seek replaced it.
-- A 15 s idle timeout applies, and the demuxer's interrupt callback is polled
-  every 100 ms.
+- A read that waits 15 s and gets less than 64 KiB in that time times out,
+  and the connection is retried on the budget. Bytes that only trickle in
+  used to reset an idle timer forever. The budget is renewed by a read that is
+  served, not by any byte, for the same reason. The demuxer's interrupt
+  callback is polled every 100 ms.
 - `crypto+https://…` is hls.c's scheme for AES-128 segments. It cannot sit on
   custom I/O, so `AES128CBCByteSource` fetches and decrypts those in Swift
   with CommonCrypto.
