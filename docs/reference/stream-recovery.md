@@ -79,6 +79,31 @@ software-decoded streams never show this, and HLS fMP4 segments start on IDRs.
 It is decoder-dependent too: the A15 played the same seek clean, and only the
 simulator refused the leading pictures.
 
+### A seek in a Matroska file without Cues
+
+Symptom: a resume or a late scrub in an MKV with no Cues element spins for
+as long as it takes to download the file up to the target.
+
+Without Cues the demuxer seeks by reading every cluster from the last one it
+indexed, which through the byte cache downloads the file up to the target.
+Measured on the 472 KB test fixture with a stock libavformat, a seek to
+100 s read 525 KB, and 67 KB from a seeded cluster. A byte seek
+(`AVSEEK_FLAG_BYTE`) is no way round it: the demuxer returns success and
+resyncs near the start.
+
+**One index entry near the target.** A Matroska seek gets
+`seekReadDeadline` (8 s) of reads, enforced in `FFmpegCachedIO`. Past it a
+read fails with `AVERROR_EXIT`, which the demuxer swallows and reports as a
+successful seek wherever it had got to, so the I/O records that the deadline
+expired. The demuxer then estimates the target's byte offset from size and
+duration, finds the next cluster there with `MatroskaClusterLocator` (its
+first child must be its Timestamp, after an optional CRC-32), steps back when
+the cluster is past the target, adds that one index entry and seeks again.
+The demuxer then reads only from that cluster. Every
+later seek in the session starts from a cluster without waiting out the
+deadline. A seek that still runs out of time fails as `.delivery` instead of
+landing on the wrong scene. Other formats have no deadline.
+
 ### Pictures VideoToolbox rejects mid-stream
 
 Some files carry a run of pictures VideoToolbox refuses with `-12909`,

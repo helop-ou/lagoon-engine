@@ -40,6 +40,8 @@ nonisolated private let keyPacketFlag: Int32 = 1 // AV_PKT_FLAG_KEY
 nonisolated private let avErrorEOF: Int32 = -541_478_725 // AVERROR_EOF = -MKTAG('E','O','F',' ')
 nonisolated private let customIOFlag: Int32 = 0x0080 // AVFMT_FLAG_CUSTOM_IO
 nonisolated private let noFileFormatFlag: Int32 = 0x0001 // AVFMT_NOFILE
+nonisolated private let avErrorExit: Int32 = -1_414_092_869 // AVERROR_EXIT
+nonisolated private let indexKeyframeFlag: Int32 = 0x0001 // AVINDEX_KEYFRAME
 
 nonisolated enum DemuxError: LocalizedError {
     /// `code` is the AVERROR where libavformat gave one, else 0.
@@ -137,6 +139,15 @@ nonisolated final class FFmpegDemuxer {
     var lastTransportFailure: PlaybackTransportFailure? {
         transportFailures.lastFailure
     }
+    /// How long a timestamp seek may read before a Matroska file without
+    /// Cues is seeked from a cluster near the target instead. Internal for
+    /// tests.
+    var seekReadDeadline: Duration = .seconds(8)
+    /// Bytes read per look for a cluster; ffmpeg and mkvmerge start one at
+    /// least every 5 s or 5 MiB. Internal for tests.
+    var clusterSearchWindow = 1 * 1_024 * 1_024
+    /// Set once a seek ran out of time: later seeks start from a cluster.
+    private var seeksFromClusters = false
     private var packet: UnsafeMutablePointer<AVPacket>?
     private var videoStreamIndex: Int32 = -1
     private var videoTimeBase = AVRational(num: 1, den: 1)
@@ -1106,7 +1117,7 @@ nonisolated final class FFmpegDemuxer {
         // `avformat_seek_file` moves split HLS audio and video together; the
         // legacy seek could leave them apart. max_ts = target asks for the
         // keyframe at or before it.
-        try Self.validateSeekStatus(reposition(ctx, to: timestamp))
+        try Self.validateSeekStatus(repositionWithinDeadline(ctx, to: timestamp, seconds: seconds))
         // A container with no index may land on any packet.
         alignLandingToKeyframe(ctx, target: timestamp)
         // The landing may not be a decoder start point, and packets right
@@ -1131,6 +1142,78 @@ nonisolated final class FFmpegDemuxer {
             ioPackets = 0
             ioStartedAt = nil
         }
+    }
+
+    /// A seek that cannot read a Matroska file up to its target. Without
+    /// Cues the demuxer does, so once a seek runs past `seekReadDeadline` it
+    /// is retried from a cluster near the target, and so is every later one.
+    /// One that still runs out of time fails, rather than land wherever the
+    /// demuxer got to. Other formats seek as before.
+    private func repositionWithinDeadline(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>,
+        to timestamp: Int64,
+        seconds: Double
+    ) -> Int32 {
+        guard Self.isMatroska(ctx), let cachedIO else { return reposition(ctx, to: timestamp) }
+        if seeksFromClusters {
+            seedIndex(ctx, near: timestamp, seconds: seconds)
+        }
+        var (status, timedOut) = boundedReposition(ctx, to: timestamp, io: cachedIO)
+        if timedOut, !seeksFromClusters, !isInterrupted {
+            seeksFromClusters = true
+            if seedIndex(ctx, near: timestamp, seconds: seconds) {
+                (status, timedOut) = boundedReposition(ctx, to: timestamp, io: cachedIO)
+            }
+        }
+        return timedOut ? avErrorExit : status
+    }
+
+    private func boundedReposition(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>,
+        to timestamp: Int64,
+        io: FFmpegCachedIO
+    ) -> (status: Int32, timedOut: Bool) {
+        io.deadline = ContinuousClock.now + seekReadDeadline
+        let status = reposition(ctx, to: timestamp)
+        let timedOut = io.deadlineExpired
+        io.deadline = nil
+        return (status, timedOut)
+    }
+
+    private static func isMatroska(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+        guard let name = ctx.pointee.iformat?.pointee.name else { return false }
+        return String(cString: name).contains("matroska")
+    }
+
+    /// Seconds before the target the estimate aims for.
+    private static let clusterSearchLead = 5.0
+
+    /// Adds an index entry at the last cluster found at or before `timestamp`,
+    /// estimating its byte offset from the file's size and duration, and
+    /// stepping back when the estimate overshoots. False when none is found.
+    @discardableResult
+    private func seedIndex(_ ctx: UnsafeMutablePointer<AVFormatContext>, near timestamp: Int64, seconds: Double) -> Bool {
+        guard let cachedIO, let length = cachedIO.contentLength, length > 0,
+              durationSeconds > 0, videoStreamIndex >= 0 else { return false }
+        let window = Int64(clusterSearchWindow)
+        var estimate = Int64(Double(length) * max(seconds - Self.clusterSearchLead, 0) / durationSeconds)
+        for _ in 0..<4 {
+            estimate = min(max(estimate, 0), length - 1)
+            let bytes = cachedIO.bytes(at: estimate, count: Int(min(window, length - estimate)))
+            guard let cluster = MatroskaClusterLocator.firstCluster(in: bytes, baseOffset: estimate) else {
+                estimate -= window
+                continue
+            }
+            if cluster.timestamp <= timestamp {
+                av_add_index_entry(ctx.pointee.streams[Int(videoStreamIndex)], cluster.offset, cluster.timestamp, 0, 0, indexKeyframeFlag)
+                return true
+            }
+            // Overshot: step back by the overshoot's share of the file, and a window.
+            let ticksPerSecond = Double(videoTimeBase.den) / Double(max(videoTimeBase.num, 1))
+            let overshoot = Double(cluster.timestamp - timestamp) / ticksPerSecond
+            estimate -= Int64(Double(length) * overshoot / durationSeconds) + window
+        }
+        return false
     }
 
     /// `avformat_seek_file`, falling back to `av_seek_frame` for demuxers
