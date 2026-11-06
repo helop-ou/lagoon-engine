@@ -117,6 +117,91 @@ struct URLSessionByteSourceTests {
         #expect(transport.failures.lastFailure == .httpStatus(503))
     }
 
+    /// Whether URLSession holds a suspended stub back varies from run to run,
+    /// so these never suspend: a link that ignores the suspend.
+    private static let ignoredSuspend = URLSessionByteSource.Buffering(suspendAbove: .max)
+
+    /// Past the cap the connection is ended, and asked again from where it
+    /// stopped once the reader drains it.
+    @Test func aConnectionThatOutrunsTheReaderIsEndedAndAskedAgain() throws {
+        let transport = makeTransport()
+        transport.buffering = Self.ignoredSuspend
+        let body = Self.body(count: 40 * 1_024 * 1_024)
+        TransportStub.set("/outrun", .init(body: body, chunkSize: 1_024 * 1_024))
+        var io: UnsafeMutablePointer<AVIOContext>?
+        #expect(Self.open(transport, url: Self.testURL("/outrun"), into: &io) >= 0)
+        let context = try #require(io)
+        defer { _ = transport.close(context) }
+        var first = [UInt8](repeating: 0, count: 64 * 1_024)
+        let firstCount = avio_read(context, &first, Int32(first.count))
+        #expect(firstCount > 0)
+        // Let the stub run past the cap before the reader drains anything.
+        let deadline = Date().addingTimeInterval(10)
+        while TransportStub.sentBytes(path: "/outrun") <= Self.ignoredSuspend.endAbove, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        let received = Data(first.prefix(Int(max(firstCount, 0)))) + Self.readAll(context)
+
+        #expect(received == body)
+        let starts = TransportStub.requests(path: "/outrun").compactMap { Self.rangeStart($0.range) }
+        #expect(starts.count >= 2)
+        #expect(starts.dropFirst().allSatisfy { $0 > Self.ignoredSuspend.endAbove })
+    }
+
+    /// Hung up with the rest of the body already buffered: nothing is left to
+    /// ask for, and asking past the end would be a 416.
+    @Test func aConnectionEndedWithTheWholeBodyBufferedFinishesCleanly() throws {
+        let transport = makeTransport()
+        transport.buffering = Self.ignoredSuspend
+        let body = Self.body(count: Self.ignoredSuspend.endAbove + 1_024 * 1_024)
+        TransportStub.set("/whole", .init(body: body, chunkSize: 1_024 * 1_024))
+        var io: UnsafeMutablePointer<AVIOContext>?
+        #expect(Self.open(transport, url: Self.testURL("/whole"), into: &io) >= 0)
+        let context = try #require(io)
+        defer { _ = transport.close(context) }
+        var first = [UInt8](repeating: 0, count: 1)
+        let firstCount = avio_read(context, &first, 1)
+        #expect(firstCount == 1)
+        Thread.sleep(forTimeInterval: 0.5)
+        let received = Data(first.prefix(Int(max(firstCount, 0)))) + Self.readAll(context)
+
+        #expect(received == body)
+        #expect(TransportStub.requests(path: "/whole").count == 1)
+        #expect(transport.failures.lastFailure == nil)
+    }
+
+    /// Bytes still arriving are not enough: a read that gets less than the
+    /// floor in the stall timeout gives up on the connection.
+    @Test func aTricklingConnectionTimesOut() throws {
+        let transport = makeTransport()
+        transport.retryPolicy = NetworkRetryPolicy(budget: 0.4, delays: [0.05])
+        transport.stallTimeout = 0.3
+        TransportStub.set("/trickle", .init(body: Self.body(count: 256 * 1_024), chunkSize: 1_024, chunkDelay: 0.02))
+        var io: UnsafeMutablePointer<AVIOContext>?
+        #expect(Self.open(transport, url: Self.testURL("/trickle"), into: &io) >= 0)
+        let context = try #require(io)
+        defer { _ = transport.close(context) }
+        var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+        #expect(avio_read(context, &buffer, Int32(buffer.count)) < 0)
+        #expect(transport.failures.lastFailure == .urlError(URLError.timedOut.rawValue))
+    }
+
+    /// Ten times the floor per window, with room for a loaded machine.
+    @Test func aSlowConnectionAboveTheFloorKeepsGoing() throws {
+        let transport = makeTransport()
+        transport.retryPolicy = NetworkRetryPolicy(budget: 0.4, delays: [0.05])
+        transport.stallTimeout = 1
+        let body = Self.body(count: 512 * 1_024)
+        TransportStub.set("/slow", .init(body: body, chunkSize: 64 * 1_024, chunkDelay: 0.1))
+        var io: UnsafeMutablePointer<AVIOContext>?
+        #expect(Self.open(transport, url: Self.testURL("/slow"), into: &io) >= 0)
+        let context = try #require(io)
+        defer { _ = transport.close(context) }
+        #expect(Self.readAll(context) == body)
+        #expect(TransportStub.requests(path: "/slow").count == 1)
+    }
+
     @Test func aDroppedConnectionResumesAtTheSamePosition() throws {
         let transport = makeTransport()
         let body = Self.body(count: 1_048_576)
@@ -384,6 +469,11 @@ struct URLSessionByteSourceTests {
 
     private static func testURL(_ path: String) -> String { "https://\(TransportStub.host)\(path)" }
 
+    private static func rangeStart(_ header: String?) -> Int? {
+        guard let header, header.hasPrefix("bytes=") else { return nil }
+        return Int(header.dropFirst(6).prefix { $0 != "-" })
+    }
+
     private static func body(count: Int) -> Data {
         Data((0..<count).map { UInt8(truncatingIfNeeded: $0) })
     }
@@ -473,6 +563,8 @@ private nonisolated struct TransportFixture: Sendable {
     var redirectTo: URL?
     /// Sent with a status other than 200 or 206.
     var headers: [String: String] = [:]
+    /// Pause after each chunk, for a connection that trickles.
+    var chunkDelay: TimeInterval = 0
 }
 
 /// A scripted per-path `URLProtocol`: honours `Range` for `ranged` paths,
@@ -488,6 +580,7 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
     private nonisolated(unsafe) static var recorded: [String: [(url: String, range: String?, headers: [String: String])]] = [:]
     private nonisolated(unsafe) static var dropped: Set<String> = []
     private nonisolated(unsafe) static var failed: [String: Int] = [:]
+    private nonisolated(unsafe) static var sent: [String: Int] = [:]
     private let stateLock = NSLock()
     private var stopped = false
     private var fixture = TransportFixture(status: 404)
@@ -498,6 +591,7 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
             recorded = [:]
             dropped = []
             failed = [:]
+            sent = [:]
         }
     }
 
@@ -514,6 +608,11 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
 
     static func set(_ path: String, _ fixture: TransportFixture) {
         lock.withLock { fixtures[path] = fixture }
+    }
+
+    /// Body bytes handed to URLSession for the path, over all its requests.
+    static func sentBytes(path: String) -> Int {
+        lock.withLock { sent[path] ?? 0 }
     }
 
     static func requests(path: String) -> [(url: String, range: String?, headers: [String: String])] {
@@ -573,6 +672,12 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
             return
         }
         let total = fixture.body.count
+        if fixture.ranged, let asked = parseRangeStart(range), asked >= total, total > 0 {
+            // Past the end, as a real server answers.
+            deliverHeaders(url: url, status: 416, extra: ["Content-Range": "bytes */\(total)"])
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         if fixture.ranged {
             let start = min(parseRangeStart(range) ?? 0, total)
             let slice = Data(fixture.body.suffix(from: start))
@@ -599,6 +704,17 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
 
     private func stream(_ data: Data) {
         if fixture.holdBody { return }
+        if fixture.chunkDelay > 0 {
+            // A sleeping stub would hold URLSession's loading thread, which
+            // the next request and `stopLoading` also need.
+            let fixture = fixture
+            DispatchQueue.global().async { [self] in streamChunks(data, fixture: fixture) }
+            return
+        }
+        streamChunks(data, fixture: fixture)
+    }
+
+    private func streamChunks(_ data: Data, fixture: TransportFixture) {
         var sent = 0
         var offset = data.startIndex
         while offset < data.endIndex {
@@ -607,7 +723,11 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
             let chunk = Data(data[offset..<end])
             client?.urlProtocol(self, didLoad: chunk)
             sent += chunk.count
+            if let path = request.url?.path {
+                Self.lock.withLock { Self.sent[path, default: 0] += chunk.count }
+            }
             offset = end
+            if fixture.chunkDelay > 0 { Thread.sleep(forTimeInterval: fixture.chunkDelay) }
             if let dropAfter = fixture.dropAfterBytes, sent >= dropAfter,
                Self.markDropped(path: request.url?.path) {
                 _ = fixture.dropWhenSignalled?.wait(timeout: .now() + 5)
