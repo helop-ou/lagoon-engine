@@ -135,12 +135,11 @@ struct URLSessionByteSourceTests {
         var first = [UInt8](repeating: 0, count: 64 * 1_024)
         let firstCount = avio_read(context, &first, Int32(first.count))
         #expect(firstCount > 0)
-        // Let the stub run past the cap before the reader drains anything.
+        // The reader waits until the source has hung up on the stub.
         let deadline = Date().addingTimeInterval(10)
-        while TransportStub.sentBytes(path: "/outrun") <= Self.ignoredSuspend.endAbove, Date() < deadline {
+        while TransportStub.stoppedCount(path: "/outrun") == 0, Date() < deadline {
             Thread.sleep(forTimeInterval: 0.02)
         }
-        Thread.sleep(forTimeInterval: 0.2)
         let received = Data(first.prefix(Int(max(firstCount, 0)))) + Self.readAll(context)
 
         #expect(received == body)
@@ -580,7 +579,7 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
     private nonisolated(unsafe) static var recorded: [String: [(url: String, range: String?, headers: [String: String])]] = [:]
     private nonisolated(unsafe) static var dropped: Set<String> = []
     private nonisolated(unsafe) static var failed: [String: Int] = [:]
-    private nonisolated(unsafe) static var sent: [String: Int] = [:]
+    private nonisolated(unsafe) static var stops: [String: Int] = [:]
     private let stateLock = NSLock()
     private var stopped = false
     private var fixture = TransportFixture(status: 404)
@@ -591,7 +590,7 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
             recorded = [:]
             dropped = []
             failed = [:]
-            sent = [:]
+            stops = [:]
         }
     }
 
@@ -610,9 +609,9 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
         lock.withLock { fixtures[path] = fixture }
     }
 
-    /// Body bytes handed to URLSession for the path, over all its requests.
-    static func sentBytes(path: String) -> Int {
-        lock.withLock { sent[path] ?? 0 }
+    /// Requests for the path the client ended before they finished.
+    static func stoppedCount(path: String) -> Int {
+        lock.withLock { stops[path] ?? 0 }
     }
 
     static func requests(path: String) -> [(url: String, range: String?, headers: [String: String])] {
@@ -650,6 +649,9 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
 
     override func stopLoading() {
         stateLock.withLock { stopped = true }
+        if let path = request.url?.path {
+            Self.lock.withLock { Self.stops[path, default: 0] += 1 }
+        }
     }
 
     private func respond(url: URL, range: String?) {
@@ -723,9 +725,6 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
             let chunk = Data(data[offset..<end])
             client?.urlProtocol(self, didLoad: chunk)
             sent += chunk.count
-            if let path = request.url?.path {
-                Self.lock.withLock { Self.sent[path, default: 0] += chunk.count }
-            }
             offset = end
             if fixture.chunkDelay > 0 { Thread.sleep(forTimeInterval: fixture.chunkDelay) }
             if let dropAfter = fixture.dropAfterBytes, sent >= dropAfter,
