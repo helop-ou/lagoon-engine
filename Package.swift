@@ -45,6 +45,7 @@ let package = Package(
                 .copy("Fixtures/HLSResume"),
                 .copy("Fixtures/HLSVideoFirst"),
                 .copy("Fixtures/TextSubtitles"),
+                .copy("Fixtures/UnindexedSeek"),
             ],
             swiftSettings: [
                 .defaultIsolation(MainActor.self),
