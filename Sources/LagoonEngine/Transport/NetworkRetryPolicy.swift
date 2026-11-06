@@ -17,10 +17,18 @@ nonisolated struct NetworkRetryPolicy: Sendable {
     static let playback = NetworkRetryPolicy(budget: 30, delays: [0.25, 0.5, 1, 2])
 
     /// The pause before retry `attempt` (from zero), or nil once the budget
-    /// since the first failure would be spent.
-    func delay(beforeAttempt attempt: Int, elapsedSinceFirstFailure elapsed: TimeInterval) -> TimeInterval? {
+    /// since the first failure would be spent. A server's `Retry-After` on
+    /// `error` stretches the pause, never the budget.
+    func delay(
+        beforeAttempt attempt: Int,
+        elapsedSinceFirstFailure elapsed: TimeInterval,
+        after error: Error? = nil
+    ) -> TimeInterval? {
         guard let last = delays.last else { return nil }
-        let pause = attempt < delays.count ? delays[attempt] : last
+        var pause = attempt < delays.count ? delays[attempt] : last
+        if let asked = error.flatMap(Self.retryAfter(of:)) {
+            pause = max(pause, asked)
+        }
         guard elapsed + pause <= budget else { return nil }
         return pause
     }
@@ -43,7 +51,7 @@ nonisolated struct NetworkRetryPolicy: Sendable {
             }
         }
         switch error {
-        case FFmpegTransportError.httpStatus(let code), PlaybackCacheError.serverStatus(let code):
+        case FFmpegTransportError.httpStatus(let code, _), PlaybackCacheError.serverStatus(let code, _):
             return isTransient(httpStatus: code)
         case FFmpegTransportError.timeout:
             return true
@@ -55,6 +63,34 @@ nonisolated struct NetworkRetryPolicy: Sendable {
     static func isTransient(httpStatus code: Int) -> Bool {
         (500...599).contains(code) || code == 408 || code == 429
     }
+
+    private static func retryAfter(of error: Error) -> TimeInterval? {
+        switch error {
+        case FFmpegTransportError.httpStatus(_, let seconds), PlaybackCacheError.serverStatus(_, let seconds):
+            seconds
+        default:
+            nil
+        }
+    }
+
+    /// `Retry-After` in seconds from now, as either form RFC 9110 allows.
+    static func retryAfter(_ response: HTTPURLResponse, now: Date = Date()) -> TimeInterval? {
+        guard let value = response.value(forHTTPHeaderField: "Retry-After")?
+            .trimmingCharacters(in: .whitespaces) else { return nil }
+        if let seconds = Int(value) {
+            return seconds >= 0 ? TimeInterval(seconds) : nil
+        }
+        guard let date = httpDate.date(from: value) else { return nil }
+        return max(date.timeIntervalSince(now), 0)
+    }
+
+    nonisolated(unsafe) private static let httpDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter
+    }()
 
     /// Sleeps `seconds` in short slices, returning early (false) once
     /// `stopped` says the read is no longer wanted.

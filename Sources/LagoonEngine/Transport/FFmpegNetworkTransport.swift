@@ -18,7 +18,7 @@ nonisolated enum FFmpegTransportError: Error {
     case closed
     case interrupted
     case invalidResponse
-    case httpStatus(Int)
+    case httpStatus(Int, retryAfter: TimeInterval? = nil)
     case timeout
     case invalidOffset
     case decodingFailed
@@ -491,7 +491,8 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
                 guard NetworkRetryPolicy.isTransient(error),
                       let delay = retryPolicy.delay(
                           beforeAttempt: retryCount,
-                          elapsedSinceFirstFailure: Date().timeIntervalSince(started)
+                          elapsedSinceFirstFailure: Date().timeIntervalSince(started),
+                          after: error
                       ) else {
                     // Leave no failed request behind: the demuxer's own retry
                     // reads again, and must get a fresh request, not this error.
@@ -694,7 +695,10 @@ nonisolated final class URLSessionByteSource: FFmpegByteSource, @unchecked Senda
                 return .cancel
             }
         default:
-            pendingError = FFmpegTransportError.httpStatus(http.statusCode)
+            pendingError = FFmpegTransportError.httpStatus(
+                http.statusCode,
+                retryAfter: NetworkRetryPolicy.retryAfter(http)
+            )
             return .cancel
         }
     }

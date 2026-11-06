@@ -433,7 +433,7 @@ nonisolated enum PlaybackCacheError: LocalizedError, Equatable {
     case rangeUnsupported
     case storageUnavailable
     /// A status another attempt could change: a 5xx, 408 or 429.
-    case serverStatus(Int)
+    case serverStatus(Int, retryAfter: TimeInterval? = nil)
 
     var errorDescription: String? {
         switch self {
@@ -441,7 +441,7 @@ nonisolated enum PlaybackCacheError: LocalizedError, Equatable {
         case .invalidResponse: "The media server returned an invalid byte-range response."
         case .rangeUnsupported: "The media server does not support the requested byte range."
         case .storageUnavailable: "The playback cache could not be opened."
-        case .serverStatus(let code): "The media server answered \(code)."
+        case .serverStatus(let code, _): "The media server answered \(code)."
         }
     }
 }
@@ -532,7 +532,7 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
             completionHandler(.cancel)
             // A restarting server is not a server without ranges.
             let error: PlaybackCacheError = NetworkRetryPolicy.isTransient(httpStatus: http.statusCode)
-                ? .serverStatus(http.statusCode)
+                ? .serverStatus(http.statusCode, retryAfter: NetworkRetryPolicy.retryAfter(http))
                 : .rangeUnsupported
             finish(.failure(error), cancelTask: true)
             return
@@ -738,7 +738,8 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
                 let pause: TimeInterval? = if NetworkRetryPolicy.isTransient(error) {
                     retryPolicy.delay(
                         beforeAttempt: attempt,
-                        elapsedSinceFirstFailure: Date().timeIntervalSince(started)
+                        elapsedSinceFirstFailure: Date().timeIntervalSince(started),
+                        after: error
                     )
                 } else {
                     attempt < 2 ? 0.2 * Double(attempt + 1) : nil
