@@ -118,6 +118,8 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
 
     private let isInterrupted: @Sendable () -> Bool
     private let hlsCache: HLSPlaybackCacheScope?
+    /// Shared with the demuxer's own I/O, so a failed HLS child read is seen.
+    let failures: TransportFailureRecorder
     private let session: URLSession
     private let delegate: FFmpegTransportSessionDelegate
     private let authorization: MediaRequestAuthorization?
@@ -137,10 +139,12 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
         isInterrupted: @escaping @Sendable () -> Bool,
         hlsCache: HLSPlaybackCacheScope? = nil,
         sessionConfiguration: URLSessionConfiguration = .ephemeral,
-        authorization: MediaRequestAuthorization? = nil
+        authorization: MediaRequestAuthorization? = nil,
+        failures: TransportFailureRecorder = TransportFailureRecorder()
     ) {
         self.isInterrupted = isInterrupted
         self.hlsCache = hlsCache
+        self.failures = failures
         self.authorization = authorization
         let sessionDelegate = FFmpegTransportSessionDelegate(authorization: authorization)
         delegate = sessionDelegate
@@ -257,7 +261,7 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
         let inner = URLSessionByteSource(url: innerURL, session: session, isInterrupted: isInterrupted, authorization: authorization, retryPolicy: retryPolicy)
         let decrypted = AES128CBCByteSource(inner: inner, key: key, iv: iv)
         do {
-            let io = try FFmpegCachedIO(source: decrypted, bufferSize: 64 * 1_024)
+            let io = try FFmpegCachedIO(source: decrypted, bufferSize: 64 * 1_024, failures: failures)
             guard let ioContext = io.context else {
                 decrypted.cancel()
                 return ffmpegErrorIO
@@ -295,7 +299,7 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
         do {
             // FFmpeg holds several segments open and each fits under the
             // per-resource cap, so these keep the small buffer.
-            let io = try FFmpegCachedIO(source: lease.scope, bufferSize: 64 * 1_024)
+            let io = try FFmpegCachedIO(source: lease.scope, bufferSize: 64 * 1_024, failures: failures)
             guard let ioContext = io.context else {
                 lease.close()
                 return nil
@@ -315,7 +319,7 @@ nonisolated final class FFmpegNetworkTransport: @unchecked Sendable {
     ) -> Int32 {
         let source = URLSessionByteSource(url: url, session: session, isInterrupted: isInterrupted, authorization: authorization, retryPolicy: retryPolicy)
         do {
-            let io = try FFmpegCachedIO(source: source)
+            let io = try FFmpegCachedIO(source: source, failures: failures)
             guard let ioContext = io.context else {
                 source.cancel()
                 return ffmpegErrorIO

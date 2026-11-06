@@ -12,16 +12,22 @@ nonisolated private let avIOErrorIO: Int32 = -5
 /// unretained.
 nonisolated final class FFmpegCachedIO {
     private let source: any FFmpegByteSource
+    private let failures: TransportFailureRecorder?
     private var position: Int64 = 0
     private(set) var context: UnsafeMutablePointer<AVIOContext>?
 
     /// The AVIO buffer defaults to the source's request size. A smaller buffer
     /// costs a whole request per refill whenever bytes cannot be stored,
     /// because the rest of each fetch is discarded.
-    public init(source: any FFmpegByteSource, bufferSize: Int32? = nil) throws {
+    public init(
+        source: any FFmpegByteSource,
+        bufferSize: Int32? = nil,
+        failures: TransportFailureRecorder? = nil
+    ) throws {
         let bufferSize = bufferSize
             ?? Int32(min(max(source.requestSize, 64 * 1_024), 1_024 * 1_024))
         self.source = source
+        self.failures = failures
         guard let buffer = av_malloc(Int(bufferSize))?.assumingMemoryBound(to: UInt8.self) else {
             throw PlaybackCacheError.storageUnavailable
         }
@@ -102,12 +108,15 @@ nonisolated final class FFmpegCachedIO {
             guard data.count <= Int(size), Int64(data.count) <= Int64.max - position else { return avIOErrorIO }
             data.copyBytes(to: buffer, count: data.count)
             position += Int64(data.count)
+            // Bytes arrived again, so an earlier failure explains nothing now.
+            failures?.reset()
             return Int32(data.count)
         } catch {
             // EOF is only the end of a successfully read resource. Reporting a
             // range, auth, network or storage failure as EOF made libavformat
             // end a truncated movie as complete; an I/O error keeps the
             // demuxer's retry path in charge.
+            failures?.record(error)
             return avIOErrorIO
         }
     }
