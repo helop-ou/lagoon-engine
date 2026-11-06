@@ -74,6 +74,49 @@ struct URLSessionByteSourceTests {
         #expect(count <= 6)
     }
 
+    @Test func aRefusedReadLeavesItsStatusForTheHost() throws {
+        let transport = makeTransport()
+        TransportStub.set("/refused", .init(status: 401))
+        var io: UnsafeMutablePointer<AVIOContext>?
+        #expect(Self.open(transport, url: Self.testURL("/refused"), into: &io) >= 0)
+        let context = try #require(io)
+        defer { _ = transport.close(context) }
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        #expect(avio_read(context, &buffer, Int32(buffer.count)) < 0)
+        #expect(transport.failures.lastFailure == .httpStatus(401))
+        // A refusal is not a network fault: asked once, not retried.
+        #expect(TransportStub.requests(path: "/refused").count == 1)
+    }
+
+    @Test func anOfflineReadLeavesItsURLErrorForTheHost() throws {
+        let transport = makeTransport()
+        transport.retryPolicy = NetworkRetryPolicy(budget: 0.2, delays: [0.02, 0.05])
+        TransportStub.set("/offline", .init(body: Self.body(count: 4_096), failFirst: 1_000))
+        var io: UnsafeMutablePointer<AVIOContext>?
+        #expect(Self.open(transport, url: Self.testURL("/offline"), into: &io) >= 0)
+        let context = try #require(io)
+        defer { _ = transport.close(context) }
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        #expect(avio_read(context, &buffer, Int32(buffer.count)) < 0)
+        #expect(transport.failures.lastFailure == .urlError(URLError.notConnectedToInternet.rawValue))
+    }
+
+    /// A busy server's Retry-After beyond the budget ends the retries at once
+    /// instead of asking again sooner than it said.
+    @Test func aRetryAfterPastTheBudgetIsNotAskedAgain() throws {
+        let transport = makeTransport()
+        transport.retryPolicy = NetworkRetryPolicy(budget: 0.3, delays: [0.02])
+        TransportStub.set("/busy", .init(status: 503, headers: ["Retry-After": "5"]))
+        var io: UnsafeMutablePointer<AVIOContext>?
+        #expect(Self.open(transport, url: Self.testURL("/busy"), into: &io) >= 0)
+        let context = try #require(io)
+        defer { _ = transport.close(context) }
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        #expect(avio_read(context, &buffer, Int32(buffer.count)) < 0)
+        #expect(TransportStub.requests(path: "/busy").count == 1)
+        #expect(transport.failures.lastFailure == .httpStatus(503))
+    }
+
     @Test func aDroppedConnectionResumesAtTheSamePosition() throws {
         let transport = makeTransport()
         let body = Self.body(count: 1_048_576)
@@ -428,6 +471,8 @@ private nonisolated struct TransportFixture: Sendable {
     /// Redirects to this URL instead of serving a body, to test that the
     /// credential header does not cross origins.
     var redirectTo: URL?
+    /// Sent with a status other than 200 or 206.
+    var headers: [String: String] = [:]
 }
 
 /// A scripted per-path `URLProtocol`: honours `Range` for `ranged` paths,
@@ -523,7 +568,7 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
             return
         }
         guard fixture.status == 200 || fixture.status == 206 else {
-            deliverHeaders(url: url, status: fixture.status, extra: [:])
+            deliverHeaders(url: url, status: fixture.status, extra: fixture.headers)
             client?.urlProtocolDidFinishLoading(self)
             return
         }
