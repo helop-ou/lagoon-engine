@@ -6,6 +6,7 @@ nonisolated private let avSeekSize: Int32 = 0x10000
 nonisolated private let avSeekForce: Int32 = 0x20000
 nonisolated private let avIOErrorEOF: Int32 = -541_478_725
 nonisolated private let avIOErrorIO: Int32 = -5
+nonisolated private let avIOErrorExit: Int32 = -1_414_092_869
 
 /// Bridges FFmpeg's synchronous AVIO callbacks to a byte source. FFmpegDemuxer
 /// retains this longer than the AVIOContext, so the callback reference is
@@ -15,6 +16,16 @@ nonisolated final class FFmpegCachedIO {
     private let failures: TransportFailureRecorder?
     private var position: Int64 = 0
     private(set) var context: UnsafeMutablePointer<AVIOContext>?
+    /// Past this, reads fail with `AVERROR_EXIT`, which ends a demuxer's
+    /// seek. Set and cleared on the demux queue, which also runs the reads.
+    var deadline: ContinuousClock.Instant? {
+        didSet { deadlineExpired = false }
+    }
+    /// Whether a read failed on `deadline`. The Matroska demuxer reports
+    /// such a seek as a success, landed wherever it got to.
+    private(set) var deadlineExpired = false
+
+    var contentLength: Int64? { source.contentLength }
 
     /// The AVIO buffer defaults to the source's request size. A smaller buffer
     /// costs a whole request per refill whenever bytes cannot be stored,
@@ -96,7 +107,25 @@ nonisolated final class FFmpegCachedIO {
         )
     }
 
+    /// Up to `count` bytes at `offset`, without moving the read position.
+    func bytes(at offset: Int64, count: Int) -> Data {
+        var result = Data()
+        while result.count < count {
+            guard let data = try? source.read(
+                offset: offset + Int64(result.count),
+                length: count - result.count,
+                priority: URLSessionTask.highPriority
+            ), !data.isEmpty else { break }
+            result.append(data.prefix(count - result.count))
+        }
+        return result
+    }
+
     private func read(into buffer: UnsafeMutablePointer<UInt8>, size: Int32) -> Int32 {
+        if let deadline, ContinuousClock.now >= deadline {
+            deadlineExpired = true
+            return avIOErrorExit
+        }
         guard Int64(size) <= Int64.max - position else { return avIOErrorIO }
         do {
             let data = try source.read(
