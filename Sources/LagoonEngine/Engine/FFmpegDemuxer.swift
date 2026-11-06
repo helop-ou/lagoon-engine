@@ -130,6 +130,13 @@ nonisolated final class FFmpegDemuxer {
     private let capabilities: PlaybackCapabilities
     private var cachedIO: FFmpegCachedIO?
     private var transport: FFmpegNetworkTransport?
+    /// Outlives `close()`, which a failed open calls before the engine asks.
+    private let transportFailures = TransportFailureRecorder()
+
+    /// What the network last answered a failed read with, since the last open.
+    var lastTransportFailure: PlaybackTransportFailure? {
+        transportFailures.lastFailure
+    }
     private var packet: UnsafeMutablePointer<AVPacket>?
     private var videoStreamIndex: Int32 = -1
     private var videoTimeBase = AVRational(num: 1, den: 1)
@@ -478,6 +485,7 @@ nonisolated final class FFmpegDemuxer {
         authorization: MediaRequestAuthorization? = nil
     ) throws {
         close()
+        transportFailures.reset()
         formatContext = avformat_alloc_context()
         guard let allocated = formatContext else {
             throw DemuxError.openFailed("out of memory")
@@ -540,7 +548,8 @@ nonisolated final class FFmpegDemuxer {
         let transport = FFmpegNetworkTransport(
             isInterrupted: { [weak self] in self?.isInterrupted ?? true },
             hlsCache: cacheSession?.hlsScope,
-            authorization: authorization
+            authorization: authorization,
+            failures: transportFailures
         )
         self.transport = transport
         transport.install(on: allocated)
@@ -564,7 +573,8 @@ nonisolated final class FFmpegDemuxer {
                     runtimeSeconds: disc.runtimeSeconds
                 )
                 let cachedIO = try FFmpegCachedIO(
-                    source: DiscImageStream(source: cacheScope, map: title.stream)
+                    source: DiscImageStream(source: cacheScope, map: title.stream),
+                    failures: transportFailures
                 )
                 allocated.pointee.pb = cachedIO.context
                 allocated.pointee.flags |= customIOFlag
@@ -573,7 +583,7 @@ nonisolated final class FFmpegDemuxer {
                 throw DemuxError.openFailed(error.errorDescription ?? "unreadable disc image")
             }
         } else if let cacheScope = cacheSession?.directScope {
-            let cachedIO = try FFmpegCachedIO(source: cacheScope)
+            let cachedIO = try FFmpegCachedIO(source: cacheScope, failures: transportFailures)
             allocated.pointee.pb = cachedIO.context
             allocated.pointee.flags |= customIOFlag
             self.cachedIO = cachedIO

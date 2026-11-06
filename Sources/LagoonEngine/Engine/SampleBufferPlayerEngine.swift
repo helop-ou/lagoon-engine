@@ -2453,7 +2453,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let failure = PlaybackEngineFailure(
             cause: demuxError?.cause ?? .delivery,
             message: demuxError?.errorDescription ?? "The stream could not be opened.",
-            detail: demuxError?.diagnosticDetail ?? PlaybackFailureDetail(stage: .open, error: error)
+            detail: demuxError?.diagnosticDetail ?? PlaybackFailureDetail(stage: .open, error: error),
+            transport: demuxer.lastTransportFailure
         )
         Task { @MainActor in self.onError?(failure) }
     }
@@ -2735,7 +2736,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     cause: demuxError?.cause ?? .delivery,
                     message: demuxError?.errorDescription
                         ?? "The stream could not seek to that position.",
-                    detail: demuxError?.diagnosticDetail ?? PlaybackFailureDetail(stage: .seek, error: error)
+                    detail: demuxError?.diagnosticDetail ?? PlaybackFailureDetail(stage: .seek, error: error),
+                    transport: demuxer.lastTransportFailure
                 )
                 shared.withLock { $0.cancelled = true }
                 videoQueue.markFinished()
@@ -3067,7 +3069,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             let failure = PlaybackEngineFailure(
                 cause: .delivery,
                 message: "Playback failed in the Lagoon engine (\(message)).",
-                detail: PlaybackFailureDetail(stage: .read, domain: "ffmpeg.read")
+                detail: PlaybackFailureDetail(stage: .read, domain: "ffmpeg.read"),
+                transport: demuxer.lastTransportFailure
             )
             Task { @MainActor in self.onError?(failure) }
             shared.withLock { $0.cancelled = true }

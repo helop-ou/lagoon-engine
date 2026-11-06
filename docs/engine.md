@@ -124,6 +124,11 @@ The verdict is all the engine offers. Whether another way exists, and whether
 to try it, is the host's call; the ladder a host descends on `.delivery` is a
 host concern.
 
+When the network is why a read failed, `transport` says what it answered: an
+HTTP status or an `NSURLErrorDomain` code. A refused credential, a missing
+file or a lost network fails every delivery the same way, and a host can tell
+from it before asking again.
+
 The ladder descends only on a verdict about the samples. A lost VideoToolbox
 session is rebuilt, once per fault burst, not reported as undecodable; in
 the background, one that cannot be rebuilt suspends video until the host
