@@ -127,7 +127,8 @@ struct URLSessionByteSourceTests {
         let transport = makeTransport()
         transport.buffering = Self.ignoredSuspend
         let body = Self.body(count: 40 * 1_024 * 1_024)
-        TransportStub.set("/outrun", .init(body: body, chunkSize: 1_024 * 1_024))
+        // Paced, so the source hangs up mid-body however slow the machine.
+        TransportStub.set("/outrun", .init(body: body, chunkSize: 1_024 * 1_024, chunkDelay: 0.005))
         var io: UnsafeMutablePointer<AVIOContext>?
         #expect(Self.open(transport, url: Self.testURL("/outrun"), into: &io) >= 0)
         let context = try #require(io)
@@ -137,7 +138,7 @@ struct URLSessionByteSourceTests {
         #expect(firstCount > 0)
         // The reader waits until the source has hung up on the stub.
         let deadline = Date().addingTimeInterval(10)
-        while TransportStub.stoppedCount(path: "/outrun") == 0, Date() < deadline {
+        while TransportStub.cancelledCount(path: "/outrun") == 0, Date() < deadline {
             Thread.sleep(forTimeInterval: 0.02)
         }
         let received = Data(first.prefix(Int(max(firstCount, 0)))) + Self.readAll(context)
@@ -582,6 +583,7 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
     private nonisolated(unsafe) static var stops: [String: Int] = [:]
     private let stateLock = NSLock()
     private var stopped = false
+    private var finished = false
     private var fixture = TransportFixture(status: 404)
 
     static func reset() {
@@ -609,8 +611,9 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
         lock.withLock { fixtures[path] = fixture }
     }
 
-    /// Requests for the path the client ended before they finished.
-    static func stoppedCount(path: String) -> Int {
+    /// Requests for the path the client cancelled before the body ended.
+    /// URLSession also stops a request that finished, which is not counted.
+    static func cancelledCount(path: String) -> Int {
         lock.withLock { stops[path] ?? 0 }
     }
 
@@ -648,8 +651,11 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
     }
 
     override func stopLoading() {
-        stateLock.withLock { stopped = true }
-        if let path = request.url?.path {
+        let cancelled = stateLock.withLock {
+            stopped = true
+            return !finished
+        }
+        if cancelled, let path = request.url?.path {
             Self.lock.withLock { Self.stops[path, default: 0] += 1 }
         }
     }
@@ -734,6 +740,7 @@ private nonisolated final class TransportStub: URLProtocol, @unchecked Sendable 
                 return
             }
         }
+        stateLock.withLock { finished = true }
         client?.urlProtocolDidFinishLoading(self)
     }
 }
