@@ -61,6 +61,13 @@ nonisolated enum DemuxBackpressurePolicy {
     /// Intake units without a cache: 30 s at 60 fps. The byte budget still
     /// bounds the memory.
     static let uncachedVideoIntakeHardLimit = 1_800
+    /// Audio held while reading to the target, by bytes rather than buffers:
+    /// a buffer is 21 ms to 128 ms depending on the path, so 540 of them
+    /// stopped a transcode at 16 s. The budget is what 540 buffers cost at
+    /// worst (2048 samples of 8-channel float each), so no ceiling rises.
+    static let uncachedAudioByteBudget = 540 * 2_048 * 8 * 4
+    /// And a count no stream should need, so buffer overhead stays bounded.
+    static let uncachedAudioCountCeiling = 4_000
 
     /// Whether an uncached stream reads on past the watermarks: short of its
     /// target, with audio under its hard water and the intake under its
@@ -69,6 +76,7 @@ nonisolated enum DemuxBackpressurePolicy {
         readAheadSeconds: Double?,
         playbackRate: Double,
         audioCount: Int,
+        audioBytes: Int,
         hasAudio: Bool,
         deliveryIsCached: Bool,
         videoIntakeCount: Int,
@@ -76,7 +84,7 @@ nonisolated enum DemuxBackpressurePolicy {
     ) -> Bool {
         guard !deliveryIsCached, let readAheadSeconds, readAheadSeconds.isFinite,
               readAheadSeconds < uncachedReadAheadSeconds * PlaybackRatePolicy.clamped(playbackRate) else { return false }
-        if hasAudio, audioCount >= uncachedAudioHardWater { return false }
+        if hasAudio, audioBytes >= uncachedAudioByteBudget || audioCount >= uncachedAudioCountCeiling { return false }
         return videoIntakeCount < uncachedVideoIntakeHardLimit && videoIntakeBytes < videoIntakeByteBudget
     }
 
@@ -158,12 +166,14 @@ nonisolated enum DemuxBackpressurePolicy {
         decodedFrameBytes: Int64 = 0,
         videoIntakeCount: Int = 0,
         videoIntakeBytes: Int = 0,
-        readAheadSeconds: Double? = nil
+        readAheadSeconds: Double? = nil,
+        audioBytes: Int = 0
     ) -> DemuxBackpressureDecision {
         if readsOnToTarget(
             readAheadSeconds: readAheadSeconds,
             playbackRate: playbackRate,
             audioCount: audioCount,
+            audioBytes: audioBytes,
             hasAudio: hasAudio,
             deliveryIsCached: deliveryIsCached,
             videoIntakeCount: videoIntakeCount,
