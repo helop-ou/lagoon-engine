@@ -420,3 +420,25 @@ by joining same-codec clips of two sizes with ffmpeg's concat demuxer
   real Western European text needs statistical models, and a cheap heuristic
   would mis-decode German as Cyrillic. So every path that fetches a subtitle
   carries a language.
+
+### PGS and the stream probe
+
+`avformat_find_stream_info` will not finish a PGS track until it knows the
+track's size ("unspecified size"), and only a subtitle's own segments carry
+it. Matroska does not store it, so the probe read on until a subtitle came or
+its limit (5 MB or 5 s) ran out, before playback could start. The demuxer now
+gives an unsized PGS track the video's size before probing: PGS draws on the
+video's plane, which is the size the first subtitle would have declared.
+
+Measured November 2026 against jaflix, opening through the cache as direct
+play does, three runs each:
+
+| Title | Probe read | Open |
+| --- | --- | --- |
+| Black Box (1080p remux, PGS), before | 5.03 MB, 7 requests | 13.3–17.6 s |
+| Black Box, after | 105 KB, 3 requests | 3.9–5.4 s |
+| Sintel (no PGS), before | 12 KB, 3 requests | 2.0–2.8 s |
+| Sintel, after | 12 KB, 3 requests | 2.5–3.9 s |
+
+The `LatePGS` fixture (first subtitle 11 s in) probed 42 KB before, 6 KB
+after, and its subtitles still decode to images.
