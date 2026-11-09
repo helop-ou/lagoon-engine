@@ -143,6 +143,16 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         )
     }
 
+    /// Media seconds the demuxer has read past the clock.
+    public var demuxReadAheadSeconds: Double {
+        max(demuxedThroughSeconds - clockPosition, 0)
+    }
+
+    /// Which limit last stopped the demuxer reading; nil while it reads.
+    public var demuxReadAheadLimit: DemuxReadAheadLimit? {
+        shared.withLock { $0.demuxReadAheadLimit }
+    }
+
     /// Timestamp gaps in the audio feed: measurable crackle. Should stay 0;
     /// growth means the renderer is fed a misaligned timeline.
     public var audioTimingGapCount: Int {
@@ -366,6 +376,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     @ObservationIgnored private var slowStartTask: Task<Void, Never>?
     /// Internal so a test need not wait the full five seconds.
     @ObservationIgnored var slowStartSeconds = PlaybackStartupTimeline.slowStartSeconds
+    /// What the demuxer's network transport is built from, when not the
+    /// default. Internal so a test can put a simulated server behind it.
+    @ObservationIgnored nonisolated(unsafe) var transportSessionConfiguration: URLSessionConfiguration?
     /// Where the clock is heading while stopped for a load or seek. Nil while
     /// running and during a stall, when `timePosition` is live.
     @ObservationIgnored private var bufferingTargetSeconds: Double?
@@ -2334,6 +2347,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     // MARK: - Startup
 
+    /// The furthest video presentation time the demuxer has delivered.
+    var demuxedThroughSeconds: Double {
+        shared.withLock { $0.videoBufferedTo }
+    }
+
     /// When each step of the current start was reached; nil before `play`.
     var startupTimeline: PlaybackStartupTimeline? {
         shared.withLock { $0.startup }
@@ -2405,6 +2423,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // percent-decode a URL.
         let openTarget = url.isFileURL ? url.path(percentEncoded: false) : url.absoluteString
         demuxer.startSeconds = shared.withLock { $0.pendingSeekSeconds } ?? 0
+        if let transportSessionConfiguration {
+            demuxer.transportSessionConfiguration = transportSessionConfiguration
+        }
         guard let deliveryIsCached = openDemuxer(
             openTarget: openTarget,
             cacheSession: cacheSession,
@@ -2856,20 +2877,34 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             return
         }
-        switch DemuxBackpressurePolicy.decision(
+        let audioCount = audioQueue.count
+        let hasAudio = !demuxer.audioStreams.isEmpty
+        let intakeCount = videoIntake.count
+        let intakeBytes = videoIntake.byteCount
+        let decision = DemuxBackpressurePolicy.decision(
             videoCount: videoBacklog,
-            audioCount: audioQueue.count,
+            audioCount: audioCount,
             audioBufferedSeconds: audioQueue.bufferedDuration,
             videoFrameRate: demuxer.videoFrameRate,
             videoIsDecoded: videoIsDecoded,
             videoIsSoftwareDecoded: videoIsSoftwareDecoded,
-            hasAudio: !demuxer.audioStreams.isEmpty,
+            hasAudio: hasAudio,
             deliveryIsCached: deliveryIsCached,
             playbackRate: playbackRate,
             decodedFrameBytes: decodedFrameBytes,
-            videoIntakeCount: videoIntake.count,
-            videoIntakeBytes: videoIntake.byteCount
-        ) {
+            videoIntakeCount: intakeCount,
+            videoIntakeBytes: intakeBytes
+        )
+        let limit = DemuxBackpressurePolicy.limit(
+            for: decision,
+            audioCount: audioCount,
+            hasAudio: hasAudio,
+            deliveryIsCached: deliveryIsCached,
+            videoIntakeCount: intakeCount,
+            videoIntakeBytes: intakeBytes
+        )
+        shared.withLock { $0.demuxReadAheadLimit = limit }
+        switch decision {
         case .read:
             performDemuxStep()
         case .waitForVideo(let target):
@@ -3802,6 +3837,7 @@ nonisolated private final class SharedState: @unchecked Sendable {
     struct State {
         var cancelled = false
         var startup: PlaybackStartupTimeline?
+        var demuxReadAheadLimit: DemuxReadAheadLimit?
         var pendingSeekSeconds: Double?
         /// Invalidates an already-primed start when a newer seek is issued.
         var playbackGeneration = 0

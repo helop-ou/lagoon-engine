@@ -6,6 +6,19 @@ nonisolated enum DemuxBackpressureDecision: Equatable {
     case waitForAudio(below: Int)
 }
 
+/// Which limit stopped the demuxer reading, for diagnostics. Without a byte
+/// cache this decides how far ahead a stream is buffered.
+public nonisolated enum DemuxReadAheadLimit: String, Sendable {
+    /// The audio queue reached its high water.
+    case audio
+    /// The decoded video queue reached its high water with audio to spare.
+    case video
+    /// Compressed video parked past the decoded queue reached its unit limit.
+    case videoIntake
+    /// The same, by bytes.
+    case videoIntakeBytes
+}
+
 /// Balances two streams read through one interleaved demux cursor. Soft
 /// limits drain in batches while both are healthy. If one side is short, the
 /// fuller side grows only to a hard limit, then paces one dequeue at a time
@@ -35,6 +48,30 @@ nonisolated enum DemuxBackpressurePolicy {
     /// the audio high water bounds it.
     static let videoIntakeHardLimit = 600
     static let videoIntakeByteBudget = 128 * 1_048_576
+
+    /// Which limit a wait decision stopped on; nil for a read. Mirrors the
+    /// branches of `decision`, which it is only ever called after.
+    static func limit(
+        for decision: DemuxBackpressureDecision,
+        audioCount: Int,
+        hasAudio: Bool,
+        deliveryIsCached: Bool,
+        videoIntakeCount: Int,
+        videoIntakeBytes: Int
+    ) -> DemuxReadAheadLimit? {
+        switch decision {
+        case .read:
+            return nil
+        case .waitForAudio:
+            return .audio
+        case .waitForVideo:
+            guard hasAudio else { return .video }
+            if audioCount >= audioCushionTarget(deliveryIsCached: deliveryIsCached) { return .audio }
+            if videoIntakeCount >= videoIntakeHardLimit { return .videoIntake }
+            if videoIntakeBytes >= videoIntakeByteBudget { return .videoIntakeBytes }
+            return .video
+        }
+    }
 
     /// The audio depth aimed for, so the HUD can show which profile applies.
     static func audioCushionTarget(deliveryIsCached: Bool) -> Int {

@@ -62,6 +62,11 @@ public protocol PlayerEngineDiagnostics: AnyObject {
 
     /// What the two queues are holding right now.
     var queueDepths: (video: Int, audio: Int) { get }
+    /// Media seconds the demuxer has read past the clock. Without a byte cache
+    /// this is the whole cushion against a slow segment.
+    var demuxReadAheadSeconds: Double { get }
+    /// Which limit last stopped the demuxer reading; nil while it reads.
+    var demuxReadAheadLimit: DemuxReadAheadLimit? { get }
     /// How many subtitle cues are live.
     var subtitleCueCountDiagnostic: Int { get }
     /// How many observers the renderers have attached.
