@@ -44,6 +44,7 @@ let package = Package(
             resources: [
                 .copy("Fixtures/HLSResume"),
                 .copy("Fixtures/HLSVideoFirst"),
+                .copy("Fixtures/LatePGS"),
                 .copy("Fixtures/TextSubtitles"),
                 .copy("Fixtures/UnindexedSeek"),
             ],
