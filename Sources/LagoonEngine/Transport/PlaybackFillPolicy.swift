@@ -131,6 +131,33 @@ nonisolated struct PlaybackFillPolicy: Equatable, Sendable {
         }
     }
 
+    /// Largest fill request on a fast, distant link.
+    static let maximumRequestBytes: Int64 = 16 * 1_024 * 1_024
+    /// A fill request transfers for this many times its wait for the first
+    /// byte, so the wait costs under a tenth of the link.
+    static let transferToFirstByteRatio: Double = 10
+    /// And for about a second at most, so a foreground read that promotes it
+    /// still gets its bytes within the shared-fetch wait.
+    static let maximumRequestSeconds: Double = 1
+
+    /// Bytes for the next fill request. Each request pays the first-byte wait
+    /// once, so a fixed size over a long round trip leaves most of a fast
+    /// link idle. Never below `minimum`, the size a foreground miss fetches.
+    static func requestBytes(
+        bytesPerSecond: Double?,
+        firstByteSeconds: Double?,
+        minimum: Int64,
+        maximum: Int64 = maximumRequestBytes
+    ) -> Int64 {
+        let ceiling = max(maximum, minimum)
+        guard let bytesPerSecond, bytesPerSecond.isFinite, bytesPerSecond > 0,
+              let firstByteSeconds, firstByteSeconds.isFinite, firstByteSeconds > 0 else { return minimum }
+        let seconds = min(firstByteSeconds * transferToFirstByteRatio, maximumRequestSeconds)
+        let bytes = bytesPerSecond * seconds
+        guard bytes < Double(ceiling) else { return ceiling }
+        return max(Int64(bytes), minimum)
+    }
+
     /// Media seconds a byte cushion represents at the average bitrate; nil when
     /// either is unknown.
     static func aheadSeconds(cachedBytesAhead: Int64, contentLength: Int64?, durationSeconds: Double) -> Double? {
