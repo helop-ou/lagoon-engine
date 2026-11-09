@@ -628,6 +628,7 @@ nonisolated final class FFmpegDemuxer {
             throw DemuxError.openFailed(Self.errorText(status), code: status)
         }
         onStartupStage?(.containerOpened)
+        sizeBitmapSubtitlesFromVideo(ctx)
         status = avformat_find_stream_info(ctx, nil)
         guard status >= 0 else {
             throw DemuxError.openFailed(Self.errorText(status), code: status)
@@ -635,6 +636,22 @@ nonisolated final class FFmpegDemuxer {
         probedBytes = ctx.pointee.pb.map { max(avio_seek($0, 0, SEEK_CUR), 0) } ?? 0
         onStartupStage?(.streamsProbed)
         return ctx
+    }
+
+    /// The stream probe holds a PGS track open until it knows the track's
+    /// size, which only a subtitle's own segments carry, and reads up to its
+    /// limit (5 MB or 5 s) to find one. PGS is drawn on the video's plane, so
+    /// the video's size is the answer it would find.
+    private func sizeBitmapSubtitlesFromVideo(_ ctx: UnsafeMutablePointer<AVFormatContext>) {
+        let parameters = (0..<Int(ctx.pointee.nb_streams)).compactMap { ctx.pointee.streams[$0]?.pointee.codecpar }
+        guard let video = parameters.first(where: {
+            $0.pointee.codec_type == AVMEDIA_TYPE_VIDEO && $0.pointee.width > 0 && $0.pointee.height > 0
+        }) else { return }
+        for subtitle in parameters where subtitle.pointee.codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE
+            && subtitle.pointee.width == 0 {
+            subtitle.pointee.width = video.pointee.width
+            subtitle.pointee.height = video.pointee.height
+        }
     }
 
     private func recordStreamStartOffsets(_ ctx: UnsafeMutablePointer<AVFormatContext>) {
