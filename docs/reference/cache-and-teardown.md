@@ -27,12 +27,23 @@ source, never the security policy.
 ## Fill pacing
 
 Proactive fill starts only once the initial cushion has reached the renderer,
-and runs one 1 MiB chunk at a time. `PlaybackFillPolicy` (a pure, unit-tested
-value type) decides what follows each chunk, from the cached media ahead of
-the playhead and the throughput the chunk just measured:
+and runs one request at a time. `PlaybackFillPolicy` (a pure, unit-tested
+value type) sizes each request and decides what follows it, from the cached
+media ahead of the playhead and the throughput the request just measured.
+
+Every request waits for its first byte once, whatever its size. At 100 ms to
+the first byte on a 100 Mbps link, a fixed 1 MiB request spent about as long
+waiting as transferring, so the fill carried roughly 45 Mbps before its pause
+and 30 Mbps after it. A request therefore transfers for ten times the smoothed
+first-byte wait, at most a second of link time, between 1 MiB and 16 MiB. A
+LAN server answers in a few milliseconds, so its requests stay within a few
+MiB. The one-second bound keeps a promoted fill request inside a foreground read's
+two-second shared wait. Foreground misses stay at 1 MiB, so a seek still gets
+its first bytes quickly, and the successor warm-up holds a request back to
+what is left of its 8 MiB.
 
 - **Below `targetAheadSeconds`** (120 s of playback at the current rate), the
-  next chunk follows after a yield of half the request's duration, so
+  next request follows after a yield of half the request's duration, so
   foreground reads keep a third of the link and a fast link never idles. This
   applies only when the chunk's media duration (its bytes over the title's
   average bitrate) exceeds the request plus the yield at the playback rate,
@@ -42,9 +53,9 @@ the playhead and the throughput the chunk just measured:
 - **At or above the target**, the gentle pace: four times the measured request
   duration, capped at 8 s.
 - The decision is per request with no history, so a seek, pause or rate change
-  needs no reset. Do not gate on the cushion growing per chunk: a 1 MiB chunk
-  holds 0.25 s of media only below about 33 Mbps, so every 4K title would
-  stall at the gentle pace.
+  needs no reset. Do not gate on the cushion growing per request: a 1 MiB
+  request holds 0.25 s of media only below about 33 Mbps, so every 4K title
+  would stall at the gentle pace.
 - Pacing measures the prefetch's own request, never the cache's aggregate,
   which foreground traffic also feeds.
 - A 20 s cooldown follows buffering or a new stall. Pause allows full-speed
@@ -132,8 +143,8 @@ evicted:** eviction runs only from a read that is short of capacity.
   fraction and the stall count for Instruments.
 - `networkBytesPerSecond` (on the metrics and `PlaybackBufferState`) is what
   the link delivers while busy, from `PlaybackThroughputMeter`. Only time
-  with a range request in flight counts, so the fill's pacing gaps do not
-  read as a slow link, and overlapping requests share one busy period, so a
+  with a range request receiving counts, from its first byte, so neither the
+  fill's pacing gaps nor a distant server's round trip reads as a slow link, and overlapping requests share one busy period, so a
   foreground read beside a prefetch does not halve it. Bytes and busy seconds
   decay together over a ten-second window and the rate is their ratio. A
   cancelled or failed request leaves no sample. An HLS item's segment scopes
