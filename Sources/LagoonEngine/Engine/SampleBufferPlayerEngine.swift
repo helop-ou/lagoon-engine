@@ -2853,6 +2853,16 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     /// Reads one packet, or waits on whichever queue the policy says is full.
+    /// Media read past the clock, from the demux queue. Nil until the clock
+    /// is running, so a start or a seek keeps today's watermarks until then.
+    nonisolated private func demuxReadAheadForPolicy() -> Double? {
+        guard synchronizer.rate != 0 else { return nil }
+        let clock = synchronizer.currentTime().seconds
+        let through = shared.withLock { $0.videoBufferedTo }
+        guard clock.isFinite else { return nil }
+        return max(through - clock, 0)
+    }
+
     nonisolated private func readOrWait(deliveryIsCached: Bool) {
         // Streams share one demux cursor, so blocking on full video also
         // starves audio; the policy handles that. Parked video goes
@@ -2885,6 +2895,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let hasAudio = !demuxer.audioStreams.isEmpty
         let intakeCount = videoIntake.count
         let intakeBytes = videoIntake.byteCount
+        let readAheadSeconds = demuxReadAheadForPolicy()
         let decision = DemuxBackpressurePolicy.decision(
             videoCount: videoBacklog,
             audioCount: audioCount,
@@ -2897,7 +2908,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             playbackRate: playbackRate,
             decodedFrameBytes: decodedFrameBytes,
             videoIntakeCount: intakeCount,
-            videoIntakeBytes: intakeBytes
+            videoIntakeBytes: intakeBytes,
+            readAheadSeconds: readAheadSeconds
         )
         let limit = DemuxBackpressurePolicy.limit(
             for: decision,
@@ -2905,7 +2917,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             hasAudio: hasAudio,
             deliveryIsCached: deliveryIsCached,
             videoIntakeCount: intakeCount,
-            videoIntakeBytes: intakeBytes
+            videoIntakeBytes: intakeBytes,
+            readAheadSeconds: readAheadSeconds,
+            playbackRate: playbackRate
         )
         shared.withLock { $0.demuxReadAheadLimit = limit }
         switch decision {
