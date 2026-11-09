@@ -70,6 +70,20 @@ struct PlaybackThroughputMeterTests {
         #expect(meter.bytesPerSecond == 1_000_000)
     }
 
+    @Test func theWaitForAFirstByteIsSmoothedAcrossRequests() throws {
+        var meter = PlaybackThroughputMeter()
+        #expect(meter.firstByteSeconds == nil)
+        meter.requestStarted(at: 0, waited: 0.2)
+        meter.requestFinished(at: 1, bytes: Self.megabyte)
+        #expect(meter.firstByteSeconds == 0.2)
+        meter.requestStarted(at: 2, waited: 0.6)
+        meter.requestFinished(at: 3, bytes: Self.megabyte)
+        let smoothed = try #require(meter.firstByteSeconds)
+        #expect(abs(smoothed - 0.3) < 1e-9)
+        meter.requestStarted(at: 4, waited: -.infinity)
+        #expect(meter.firstByteSeconds == smoothed)
+    }
+
     @Test func unmatchedEndsAreIgnored() {
         var meter = PlaybackThroughputMeter()
         meter.requestFinished(at: 1, bytes: Self.megabyte)
