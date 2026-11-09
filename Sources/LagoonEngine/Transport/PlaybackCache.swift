@@ -600,9 +600,11 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
 
     func complete(error: Error?) {
         lock.lock()
-        let hasResponse = response != nil
+        // Lost before any of the body is a failure to retry: an empty range
+        // would reach the demuxer as the end of the file.
+        let hasBody = response != nil && (error == nil || !received.isEmpty)
         lock.unlock()
-        if hasResponse {
+        if hasBody {
             finishCurrentResponse(cancelTask: false)
         } else {
             finish(.failure(error ?? PlaybackCacheError.invalidResponse), cancelTask: false)
