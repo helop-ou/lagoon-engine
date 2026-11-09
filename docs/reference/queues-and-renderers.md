@@ -322,6 +322,20 @@ whenever audio covers the drain, and audio sat at 207 to 235 buffers. A
 time-based cushion for uncached streams therefore has to move the video
 watermarks too, not only audio's.
 
+So an uncached stream now reads on past the watermarks until it is 30 s of
+media ahead of the clock (scaled by rate), and only then falls back to them.
+The ceilings do not move: the decoded queue's hard limit, the audio hard water
+(540 buffers) and the intake's 128 MB budget still stop it, and only the
+intake's unit count rises, to 1,800 (30 s at 60 fps), because units cost no
+memory the byte budget does not already bound. A 4K remux at 80 Mbps reaches
+the 128 MB first, about 13 s ahead. Until the clock runs the target is off, so
+a start or a seek primes on the old watermarks. `demuxReadAheadLimit` reads
+`target` once it is reached.
+
+The HLS fixture cannot show the difference: it is 12 fps with 128 ms audio
+buffers, so even the old watermarks read about 70 s ahead of it. The policy's
+unit tests pin the rule instead.
+
 ## Accepted platform limits
 
 TrueHD Atmos objects cannot be preserved on tvOS. An HLS transcode carries no
