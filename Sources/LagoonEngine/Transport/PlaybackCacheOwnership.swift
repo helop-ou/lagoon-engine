@@ -28,9 +28,10 @@ public nonisolated struct PlaybackBufferState: Equatable, Sendable {
     /// means seeks are outrunning the fill.
     public let playheadPrefetchCount: Int
     /// What the link delivered while busy, over about the last ten seconds of
-    /// transfers: idle gaps between requests do not count. Compare it with
-    /// the title's bitrate to tell a slow link from anything else. Nil before
-    /// the first transfer completes and without a cache.
+    /// transfers: idle gaps between requests and the wait for each first
+    /// byte do not count. Compare it with the title's bitrate to tell a slow
+    /// link from anything else. Nil before the first transfer completes and
+    /// without a cache.
     public let networkBytesPerSecond: Double?
 
     public init(

@@ -401,6 +401,14 @@ nonisolated struct PlaybackRangeResponse: Sendable {
 
 nonisolated protocol PlaybackRangeLoading: AnyObject, Sendable {
     func load(url: URL, range: PlaybackByteRange, priority: Float) throws -> PlaybackRangeResponse
+    /// `firstByte` runs at most once, when the first response arrives, and
+    /// always before `load` returns or throws.
+    func load(
+        url: URL,
+        range: PlaybackByteRange,
+        priority: Float,
+        firstByte: @escaping @Sendable () -> Void
+    ) throws -> PlaybackRangeResponse
     func cancelAll()
     /// A foreground read caught up with an in-flight low-priority request for
     /// `range`: raise it to foreground priority instead of racing a duplicate.
@@ -408,6 +416,16 @@ nonisolated protocol PlaybackRangeLoading: AnyObject, Sendable {
 }
 
 extension PlaybackRangeLoading {
+    func load(
+        url: URL,
+        range: PlaybackByteRange,
+        priority: Float,
+        firstByte: @escaping @Sendable () -> Void
+    ) throws -> PlaybackRangeResponse {
+        firstByte()
+        return try load(url: url, range: range, priority: priority)
+    }
+
     func promote(range: PlaybackByteRange) {}
 }
 
@@ -460,15 +478,18 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
     private var transferredBytes: Int64 = 0
     private var result: Result<PlaybackRangeResponse, Error>?
     private let taskPriority: Float
+    private let firstByte: (@Sendable () -> Void)?
 
     public init(
         url: URL,
         range: PlaybackByteRange,
         priority: Float,
-        authorization: MediaRequestAuthorization? = nil
+        authorization: MediaRequestAuthorization? = nil,
+        firstByte: (@Sendable () -> Void)? = nil
     ) {
         requestedRange = range
         taskPriority = priority
+        self.firstByte = firstByte
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.timeoutInterval = 15
@@ -540,7 +561,12 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
             return
         }
         lock.lock()
-        self.response = http
+        // Under the lock and only while unfinished, so it can never run after
+        // `waitForResult` has returned.
+        if result == nil {
+            self.response = http
+            firstByte?()
+        }
         lock.unlock()
         completionHandler(.allow)
     }
@@ -633,6 +659,24 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
     }
 }
 
+/// Whether a request's first byte has arrived, set from the loader's queue.
+nonisolated final class FirstByteMark: @unchecked Sendable {
+    private let lock = NSLock()
+    private var arrived = false
+
+    var hasArrived: Bool {
+        lock.withLock { arrived }
+    }
+
+    /// True only for the first call.
+    func mark() -> Bool {
+        lock.withLock {
+            defer { arrived = true }
+            return !arrived
+        }
+    }
+}
+
 /// URLSession retains its delegate until invalidation. A weak forwarding proxy
 /// avoids a loader/session cycle even if setup fails before cancel is called.
 nonisolated private final class PlaybackRangeSessionDelegate: NSObject,
@@ -699,14 +743,26 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
     }
 
     func load(url: URL, range: PlaybackByteRange, priority: Float) throws -> PlaybackRangeResponse {
+        try load(url: url, range: range, priority: priority, firstByte: {})
+    }
+
+    func load(
+        url: URL,
+        range: PlaybackByteRange,
+        priority: Float,
+        firstByte: @escaping @Sendable () -> Void
+    ) throws -> PlaybackRangeResponse {
         var attempt = 0
         var firstFailureAt: Date?
+        // A retry's response is not the first byte.
+        let reported = FirstByteMark()
         while true {
             let request = PlaybackRangeRequest(
                 url: url,
                 range: range,
                 priority: priority,
-                authorization: authorization
+                authorization: authorization,
+                firstByte: { if reported.mark() { firstByte() } }
             )
             let task = session.dataTask(with: request.urlRequest)
             let identifier = task.taskIdentifier
@@ -1076,16 +1132,21 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         requestCount += 1
         lock.unlock()
         let requestStarted = ProcessInfo.processInfo.systemUptime
-        throughput.requestStarted()
+        let throughput = self.throughput
+        let firstByte = FirstByteMark()
         let response: PlaybackRangeResponse
         do {
-            response = try loader.load(url: sourceURL, range: fetchRange, priority: priority)
+            response = try loader.load(url: sourceURL, range: fetchRange, priority: priority) {
+                guard firstByte.mark() else { return }
+                throughput.requestStarted(waited: ProcessInfo.processInfo.systemUptime - requestStarted)
+            }
             try checkCancellation()
         } catch {
-            throughput.requestAbandoned()
+            if firstByte.hasArrived { throughput.requestAbandoned() }
             finishFetch(fetchID)
             throw error
         }
+        if firstByte.mark() { throughput.requestStarted() }
         throughput.requestFinished(bytes: response.transferredBytes)
 
         lock.lock()
