@@ -324,13 +324,21 @@ watermarks too, not only audio's.
 
 So an uncached stream now reads on past the watermarks until it is 30 s of
 media ahead of the clock (scaled by rate), and only then falls back to them.
-The ceilings do not move: the decoded queue's hard limit, the audio hard water
-(540 buffers) and the intake's 128 MB budget still stop it, and only the
+The ceilings do not move: the decoded queue's hard limit and the intake's
+128 MB budget still stop it. Audio is bounded by bytes instead of buffers,
+at what the old 540-buffer hard water cost at worst (2048 samples of
+8-channel float each, about 35 MB): on the transcode below its buffers were
+about 30 ms, so 540 of them stopped the read at 16 s with 4 MB held. Only the
 intake's unit count rises, to 1,800 (30 s at 60 fps), because units cost no
 memory the byte budget does not already bound. A 4K remux at 80 Mbps reaches
 the 128 MB first, about 13 s ahead. Until the clock runs the target is off, so
 a start or a seek primes on the old watermarks. `demuxReadAheadLimit` reads
 `target` once it is reached.
+
+On the same transcode afterwards, sampled the same way: 30.0 s read ahead
+from about 10 s in, stopped by `target`, with about 560 frames in the intake
+and 1,150 to 1,280 audio buffers queued. The footprint was 91 to 111 MB,
+against 77 to 99 MB before. No stalls and no dropped frames in either run.
 
 The HLS fixture cannot show the difference: it is 12 fps with 128 ms audio
 buffers, so even the old watermarks read about 70 s ahead of it. The policy's
