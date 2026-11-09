@@ -1,0 +1,201 @@
+import CoreVideo
+import Foundation
+import Testing
+@testable import LagoonEngine
+
+/// The real cache, loader, fill and HLS transport against a server behind a
+/// modelled link, so a change to any of them is checked the way a viewer on
+/// a slow or faulty connection meets it.
+///
+/// Every blocking read runs on its own thread. On the cooperative pool it held
+/// a thread for seconds, and other suites' tasks missed their timeouts.
+@Suite("Transport end to end", .serialized)
+struct TransportEndToEndTests {
+    private static let mebibyte = 1_024 * 1_024
+    /// 100 Mbps.
+    private static let fastLink: Double = 12_500_000
+
+    // MARK: - Direct play through the cache
+
+    /// A server 100 ms away on a 100 Mbps link. Fixed 1 MiB requests spent
+    /// about as long waiting for the first byte as transferring, so the fill
+    /// carried under half of what the link delivered.
+    @Test func aDistantLinkFillsNearItsRate() async throws {
+        SimulatedOrigin.reset(link: SimulatedLink(roundTrip: 0.1, bytesPerSecond: Self.fastLink))
+        let body = Self.pattern(count: 32 * Self.mebibyte)
+        SimulatedOrigin.serve("/distant.mkv", body: body)
+        let scope = try Self.scope(path: "/distant.mkv", length: body.count, requestSize: Int64(Self.mebibyte))
+        defer { scope.cancelAndRemove() }
+
+        // The first request measures the link. The second, sized from it, is
+        // what the fill goes on doing. It is timed by its own request: under
+        // the parallel suites, the fill's utility task can wait seconds to be
+        // scheduled at all.
+        #expect((await scope.prefetchNextChunk()).advanced)
+        guard case .fetched(let bytes, let seconds) = await scope.prefetchNextChunk() else {
+            Issue.record("The sized request did not fetch")
+            return
+        }
+        let rate = Double(bytes) / seconds
+        let delivered = try #require(SimulatedOrigin.deliveredBytesPerSecond)
+        #expect(rate > 0.6 * delivered, "filled at \(Int(rate)) B/s of \(Int(delivered))")
+    }
+
+    @Test func aConnectionLostMidBodyStillDemuxesToTheEnd() async throws {
+        SimulatedOrigin.reset(link: SimulatedLink(roundTrip: 0.01))
+        let film = try Self.fixture()
+        SimulatedOrigin.serve("/clean.mkv", body: film)
+        SimulatedOrigin.serve("/dropped.mkv", body: film, fault: .dropOnce(atByte: 100_000))
+
+        let clean = try await Self.demux(path: "/clean.mkv", length: film.count)
+        let dropped = try await Self.demux(path: "/dropped.mkv", length: film.count)
+        #expect(clean.ending == "eof")
+        #expect(dropped.ending == "eof")
+        #expect(dropped.packets == clean.packets)
+        // The next read asks from the byte the connection was lost at.
+        #expect(SimulatedOrigin.requests(path: "/dropped.mkv").contains { $0?.hasPrefix("bytes=100000-") == true })
+    }
+
+    @Test func aRefusedCredentialFailsTheOpenOnceWithItsStatus() async throws {
+        SimulatedOrigin.reset(link: SimulatedLink(roundTrip: 0.01))
+        SimulatedOrigin.serve("/refused.mkv", body: Data(), fault: .status(401))
+        let scope = try Self.scope(path: "/refused.mkv", length: Self.mebibyte, requestSize: 64 * 1_024)
+        defer { scope.cancelAndRemove() }
+        let session = PlaybackCacheSession(itemID: "refused", sourceURL: scope.sourceURL, storage: .direct(scope))
+
+        let (opened, failure) = try await Self.offPool {
+            let demuxer = FFmpegDemuxer()
+            defer { demuxer.close() }
+            let opened = (try? demuxer.open(url: scope.sourceURL.absoluteString, cacheSession: session,
+                                            recommendedPixelBufferAttributes: CVPixelBufferAttributes())) != nil
+            return (opened, demuxer.lastTransportFailure)
+        }
+        #expect(!opened)
+        #expect(failure == .httpStatus(401))
+        #expect(SimulatedOrigin.requests(path: "/refused.mkv").count == 1)
+    }
+
+    // MARK: - HLS through the network transport
+
+    /// A segment lost mid-body and another refused once with a 503 are
+    /// ridden out: every packet a local open reads still arrives.
+    @Test func anHLSStreamRidesOutADropAndAServerErrorToTheEnd() async throws {
+        SimulatedOrigin.reset(link: SimulatedLink(roundTrip: 0.02))
+        let directory = try #require(Bundle.module.url(forResource: "playlist", withExtension: "m3u8", subdirectory: "HLSResume"))
+            .deletingLastPathComponent()
+        for file in try FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false)) {
+            let fault: SimulatedFault? = switch file {
+            case "segment3.ts": .dropOnce(atByte: 10_000)
+            case "segment7.ts": .statusFirst(503, times: 1)
+            default: nil
+            }
+            SimulatedOrigin.serve("/hls/\(file)", body: try Data(contentsOf: directory.appendingPathComponent(file)), fault: fault)
+        }
+
+        let local = directory.appendingPathComponent("playlist.m3u8").path(percentEncoded: false)
+        let expected = try await Self.offPool {
+            let demuxer = FFmpegDemuxer()
+            defer { demuxer.close() }
+            try demuxer.open(url: local, recommendedPixelBufferAttributes: CVPixelBufferAttributes())
+            return Self.readAll(demuxer)
+        }
+        let streamed = try await Self.offPool {
+            let demuxer = FFmpegDemuxer()
+            demuxer.transportSessionConfiguration = SimulatedOrigin.configuration()
+            defer { demuxer.close() }
+            try demuxer.open(url: SimulatedOrigin.url("/hls/playlist.m3u8").absoluteString,
+                             recommendedPixelBufferAttributes: CVPixelBufferAttributes())
+            return Self.readAll(demuxer)
+        }
+
+        #expect(streamed.ending == "eof")
+        #expect(streamed.packets == expected.packets)
+        #expect(SimulatedOrigin.requests(path: "/hls/segment3.ts").count == 2)
+        #expect(SimulatedOrigin.requests(path: "/hls/segment7.ts").count == 2)
+    }
+
+    // MARK: - Helpers
+
+    private static func loader() -> URLSessionPlaybackRangeLoader {
+        URLSessionPlaybackRangeLoader(configuration: SimulatedOrigin.configuration())
+    }
+
+    private static func scope(
+        path: String,
+        length: Int,
+        requestSize: Int64,
+        loader: URLSessionPlaybackRangeLoader? = nil
+    ) throws -> PlaybackCacheScope {
+        try PlaybackCacheScope(
+            itemID: path,
+            sourceURL: SimulatedOrigin.url(path),
+            expectedLength: Int64(length),
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            byteLimit: Int64(length),
+            requestSize: requestSize,
+            maximumFillRequestSize: PlaybackFillPolicy.maximumRequestBytes,
+            loader: loader ?? Self.loader()
+        )
+    }
+
+    private static func fixture() throws -> Data {
+        let url = try #require(Bundle.module.url(forResource: "no-cues", withExtension: "mkv", subdirectory: "UnindexedSeek"))
+        return try Data(contentsOf: url)
+    }
+
+    private struct Tally: Equatable, Sendable {
+        var packets = 0
+        var ending = "limit"
+    }
+
+    /// Opens the path through the cache, as direct play does, and reads it out.
+    private static func demux(path: String, length: Int) async throws -> Tally {
+        let scope = try scope(path: path, length: length, requestSize: 64 * 1_024)
+        defer { scope.cancelAndRemove() }
+        let session = PlaybackCacheSession(itemID: path, sourceURL: scope.sourceURL, storage: .direct(scope))
+        return try await offPool {
+            let demuxer = FFmpegDemuxer()
+            defer { demuxer.close() }
+            try demuxer.open(url: scope.sourceURL.absoluteString, cacheSession: session,
+                             recommendedPixelBufferAttributes: CVPixelBufferAttributes())
+            return readAll(demuxer)
+        }
+    }
+
+    private static func readAll(_ demuxer: FFmpegDemuxer) -> Tally {
+        var tally = Tally()
+        for _ in 0..<50_000 {
+            switch demuxer.readNext() {
+            case .video, .videoPacket:
+                tally.packets += 1
+            case .audio(let buffers, _):
+                tally.packets += buffers.count
+            case .endOfFile:
+                tally.ending = "eof"
+                return tally
+            case .failed(let message):
+                tally.ending = "failed: \(message)"
+                return tally
+            case .subtitle, .skipped:
+                continue
+            }
+        }
+        return tally
+    }
+
+    private static func offPool<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            Thread { continuation.resume(with: Result { try body() }) }.start()
+        }
+    }
+
+    /// A block that never lines up with a request, repeated.
+    private static func pattern(count: Int) -> Data {
+        let block = Data((0..<65_521).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        var data = Data(capacity: count)
+        while data.count < count {
+            data.append(block.prefix(count - data.count))
+        }
+        return data
+    }
+}
