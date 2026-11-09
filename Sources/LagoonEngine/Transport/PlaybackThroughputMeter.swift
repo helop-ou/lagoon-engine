@@ -4,7 +4,8 @@ import Foundation
 /// `windowSeconds` of transfer time.
 ///
 /// Idle time between requests does not count, so a paced fill on a fast link
-/// still reads as fast. Overlapping requests share one busy period, so a
+/// still reads as fast. Nor does the wait for a request's first byte, so a
+/// distant server does not read as a slow link. Overlapping requests share one busy period, so a
 /// foreground read and a prefetch together do not halve the figure. Bytes
 /// and busy time decay together and the rate is their ratio, so a transfer
 /// that finishes inside another's busy period is not over- or under-counted
@@ -12,12 +13,17 @@ import Foundation
 nonisolated struct PlaybackThroughputMeter: Equatable, Sendable {
     /// Busy seconds after which a sample's weight has fallen to 1/e.
     static let windowSeconds: Double = 10
+    /// Weight of the newest wait in `firstByteSeconds`.
+    static let firstByteSmoothing: Double = 0.25
 
     private var activeRequests = 0
     /// Start of the busy time not yet sampled; nil while idle.
     private var unsampledSince: TimeInterval?
     private var decayedBytes: Double = 0
     private var decayedSeconds: Double = 0
+    /// Seconds a request waits for its first byte, smoothed over recent
+    /// requests. Nil until a first byte has arrived.
+    private(set) var firstByteSeconds: Double?
 
     /// Nil until a transfer has completed.
     var bytesPerSecond: Double? {
@@ -25,7 +31,14 @@ nonisolated struct PlaybackThroughputMeter: Equatable, Sendable {
         return decayedBytes / decayedSeconds
     }
 
-    mutating func requestStarted(at now: TimeInterval) {
+    /// A request's first byte arrived, `waited` seconds after it was asked
+    /// for. Busy time starts here.
+    mutating func requestStarted(at now: TimeInterval, waited: TimeInterval? = nil) {
+        if let waited, waited.isFinite, waited >= 0 {
+            firstByteSeconds = firstByteSeconds.map {
+                $0 + (waited - $0) * Self.firstByteSmoothing
+            } ?? waited
+        }
         if activeRequests == 0 { unsampledSince = now }
         activeRequests += 1
     }
@@ -62,10 +75,16 @@ nonisolated final class PlaybackThroughputMonitor: @unchecked Sendable {
         return meter.bytesPerSecond
     }
 
-    func requestStarted() {
+    var firstByteSeconds: Double? {
+        lock.lock()
+        defer { lock.unlock() }
+        return meter.firstByteSeconds
+    }
+
+    func requestStarted(waited: TimeInterval? = nil) {
         let now = ProcessInfo.processInfo.systemUptime
         lock.lock()
-        meter.requestStarted(at: now)
+        meter.requestStarted(at: now, waited: waited)
         lock.unlock()
     }
 
