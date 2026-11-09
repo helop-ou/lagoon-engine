@@ -526,8 +526,17 @@ nonisolated private final class PlaybackRangeRequest: @unchecked Sendable {
         task?.priority = URLSessionTask.highPriority
     }
 
-    func waitForResult() throws -> PlaybackRangeResponse {
-        completion.wait()
+    /// Gives up on a connection that delivers less than the byte source's
+    /// progress floor in `stallTimeout`, even while bytes still trickle in.
+    func waitForResult(stallTimeout: TimeInterval) throws -> PlaybackRangeResponse {
+        var bytesAtCheck = lock.withLock { transferredBytes }
+        while completion.wait(timeout: .now() + stallTimeout) == .timedOut {
+            let bytes = lock.withLock { transferredBytes }
+            if bytes - bytesAtCheck < URLSessionByteSource.minimumProgressBytes {
+                finish(.failure(URLError(.timedOut)), cancelTask: true)
+            }
+            bytesAtCheck = bytes
+        }
         lock.lock()
         let result = result ?? .failure(PlaybackCacheError.cancelled)
         self.task = nil
@@ -723,6 +732,9 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
     private let authorization: MediaRequestAuthorization?
     /// Internal so tests can shorten it; see `NetworkRetryPolicy`.
     var retryPolicy = NetworkRetryPolicy.playback
+    /// How long a request may go with less than the byte source's progress
+    /// floor before it is given up on. Internal so tests can shorten it.
+    var stallTimeout: TimeInterval = 15
 
     public init(configuration: URLSessionConfiguration = .ephemeral, authorization: MediaRequestAuthorization? = nil) {
         delegateProxy = PlaybackRangeSessionDelegate()
@@ -777,7 +789,7 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
             lock.unlock()
             task.resume()
             do {
-                let response = try request.waitForResult()
+                let response = try request.waitForResult(stallTimeout: stallTimeout)
                 removeActive(identifier)
                 return response
             } catch PlaybackCacheError.cancelled {
