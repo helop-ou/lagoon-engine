@@ -305,4 +305,68 @@ struct DemuxBackpressureTests {
             videoIntakeCount: DemuxBackpressurePolicy.videoIntakeHardLimit, videoIntakeBytes: 0
         ) == .videoIntake)
     }
+
+    // MARK: - Uncached read-ahead to a time target
+
+    /// A 24 fps transcode parks on the compressed video high water about 5 s
+    /// in. Short of its target it reads on, into the intake.
+    @Test func anUncachedStreamReadsPastTheVideoHighWaterToItsTarget() {
+        let atHighWater = { (readAhead: Double?) in
+            DemuxBackpressurePolicy.decision(
+                videoCount: 90, audioCount: 220, audioBufferedSeconds: 8,
+                videoFrameRate: 24, videoIsDecoded: false, hasAudio: true,
+                deliveryIsCached: false, readAheadSeconds: readAhead
+            )
+        }
+        #expect(atHighWater(nil) == .waitForVideo(below: 72))
+        #expect(atHighWater(8) == .read)
+        #expect(atHighWater(DemuxBackpressurePolicy.uncachedReadAheadSeconds) == .waitForVideo(below: 72))
+    }
+
+    @Test func aCachedStreamNeverReadsToTheTarget() {
+        #expect(DemuxBackpressurePolicy.decision(
+            videoCount: 90, audioCount: 150, audioBufferedSeconds: 8,
+            videoFrameRate: 24, videoIsDecoded: false, hasAudio: true,
+            deliveryIsCached: true, readAheadSeconds: 5
+        ) == .waitForVideo(below: 72))
+    }
+
+    /// The target is in media seconds at normal speed, so a faster rate needs
+    /// proportionally more.
+    @Test func theTargetScalesWithRate() {
+        let target = DemuxBackpressurePolicy.uncachedReadAheadSeconds
+        let readsOn = { (readAhead: Double, rate: Double) in
+            DemuxBackpressurePolicy.readsOnToTarget(
+                readAheadSeconds: readAhead, playbackRate: rate, audioCount: 0, hasAudio: true,
+                deliveryIsCached: false, videoIntakeCount: 0, videoIntakeBytes: 0
+            )
+        }
+        #expect(!readsOn(target, 1))
+        #expect(readsOn(target, 2))
+        #expect(!readsOn(target * 2, 2))
+    }
+
+    /// The hard limits and the byte budget still hold, whatever the target.
+    @Test func theTargetStopsAtTheSameCeilings() {
+        let readsOn = { (audioCount: Int, intakeCount: Int, intakeBytes: Int) in
+            DemuxBackpressurePolicy.readsOnToTarget(
+                readAheadSeconds: 5, playbackRate: 1, audioCount: audioCount, hasAudio: true,
+                deliveryIsCached: false, videoIntakeCount: intakeCount, videoIntakeBytes: intakeBytes
+            )
+        }
+        #expect(readsOn(0, 0, 0))
+        #expect(!readsOn(540, 0, 0))
+        #expect(!readsOn(0, 0, DemuxBackpressurePolicy.videoIntakeByteBudget))
+        // 600 units is 10 s at 60 fps, so it no longer stops an uncached read.
+        #expect(readsOn(0, DemuxBackpressurePolicy.videoIntakeHardLimit, 0))
+        #expect(!readsOn(0, DemuxBackpressurePolicy.uncachedVideoIntakeHardLimit, 0))
+    }
+
+    @Test func aStreamAtItsTargetSaysSo() {
+        #expect(DemuxBackpressurePolicy.limit(
+            for: .waitForVideo(below: 72), audioCount: 220, hasAudio: true, deliveryIsCached: false,
+            videoIntakeCount: 200, videoIntakeBytes: 0,
+            readAheadSeconds: DemuxBackpressurePolicy.uncachedReadAheadSeconds
+        ) == .target)
+    }
 }
