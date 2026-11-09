@@ -27,6 +27,24 @@ struct SampleBufferQueueTests {
         // At or before the first PTS this matches plain bufferedDuration.
         #expect(queue.bufferedDuration(after: -1) == queue.bufferedDuration)
     }
+
+    /// The uncached read-ahead is bounded by audio bytes, so the count must
+    /// follow every way a buffer leaves.
+    @Test func theByteCountFollowsWhatTheQueueHolds() throws {
+        let queue = SampleBufferQueue()
+        for pts in [0.0, 1.0, 2.0, 3.0] {
+            queue.enqueue(try #require(makeTimedSampleBuffer(presentationSeconds: pts, durationSeconds: 1)))
+        }
+        #expect(queue.byteCount == 64)
+        _ = queue.dequeue()
+        #expect(queue.byteCount == 48)
+        queue.dropLeading { CMSampleBufferGetPresentationTimeStamp($0).seconds < 2 }
+        #expect(queue.byteCount == 32)
+        queue.reset()
+        #expect(queue.byteCount == 0)
+        #expect(queue.dequeue() == nil)
+        #expect(queue.byteCount == 0)
+    }
 }
 
 /// A ready sample buffer at `presentationSeconds` lasting `durationSeconds`, on

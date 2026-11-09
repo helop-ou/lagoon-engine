@@ -337,7 +337,7 @@ struct DemuxBackpressureTests {
         let target = DemuxBackpressurePolicy.uncachedReadAheadSeconds
         let readsOn = { (readAhead: Double, rate: Double) in
             DemuxBackpressurePolicy.readsOnToTarget(
-                readAheadSeconds: readAhead, playbackRate: rate, audioCount: 0, hasAudio: true,
+                readAheadSeconds: readAhead, playbackRate: rate, audioCount: 0, audioBytes: 0, hasAudio: true,
                 deliveryIsCached: false, videoIntakeCount: 0, videoIntakeBytes: 0
             )
         }
@@ -346,20 +346,38 @@ struct DemuxBackpressureTests {
         #expect(!readsOn(target * 2, 2))
     }
 
-    /// The hard limits and the byte budget still hold, whatever the target.
+    /// The byte budgets still hold, whatever the target.
     @Test func theTargetStopsAtTheSameCeilings() {
-        let readsOn = { (audioCount: Int, intakeCount: Int, intakeBytes: Int) in
+        let readsOn = { (audioCount: Int, audioBytes: Int, intakeCount: Int, intakeBytes: Int) in
             DemuxBackpressurePolicy.readsOnToTarget(
-                readAheadSeconds: 5, playbackRate: 1, audioCount: audioCount, hasAudio: true,
-                deliveryIsCached: false, videoIntakeCount: intakeCount, videoIntakeBytes: intakeBytes
+                readAheadSeconds: 5, playbackRate: 1, audioCount: audioCount, audioBytes: audioBytes,
+                hasAudio: true, deliveryIsCached: false,
+                videoIntakeCount: intakeCount, videoIntakeBytes: intakeBytes
             )
         }
-        #expect(readsOn(0, 0, 0))
-        #expect(!readsOn(540, 0, 0))
-        #expect(!readsOn(0, 0, DemuxBackpressurePolicy.videoIntakeByteBudget))
+        #expect(readsOn(0, 0, 0, 0))
+        #expect(!readsOn(100, DemuxBackpressurePolicy.uncachedAudioByteBudget, 0, 0))
+        #expect(!readsOn(DemuxBackpressurePolicy.uncachedAudioCountCeiling, 0, 0, 0))
+        #expect(!readsOn(0, 0, 0, DemuxBackpressurePolicy.videoIntakeByteBudget))
         // 600 units is 10 s at 60 fps, so it no longer stops an uncached read.
-        #expect(readsOn(0, DemuxBackpressurePolicy.videoIntakeHardLimit, 0))
-        #expect(!readsOn(0, DemuxBackpressurePolicy.uncachedVideoIntakeHardLimit, 0))
+        #expect(readsOn(0, 0, DemuxBackpressurePolicy.videoIntakeHardLimit, 0))
+        #expect(!readsOn(0, 0, DemuxBackpressurePolicy.uncachedVideoIntakeHardLimit, 0))
+    }
+
+    /// A transcode's audio came in about 30 ms buffers, so 540 of them, the
+    /// old hard water, was 16 s and about 4 MB. Bytes, not buffers, stop it.
+    @Test func manySmallAudioBuffersDoNotStopTheRead() {
+        #expect(DemuxBackpressurePolicy.readsOnToTarget(
+            readAheadSeconds: 16, playbackRate: 1, audioCount: 540, audioBytes: 540 * 8_192,
+            hasAudio: true, deliveryIsCached: false, videoIntakeCount: 200, videoIntakeBytes: 0
+        ))
+    }
+
+    /// The budget is what the old 540-buffer hard water cost at worst, so the
+    /// deeper read raises no memory ceiling.
+    @Test func theAudioBudgetIsTheOldWorstCase() {
+        let eightChannelFloat2048 = 2_048 * 8 * 4
+        #expect(DemuxBackpressurePolicy.uncachedAudioByteBudget == 540 * eightChannelFloat2048)
     }
 
     @Test func aStreamAtItsTargetSaysSo() {
