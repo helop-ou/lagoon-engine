@@ -14,6 +14,12 @@ public nonisolated enum EngineDiagnosticEvent: String, Sendable, CaseIterable {
     case playbackRendererRecovery
     case playbackCacheFallback
     case playbackSubtitleLoadFailed
+    /// The first frame is up. Carries the milliseconds to each step of the
+    /// start: `firstByteMs`, `containerOpenedMs`, `streamsProbedMs` and
+    /// `firstFrameMs`.
+    case playbackStartup
+    /// Nothing came back from the source within a few seconds of the open.
+    case playbackSlowStart
 }
 
 /// Something that went wrong and is worth counting and fingerprinting across

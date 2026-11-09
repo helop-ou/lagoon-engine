@@ -20,6 +20,8 @@ public protocol PlayerEngine: AnyObject, Observable {
     var isPaused: Bool { get }
     /// Whether playback is stopped waiting for data rather than for the viewer.
     var isBuffering: Bool { get }
+    /// How far the start has got towards its first frame.
+    var startupPhase: PlaybackStartupPhase { get }
     /// Requested rate. Survives a pause, so Play resumes at the chosen speed.
     var rate: Double { get }
     /// Renderer underruns recovered this session. Diagnostic.
@@ -123,6 +125,7 @@ public protocol PlayerEngine: AnyObject, Observable {
 
 public extension PlayerEngine {
     var clockPosition: Double { timePosition }
+    var startupPhase: PlaybackStartupPhase { .started }
     func play(atHostTime hostTime: CMTime) { play() }
     func setCorrectionRate(_ multiplier: Double) {}
     var subtitleLoadState: SubtitleLoadState { .idle }
