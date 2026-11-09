@@ -307,6 +307,21 @@ silent at once. So the queues grow when there is no cache:
 The HUD shows the target depth (`A 200/360`). Turning the HLS cache on does
 not fix the periodic HLS dropout: that is packet order, above.
 
+The audio high water is a count of sample buffers, and a buffer's length
+depends on the path: passthrough AAC arrived at about 128 ms each in the HLS
+fixture, decoded LPCM is coalesced to about 2048 samples (43 ms at 48 kHz). So
+360 buffers is anywhere from about 15 s to 46 s of audio, and on a transcode
+it is not what binds. `demuxReadAheadSeconds` (media read past the clock) and
+`demuxReadAheadLimit` (what last stopped the read) say what does.
+
+Measured November 2026 in the tvOS simulator on a jaflix HEVC title the
+simulator receives as an H.264 transcode at 24 fps, sampled every 20 s over
+150 s: 7 to 10 s read ahead, stopped by `video` throughout. The compressed
+video queue waits to drain from its high water (90 of 120 frames, about 5 s)
+whenever audio covers the drain, and audio sat at 207 to 235 buffers. A
+time-based cushion for uncached streams therefore has to move the video
+watermarks too, not only audio's.
+
 ## Accepted platform limits
 
 TrueHD Atmos objects cannot be preserved on tvOS. An HLS transcode carries no
