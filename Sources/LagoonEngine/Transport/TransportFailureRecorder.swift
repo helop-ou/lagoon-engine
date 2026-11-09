@@ -5,17 +5,40 @@ import Foundation
 ///
 /// Every byte source fails a read with `AVERROR(EIO)`, so libavformat's error
 /// says nothing about the network. Each `FFmpegCachedIO` the demuxer opens,
-/// HLS children included, records here what the failed read threw.
+/// HLS children included, records here what the failed read threw, and that
+/// a read was served.
 nonisolated final class TransportFailureRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var last: PlaybackTransportFailure?
+    private var servedSinceReset = false
+    private var firstServedRead: (@Sendable () -> Void)?
 
     var lastFailure: PlaybackTransportFailure? {
         lock.withLock { last }
     }
 
+    /// Forgets the failure, and arms `firstServedRead` again.
     func reset() {
-        lock.withLock { last = nil }
+        lock.withLock {
+            last = nil
+            servedSinceReset = false
+        }
+    }
+
+    /// Runs on the reading thread for the first read served after a reset.
+    func onFirstServedRead(_ action: (@Sendable () -> Void)?) {
+        lock.withLock { firstServedRead = action }
+    }
+
+    /// Bytes arrived, so an earlier failure explains nothing now.
+    func served() {
+        let action: (@Sendable () -> Void)? = lock.withLock {
+            last = nil
+            guard !servedSinceReset else { return nil }
+            servedSinceReset = true
+            return firstServedRead
+        }
+        action?()
     }
 
     /// Ignores anything that is not the network's answer: a cancelled or

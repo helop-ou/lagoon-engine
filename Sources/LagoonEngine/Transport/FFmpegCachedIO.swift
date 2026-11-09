@@ -137,8 +137,7 @@ nonisolated final class FFmpegCachedIO {
             guard data.count <= Int(size), Int64(data.count) <= Int64.max - position else { return avIOErrorIO }
             data.copyBytes(to: buffer, count: data.count)
             position += Int64(data.count)
-            // Bytes arrived again, so an earlier failure explains nothing now.
-            failures?.reset()
+            failures?.served()
             return Int32(data.count)
         } catch {
             // EOF is only the end of a successfully read resource. Reporting a
