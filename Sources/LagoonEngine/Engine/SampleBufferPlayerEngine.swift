@@ -2909,7 +2909,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             decodedFrameBytes: decodedFrameBytes,
             videoIntakeCount: intakeCount,
             videoIntakeBytes: intakeBytes,
-            readAheadSeconds: readAheadSeconds
+            readAheadSeconds: readAheadSeconds,
+            audioBytes: audioQueue.byteCount
         )
         let limit = DemuxBackpressurePolicy.limit(
             for: decision,
