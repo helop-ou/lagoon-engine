@@ -41,6 +41,45 @@ struct TransportEndToEndTests {
         #expect(rate > 0.6 * delivered, "filled at \(Int(rate)) B/s of \(Int(delivered))")
     }
 
+    /// Bytes still arriving are not progress enough. The read gives up on the
+    /// connection and asks again, instead of waiting for the trickle.
+    @Test func aTricklingMissIsAskedAgainAndThenFails() async throws {
+        SimulatedOrigin.reset()
+        SimulatedOrigin.serve("/trickle.mkv", body: Self.pattern(count: Self.mebibyte), fault: .trickle(bytesPerSecond: 16_000))
+        let loader = Self.loader()
+        loader.stallTimeout = 0.3
+        loader.retryPolicy = NetworkRetryPolicy(budget: 0.5, delays: [0.05])
+        let scope = try Self.scope(path: "/trickle.mkv", length: Self.mebibyte, requestSize: 256 * 1_024, loader: loader)
+        defer { scope.cancelAndRemove() }
+
+        // Timed on the reading thread: the test itself can wait seconds to be
+        // resumed while the other suites hold the cooperative pool.
+        let result = await Self.bounded(seconds: 5, cancelling: scope) {
+            let started = ProcessInfo.processInfo.systemUptime
+            let read = Result { try scope.read(offset: 0, length: 4_096) }
+            return (read, ProcessInfo.processInfo.systemUptime - started)
+        }
+        let (read, elapsed) = try result.get()
+        #expect(throws: URLError(.timedOut)) { try read.get() }
+        #expect(elapsed < 3, "gave up after \(elapsed) s")
+        #expect(SimulatedOrigin.requests(path: "/trickle.mkv").count >= 2)
+    }
+
+    /// Ten times the floor, so a slow link that keeps up is left alone.
+    @Test func aSlowLinkAboveTheFloorIsNotGivenUpOn() async throws {
+        SimulatedOrigin.reset(link: SimulatedLink(bytesPerSecond: 2_000_000))
+        let body = Self.pattern(count: Self.mebibyte)
+        SimulatedOrigin.serve("/slow.mkv", body: body)
+        let loader = Self.loader()
+        loader.stallTimeout = 0.3
+        let scope = try Self.scope(path: "/slow.mkv", length: body.count, requestSize: Int64(Self.mebibyte), loader: loader)
+        defer { scope.cancelAndRemove() }
+
+        let result = await Self.bounded(seconds: 5, cancelling: scope) { try scope.read(offset: 0, length: Self.mebibyte) }
+        #expect(try result.get() == body)
+        #expect(SimulatedOrigin.requests(path: "/slow.mkv").count == 1)
+    }
+
     @Test func aConnectionLostMidBodyStillDemuxesToTheEnd() async throws {
         SimulatedOrigin.reset(link: SimulatedLink(roundTrip: 0.01))
         let film = try Self.fixture()
@@ -54,6 +93,21 @@ struct TransportEndToEndTests {
         #expect(dropped.packets == clean.packets)
         // The next read asks from the byte the connection was lost at.
         #expect(SimulatedOrigin.requests(path: "/dropped.mkv").contains { $0?.hasPrefix("bytes=100000-") == true })
+    }
+
+    /// Lost after the headers and before any of the body: an empty range
+    /// would read as the end of the file.
+    @Test func aConnectionLostBeforeItsBodyIsNotTheEndOfTheFile() async throws {
+        SimulatedOrigin.reset(link: SimulatedLink(roundTrip: 0.01))
+        let film = try Self.fixture()
+        SimulatedOrigin.serve("/clean.mkv", body: film)
+        SimulatedOrigin.serve("/headers-only.mkv", body: film, fault: .dropAfterHeadersOnce(fromByte: 200_000))
+
+        let clean = try await Self.demux(path: "/clean.mkv", length: film.count)
+        let dropped = try await Self.demux(path: "/headers-only.mkv", length: film.count)
+        #expect(dropped.ending == "eof")
+        #expect(dropped.packets == clean.packets)
+        #expect(SimulatedOrigin.requests(path: "/headers-only.mkv").count > SimulatedOrigin.requests(path: "/clean.mkv").count)
     }
 
     @Test func aRefusedCredentialFailsTheOpenOnceWithItsStatus() async throws {
@@ -186,6 +240,26 @@ struct TransportEndToEndTests {
     private static func offPool<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             Thread { continuation.resume(with: Result { try body() }) }.start()
+        }
+    }
+
+    /// Cancels the scope if the read outlasts `seconds`, so a regression
+    /// fails instead of hanging the suite.
+    private static func bounded<T: Sendable>(
+        seconds: TimeInterval,
+        cancelling scope: PlaybackCacheScope,
+        _ body: @escaping @Sendable () throws -> T
+    ) async -> Result<T, Error> {
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(seconds))
+            scope.cancelAndRemove()
+            Issue.record("The read was still waiting after \(seconds) s")
+        }
+        defer { watchdog.cancel() }
+        do {
+            return .success(try await offPool(body))
+        } catch {
+            return .failure(error)
         }
     }
 
