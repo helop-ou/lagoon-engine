@@ -10,11 +10,19 @@ nonisolated final class SampleBufferQueue: @unchecked Sendable {
     private var head = 0
     private var finished = false
     private var waitsInterrupted = false
+    private var bytes = 0
 
     var count: Int {
         condition.lock()
         defer { condition.unlock() }
         return buffers.count - head
+    }
+
+    /// Sample data held, by `CMSampleBufferGetTotalSampleSize`.
+    var byteCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return bytes
     }
 
     var isFinished: Bool {
@@ -63,6 +71,7 @@ nonisolated final class SampleBufferQueue: @unchecked Sendable {
     func enqueue(_ buffer: CMSampleBuffer) {
         condition.lock()
         buffers.append(buffer)
+        bytes += CMSampleBufferGetTotalSampleSize(buffer)
         condition.unlock()
     }
 
@@ -73,6 +82,7 @@ nonisolated final class SampleBufferQueue: @unchecked Sendable {
         let buffer = buffers[head]
         buffers[head] = nil
         head += 1
+        if let buffer { bytes -= CMSampleBufferGetTotalSampleSize(buffer) }
         if head >= 64, head * 2 >= buffers.count {
             buffers.removeFirst(head)
             head = 0
@@ -95,6 +105,7 @@ nonisolated final class SampleBufferQueue: @unchecked Sendable {
         while head < buffers.count, let buffer = buffers[head], shouldDrop(buffer) {
             buffers[head] = nil
             head += 1
+            bytes -= CMSampleBufferGetTotalSampleSize(buffer)
             if head >= 64, head * 2 >= buffers.count {
                 buffers.removeFirst(head)
                 head = 0
@@ -108,6 +119,7 @@ nonisolated final class SampleBufferQueue: @unchecked Sendable {
         condition.lock()
         buffers.removeAll()
         head = 0
+        bytes = 0
         finished = false
         condition.broadcast()
         condition.unlock()
