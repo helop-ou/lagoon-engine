@@ -116,7 +116,10 @@ evicted:** eviction runs only from a read that is short of capacity.
 ## Failures
 
 - A failed cache read returns an I/O error, never EOF. EOF means a resource
-  was read successfully to its end.
+  was read successfully to its end. A connection lost after the headers but before any of the
+  body is therefore a failed request, retried like any other. It used to
+  return an empty range, which the demuxer read as the end of the file. Lost
+  partway, the bytes that arrived are kept and the next read asks from there.
 - URL loading retries transient failures. Range incompatibility does not
   retry, because the fallback open is faster and safer.
 - A proactive fetch reports a `PlaybackPrefetchOutcome`. A `.failed` chunk
