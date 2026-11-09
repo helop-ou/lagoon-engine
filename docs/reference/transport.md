@@ -65,6 +65,10 @@ behind the `FFmpegCachedIO` bridge.
   used to reset an idle timer forever. The budget is renewed by a read that is
   served, not by any byte, for the same reason. The demuxer's interrupt
   callback is polled every 100 ms.
+- The playback cache's range loads hold the same floor: a request that gets
+  less than 64 KiB in 15 s is given up as timed out and retried on the
+  budget. Without it a trickling cache miss held the demuxer until the whole
+  range arrived.
 - `crypto+https://…` is hls.c's scheme for AES-128 segments. It cannot sit on
   custom I/O, so `AES128CBCByteSource` fetches and decrypts those in Swift
   with CommonCrypto.
