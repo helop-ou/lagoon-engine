@@ -51,6 +51,12 @@ xcodebuild test -scheme LagoonEngine -destination 'platform=tvOS Simulator,name=
 xcodebuild test -scheme LagoonEngine -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
 ```
 
+`SimulatedOrigin` in the test target is a media server behind a modelled
+link: a round trip before each response, a shared bandwidth, and per-path
+faults (a status, a trickle, a connection lost mid-body or straight after the
+headers). `TransportEndToEndTests` drives the real cache, loader, fill and
+HLS transport against it. A transport change gets a case there.
+
 ## Commits
 
 - Subjects are conventional and lowercase imperative, with no scope
