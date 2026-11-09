@@ -43,9 +43,9 @@ its first bytes quickly, and the successor warm-up holds a request back to
 what is left of its 8 MiB.
 
 Measured with `TransportEndToEndTests` against a simulated server 100 ms away
-on 100 Mbps, timing the second fill request of a session, in November 2026:
-fixed 1 MiB requests carried about 44% of what the link delivered, sized ones
-75 to 89% over three runs on each simulator. A live bench needs a fast link at
+on 100 Mbps, three runs on the iOS simulator in November 2026: the first fill
+request, 1 MiB, took 0.19 to 0.27 s, about 40% of what the link delivered,
+and the sized request that followed carried 75 to 89%. A live bench needs a fast link at
 that distance, which neither test server offered from the development Mac.
 
 - **Below `targetAheadSeconds`** (120 s of playback at the current rate), the
