@@ -360,6 +360,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     @ObservationIgnored private var finishObserver: Any?
     @ObservationIgnored private var didFinish = false
     @ObservationIgnored private var didNotifyPlaybackStarted = false
+    /// How far the current start has got. `.started` once the first frame is
+    /// up, and it stays there through later seeks.
+    public private(set) var startupPhase: PlaybackStartupPhase = .idle
+    @ObservationIgnored private var slowStartTask: Task<Void, Never>?
+    /// Internal so a test need not wait the full five seconds.
+    @ObservationIgnored var slowStartSeconds = PlaybackStartupTimeline.slowStartSeconds
     /// Where the clock is heading while stopped for a load or seek. Nil while
     /// running and during a stall, when `timePosition` is live.
     @ObservationIgnored private var bufferingTargetSeconds: Double?
@@ -411,11 +417,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     public init(subtitleDownloader: BoundedDownload = .shared) {
         self.subtitleDownloader = subtitleDownloader
         PlaybackLifecycleDiagnostics.engineCreated(lifecycleID)
+        demuxer.onStartupStage = { [weak self] stage in self?.reachStartupStage(stage) }
     }
 
     deinit {
         av1PipelineTimer?.cancel()
         externalLoadTask?.cancel()
+        slowStartTask?.cancel()
         PlaybackLifecycleDiagnostics.engineDestroyed(lifecycleID)
     }
 
@@ -636,6 +644,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let startAuthorization = pendingAuthorization
         let recommendedPixelBufferAttributes = video.recommendedPixelBufferAttributes
         PlaybackLifecycleDiagnostics.demuxStarted(lifecycleID)
+        beginStartup()
         let demuxLifecycleID = lifecycleID
         demuxQueue.async { [weak self] in
             guard let self else {
@@ -973,6 +982,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         shutdownRequested = true
         cancelExternalSubtitleLoad()
         suspendBufferFillInternal()
+        slowStartTask?.cancel()
         PlaybackLifecycleDiagnostics.engineShutdownStarted(lifecycleID)
         for token in rendererNotificationTokens {
             NotificationCenter.default.removeObserver(token)
@@ -1359,6 +1369,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         rearmBench(at: time.seconds)
         if !didNotifyPlaybackStarted {
             didNotifyPlaybackStarted = true
+            finishStartup()
             // Fill starts only once the picture is up; until then the
             // foreground read has the link.
             startBufferFill()
@@ -2319,6 +2330,63 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             commitSubtitleSelection(ordinal: 0)
             selectSubtitleTrack(id: activeSubtitleOrdinal)
         }
+    }
+
+    // MARK: - Startup
+
+    /// When each step of the current start was reached; nil before `play`.
+    var startupTimeline: PlaybackStartupTimeline? {
+        shared.withLock { $0.startup }
+    }
+
+    private func beginStartup() {
+        shared.withLock { $0.startup = PlaybackStartupTimeline(began: ProcessInfo.processInfo.systemUptime) }
+        startupPhase = .connecting
+        slowStartTask?.cancel()
+        let threshold = slowStartSeconds
+        slowStartTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(threshold))
+            guard !Task.isCancelled else { return }
+            self?.reportSlowStart()
+        }
+    }
+
+    nonisolated private func reachStartupStage(_ stage: PlaybackStartupTimeline.Stage) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let phase = shared.withLock({ state -> PlaybackStartupPhase? in
+            state.startup?.mark(stage, at: now)
+            return state.startup?.phase
+        }) else { return }
+        Task { @MainActor [weak self] in self?.advanceStartupPhase(to: phase) }
+    }
+
+    /// Main-actor hops can land out of order, so a phase only moves forward.
+    private func advanceStartupPhase(to phase: PlaybackStartupPhase) {
+        let order = PlaybackStartupPhase.allCases
+        guard let current = order.firstIndex(of: startupPhase),
+              let next = order.firstIndex(of: phase),
+              next > current else { return }
+        startupPhase = phase
+    }
+
+    private func finishStartup() {
+        slowStartTask?.cancel()
+        let now = ProcessInfo.processInfo.systemUptime
+        let (timeline, cached) = shared.withLock { state in
+            state.startup?.mark(.firstFrame, at: now)
+            return (state.startup, state.deliveryIsCached)
+        }
+        advanceStartupPhase(to: .started)
+        guard let timeline else { return }
+        EngineDiagnostics.record(.playbackStartup, timeline.fields.merging(["cached": .bool(cached)]) { $1 })
+    }
+
+    private func reportSlowStart() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let timeline = startupTimeline, timeline.isSlow(at: now, threshold: slowStartSeconds) else { return }
+        EngineDiagnostics.record(.playbackSlowStart, [
+            "elapsedMs": .int(Int(((now - timeline.began) * 1_000).rounded())),
+        ])
     }
 
     // MARK: - Demux loop (demux queue only)
@@ -3733,6 +3801,7 @@ nonisolated enum AudioRendererReplacement: Equatable {
 nonisolated private final class SharedState: @unchecked Sendable {
     struct State {
         var cancelled = false
+        var startup: PlaybackStartupTimeline?
         var pendingSeekSeconds: Double?
         /// Invalidates an already-primed start when a newer seek is issued.
         var playbackGeneration = 0
