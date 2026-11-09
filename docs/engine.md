@@ -156,6 +156,15 @@ remote control surface, anything that decides when playback starts.
   computed from it.
 - `onSeekReady` fires from `beginPlayback` on every open and every seek,
   unlike the one-shot `onPlaybackStarted`.
+- `startupPhase` says how far a start has got: connecting, opening the
+  container once the first byte is back, probing streams, priming the queues,
+  started. It only moves forward, and stays `started` through later seeks.
+  The first frame records `playbackStartup` with the milliseconds to each
+  step. A start with nothing back from the source after 5 s records
+  `playbackSlowStart`, so a slow start no longer looks the same as a hung one.
+- Before probing streams, a PGS track without a size takes the video's.
+  FFmpeg's probe otherwise waits for a subtitle to learn it, reading up to its
+  5 MB or 5 s limit, and PGS draws on the video's plane anyway.
 
 ## Diagnostics
 
