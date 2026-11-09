@@ -363,6 +363,47 @@ struct PlaybackFillPolicyTests {
 
     // MARK: - Helpers
 
+    // MARK: - Request size
+
+    @Test func aDistantFastLinkGetsAboutASecondOfTransferPerRequest() {
+        // 100 ms to the first byte at 100 Mbps: a 1 MiB request would spend
+        // half its time waiting.
+        let bytes = PlaybackFillPolicy.requestBytes(
+            bytesPerSecond: mbps(100), firstByteSeconds: 0.1, minimum: Int64(mebibyte)
+        )
+        #expect(bytes == Int64(mbps(100)))
+    }
+
+    @Test func aNearbyLinkKeepsTheForegroundSize() {
+        // A millisecond away on a LAN, ten waits' worth is well under 1 MiB.
+        let bytes = PlaybackFillPolicy.requestBytes(
+            bytesPerSecond: mbps(100), firstByteSeconds: 0.001, minimum: Int64(mebibyte)
+        )
+        #expect(bytes == Int64(mebibyte))
+    }
+
+    @Test func aShortWaitSizesTheRequestToTenWaitsOfTransfer() {
+        let bytes = PlaybackFillPolicy.requestBytes(
+            bytesPerSecond: mbps(400), firstByteSeconds: 0.02, minimum: Int64(mebibyte)
+        )
+        #expect(abs(bytes - 10_000_000) <= 1)
+    }
+
+    @Test func aRequestNeverGrowsPastTheCeiling() {
+        let bytes = PlaybackFillPolicy.requestBytes(
+            bytesPerSecond: mbps(10_000), firstByteSeconds: 0.5, minimum: Int64(mebibyte)
+        )
+        #expect(bytes == PlaybackFillPolicy.maximumRequestBytes)
+    }
+
+    @Test func anUnmeasuredLinkFetchesTheMinimum() {
+        let minimum = Int64(mebibyte)
+        #expect(PlaybackFillPolicy.requestBytes(bytesPerSecond: nil, firstByteSeconds: 0.1, minimum: minimum) == minimum)
+        #expect(PlaybackFillPolicy.requestBytes(bytesPerSecond: mbps(100), firstByteSeconds: nil, minimum: minimum) == minimum)
+        #expect(PlaybackFillPolicy.requestBytes(bytesPerSecond: .infinity, firstByteSeconds: 0.1, minimum: minimum) == minimum)
+        #expect(PlaybackFillPolicy.requestBytes(bytesPerSecond: mbps(100), firstByteSeconds: 0, minimum: minimum) == minimum)
+    }
+
     private let mebibyte = 1_024 * 1_024
 
     /// Megabits per second, converted to bytes per second.
