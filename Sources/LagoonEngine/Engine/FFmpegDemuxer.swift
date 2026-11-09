@@ -192,6 +192,12 @@ nonisolated final class FFmpegDemuxer {
     /// at the segment holding it, because a server may start its transcode
     /// at whichever segment is asked for first.
     var startSeconds: Double = 0
+    /// Told each step of the open as it is reached, on the demux queue. Set
+    /// before `open`.
+    var onStartupStage: (@Sendable (PlaybackStartupTimeline.Stage) -> Void)?
+    /// How far into the stream probing it read, or zero without a byte
+    /// stream of its own (HLS).
+    private(set) var probedBytes: Int64 = 0
     /// Armed by the open-time gate in `.convert` mode; demux-queue use only.
     private var profile7Converter: DolbyVisionProfileConverter?
     /// Native profile 5 or 8: frames without an RPU get the previous one.
@@ -497,6 +503,8 @@ nonisolated final class FFmpegDemuxer {
     ) throws {
         close()
         transportFailures.reset()
+        let onStartupStage = onStartupStage
+        transportFailures.onFirstServedRead(onStartupStage.map { report in { report(.firstByte) } })
         formatContext = avformat_alloc_context()
         guard let allocated = formatContext else {
             throw DemuxError.openFailed("out of memory")
@@ -619,10 +627,13 @@ nonisolated final class FFmpegDemuxer {
             #endif
             throw DemuxError.openFailed(Self.errorText(status), code: status)
         }
+        onStartupStage?(.containerOpened)
         status = avformat_find_stream_info(ctx, nil)
         guard status >= 0 else {
             throw DemuxError.openFailed(Self.errorText(status), code: status)
         }
+        probedBytes = ctx.pointee.pb.map { max(avio_seek($0, 0, SEEK_CUR), 0) } ?? 0
+        onStartupStage?(.streamsProbed)
         return ctx
     }
 
