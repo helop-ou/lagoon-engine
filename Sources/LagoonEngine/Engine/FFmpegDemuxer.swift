@@ -192,6 +192,9 @@ nonisolated final class FFmpegDemuxer {
     /// at the segment holding it, because a server may start its transcode
     /// at whichever segment is asked for first.
     var startSeconds: Double = 0
+    /// What the network transport's session is built from. Set before
+    /// `open`. Internal so a test can put a simulated server behind it.
+    var transportSessionConfiguration: URLSessionConfiguration = .ephemeral
     /// Told each step of the open as it is reached, on the demux queue. Set
     /// before `open`.
     var onStartupStage: (@Sendable (PlaybackStartupTimeline.Stage) -> Void)?
@@ -567,6 +570,7 @@ nonisolated final class FFmpegDemuxer {
         let transport = FFmpegNetworkTransport(
             isInterrupted: { [weak self] in self?.isInterrupted ?? true },
             hlsCache: cacheSession?.hlsScope,
+            sessionConfiguration: transportSessionConfiguration,
             authorization: authorization,
             failures: transportFailures
         )
