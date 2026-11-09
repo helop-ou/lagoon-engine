@@ -874,6 +874,9 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     /// Bytes one miss fetches. FFmpeg's AVIO buffer matches, so one demux read
     /// is at most one request.
     let requestSize: Int64
+    /// What a fill request may grow to on a fast, distant link. A miss stays
+    /// at `requestSize`, so a seek still gets its first bytes quickly.
+    private let maximumFillRequestSize: Int64
 
     private let byteLimit: Int64
     private let loader: PlaybackRangeLoading
@@ -894,8 +897,8 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     private var reservedBytes: Int64 = 0
     private var inFlight: [UUID: (range: PlaybackByteRange, priority: Float)] = [:]
     /// How long a foreground read waits for a promoted prefetch of its bytes
-    /// before fetching them itself. Two seconds covers a 1 MiB chunk on any
-    /// link that can play the title.
+    /// before fetching them itself. Two seconds covers a fill request, which
+    /// is sized to about a second of link time.
     static let sharedFetchWaitSeconds: TimeInterval = 2
     /// End of the latest foreground demux read. FFmpeg has already mapped media
     /// time to a byte here, which beats estimating from a VBR timeline
@@ -920,6 +923,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         directory: URL,
         byteLimit: Int64 = 512 * 1_024 * 1_024,
         requestSize: Int64 = 8 * 1_024 * 1_024,
+        maximumFillRequestSize: Int64? = nil,
         loader: PlaybackRangeLoading? = nil,
         storageBudget: PlaybackCacheStorageBudget? = nil,
         cancelsLoaderOnRemoval: Bool = true,
@@ -932,6 +936,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         self.knownLength = expectedLength.flatMap { $0 > 0 ? $0 : nil }
         self.byteLimit = max(byteLimit, 0)
         self.requestSize = max(requestSize, 1)
+        self.maximumFillRequestSize = max(maximumFillRequestSize ?? requestSize, self.requestSize)
         // Only the default loader needs the credential; a supplied one (tests,
         // or an HLS resource sharing its parent's) is kept as is.
         self.loader = loader ?? URLSessionPlaybackRangeLoader(authorization: authorization)
@@ -1121,7 +1126,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         // kept fetches only what was asked: fetching a whole request to fill
         // one AVIO buffer and discarding the rest turned a full cache into
         // permanent rebuffering.
-        makeRoomLocked(for: readAhead ? requestSize : requested.count)
+        makeRoomLocked(for: readAhead ? max(requestSize, requested.count) : requested.count)
         let readAheadEnd = readAhead && storableCapacityLocked() > 0
             ? max(requested.upperBound, requested.lowerBound + min(requestSize, Int64.max - requested.lowerBound))
             : requested.upperBound
@@ -1209,11 +1214,13 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     }
 
     /// Fetches at most one bounded chunk. One chunk at a time lets playback
-    /// pause or throttle proactive traffic between requests.
-    func prefetchNextChunk() async -> PlaybackPrefetchOutcome {
+    /// pause or throttle proactive traffic between requests. `limit` holds
+    /// back a chunk the link would grow, never below a miss's read-ahead.
+    func prefetchNextChunk(limit: Int64? = nil) async -> PlaybackPrefetchOutcome {
         await Task.detached(priority: .utility) { [weak self] in
             guard let self, !Task.isCancelled else { return .cancelled }
-            let (offset, count) = self.nextPrefetchWindow()
+            let (offset, window) = self.nextPrefetchWindow()
+            let count = limit.map { Int(min(Int64(window), max($0, 0))) } ?? window
             guard count > 0 else { return .exhausted }
             guard !Task.isCancelled else { return .cancelled }
             let started = ProcessInfo.processInfo.systemUptime
@@ -1237,6 +1244,12 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard !storageDisabled else { return (0, 0) }
+        let chunk = PlaybackFillPolicy.requestBytes(
+            bytesPerSecond: throughput.bytesPerSecond,
+            firstByteSeconds: throughput.firstByteSeconds,
+            minimum: requestSize,
+            maximum: maximumFillRequestSize
+        )
 
         if isWindowedLocked {
             // Read-ahead only, within the window. A hole behind the window
@@ -1249,7 +1262,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
             guard let range = cached.firstUncachedRange(
                 startingAt: start,
                 endingBefore: upperBound,
-                maximumCount: requestSize
+                maximumCount: chunk
             ) else { return (0, 0) }
             playheadPrefetchCount += 1
             return (range.lowerBound, Int(range.count))
@@ -1266,7 +1279,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
            let range = cached.firstUncachedRange(
                startingAt: preferred,
                endingBefore: upperBound,
-               maximumCount: requestSize
+               maximumCount: chunk
            ) {
             playheadPrefetchCount += 1
             return (range.lowerBound, Int(range.count))
@@ -1278,7 +1291,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         guard let range = cached.firstUncachedRange(
             startingAt: 0,
             endingBefore: upperBound,
-            maximumCount: requestSize
+            maximumCount: chunk
         ) else { return (0, 0) }
         return (range.lowerBound, Int(range.count))
     }
@@ -1848,10 +1861,10 @@ nonisolated final class PlaybackCacheSession: @unchecked Sendable {
         }
     }
 
-    func prefetchNextChunk() async -> PlaybackPrefetchOutcome {
+    func prefetchNextChunk(limit: Int64? = nil) async -> PlaybackPrefetchOutcome {
         switch storage {
         case .direct(let scope):
-            return await scope.prefetchNextChunk()
+            return await scope.prefetchNextChunk(limit: limit)
         case .hls:
             // HLS progress is per segment, not a byte timeline; its warmup is
             // `prefetch`.
@@ -1971,6 +1984,7 @@ final class PlaybackCacheCoordinator {
                 directory: directory,
                 byteLimit: resourceLimit,
                 requestSize: 1 * 1_024 * 1_024,
+                maximumFillRequestSize: PlaybackFillPolicy.maximumRequestBytes,
                 authorization: authorization
             ) else { return nil }
             return PlaybackCacheSession(

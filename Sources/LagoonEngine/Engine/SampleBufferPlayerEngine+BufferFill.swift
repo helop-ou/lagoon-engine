@@ -3,10 +3,10 @@ import os
 
 /// Proactive cache fill, which the engine runs for itself.
 ///
-/// Starts once the first cushion is presented and fetches 1 MiB at a time.
-/// `PlaybackFillPolicy` paces it from the cached media ahead of the
-/// playhead, backs off after a failed fetch, and yields the link after a
-/// stall. Foreground playback always has priority, not by URLSession hints.
+/// Starts once the first cushion is presented and fetches one request at a
+/// time. `PlaybackFillPolicy` sizes each request to the link, paces it from
+/// the cached media ahead of the playhead, backs off after a failed fetch,
+/// and yields the link after a stall. Foreground playback always has priority, not by URLSession hints.
 extension SampleBufferPlayerEngine {
     func publishBufferState(_ metrics: PlaybackCacheMetrics?) {
         bufferState = metrics?.bufferState ?? .empty
@@ -133,7 +133,7 @@ extension SampleBufferPlayerEngine {
 
     // MARK: - Successor warm-up
 
-    /// Fetches up to 8 MiB in 1 MiB requests, with the fill loop's stall
+    /// Fetches up to 8 MiB in requests sized like the fill's, with its stall
     /// backoff and pacing. A failed chunk ends it rather than retrying: it
     /// must never hold the link during the handoff.
     func startSuccessorWarm(_ session: PlaybackCacheSession) {
@@ -150,11 +150,12 @@ extension SampleBufferPlayerEngine {
                     self.successorWarmTask = nil
                 }
             }
+            let budget: Int64 = 8 * 1_024 * 1_024
             let startingBytes = session.metrics.contiguousCachedBytes
             guard let self else { return }
             var observedStalls = self.stallCount
             while !Task.isCancelled,
-                  session.metrics.contiguousCachedBytes - startingBytes < 8 * 1_024 * 1_024 {
+                  session.metrics.contiguousCachedBytes - startingBytes < budget {
                 guard PlaybackCacheOwner.coordinator.next === session else { return }
                 if self.isBuffering || self.stallCount > observedStalls {
                     observedStalls = self.stallCount
@@ -165,7 +166,10 @@ extension SampleBufferPlayerEngine {
                     }
                     continue
                 }
-                guard case .fetched(_, let requestSeconds) = await session.prefetchNextChunk() else { return }
+                let remaining = budget - (session.metrics.contiguousCachedBytes - startingBytes)
+                guard case .fetched(_, let requestSeconds) = await session.prefetchNextChunk(
+                    limit: remaining
+                ) else { return }
                 guard !Task.isCancelled else { return }
                 if !self.isPaused {
                     let measured = max(requestSeconds, PlaybackFillPolicy.minimumMeasuredRequestSeconds)
