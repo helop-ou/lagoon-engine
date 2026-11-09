@@ -192,6 +192,9 @@ nonisolated final class FFmpegDemuxer {
     /// at the segment holding it, because a server may start its transcode
     /// at whichever segment is asked for first.
     var startSeconds: Double = 0
+    /// What the network transport's session is built from. Set before
+    /// `open`. Internal so a test can put a simulated server behind it.
+    var transportSessionConfiguration: URLSessionConfiguration = .ephemeral
     /// Armed by the open-time gate in `.convert` mode; demux-queue use only.
     private var profile7Converter: DolbyVisionProfileConverter?
     /// Native profile 5 or 8: frames without an RPU get the previous one.
@@ -559,6 +562,7 @@ nonisolated final class FFmpegDemuxer {
         let transport = FFmpegNetworkTransport(
             isInterrupted: { [weak self] in self?.isInterrupted ?? true },
             hlsCache: cacheSession?.hlsScope,
+            sessionConfiguration: transportSessionConfiguration,
             authorization: authorization,
             failures: transportFailures
         )
