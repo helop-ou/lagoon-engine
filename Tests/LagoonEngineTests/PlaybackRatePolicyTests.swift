@@ -47,6 +47,7 @@ struct PlaybackRatePolicyTests {
     }
 
     @Test func systemCommandsUseIdempotentPlaybackState() {
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
         let engine = SampleBufferPlayerEngine()
         defer { engine.shutdown() }
         engine.pause()
@@ -58,6 +59,7 @@ struct PlaybackRatePolicyTests {
     }
 
     @Test func playbackRateSurvivesPauseAndIsBounded() {
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
         let engine = SampleBufferPlayerEngine()
         defer { engine.shutdown() }
         engine.setRate(1.5)
@@ -73,6 +75,7 @@ struct PlaybackRatePolicyTests {
 
     @Test func aCorrectionRateLeavesTheViewersChosenRateAlone() {
         // The speed row and Now Playing show `rate`, so a nudge must not move it.
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
         let engine = SampleBufferPlayerEngine()
         defer { engine.shutdown() }
         engine.setRate(1.25)

@@ -682,12 +682,16 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// `AVSampleBufferAudioRenderer` defaults to spatializing `multichannel`
     /// only, unlike `AVPlayerItem`, so stereo would play flat on AirPods.
     /// This only permits spatialization; the viewer's setting still decides.
+    /// Set by tests that start a real engine, so a test run is silent.
+    nonisolated(unsafe) static var mutesAudioForTesting = false
+
     static func makeAudioRenderer() -> AVSampleBufferAudioRenderer {
         let renderer = AVSampleBufferAudioRenderer()
         renderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
         // Otherwise pitch changes with rate. Time-domain keeps speech natural
         // at 1.25x/1.5x.
         renderer.audioTimePitchAlgorithm = .timeDomain
+        renderer.isMuted = mutesAudioForTesting
         return renderer
     }
 

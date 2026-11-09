@@ -8,6 +8,7 @@ import Testing
 struct READMEUsageTests {
     @MainActor
     private func readmeExample(url: URL, serverURL: URL, token: String) {
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
         let engine = SampleBufferPlayerEngine()
 
         let displayLayer = AVSampleBufferDisplayLayer()

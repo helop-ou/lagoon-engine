@@ -136,6 +136,7 @@ struct PlaybackStartupTests {
         let sink = FieldSink()
         EngineDiagnostics.use(sink)
         defer { EngineDiagnostics.use(DiscardedDiagnostics()) }
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
         let engine = SampleBufferPlayerEngine()
         var started = false
         var failure: String?
@@ -174,6 +175,7 @@ struct PlaybackStartupTests {
         let sink = FieldSink()
         EngineDiagnostics.use(sink)
         defer { EngineDiagnostics.use(DiscardedDiagnostics()) }
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
         let engine = SampleBufferPlayerEngine()
         engine.slowStartSeconds = 0.3
 
