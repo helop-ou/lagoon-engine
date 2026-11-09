@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreVideo
 import Foundation
 import Testing
@@ -166,6 +167,36 @@ struct TransportEndToEndTests {
         #expect(streamed.packets == expected.packets)
         #expect(SimulatedOrigin.requests(path: "/hls/segment3.ts").count == 2)
         #expect(SimulatedOrigin.requests(path: "/hls/segment7.ts").count == 2)
+    }
+
+    /// Without a byte cache the demux queues are the whole cushion, so how far
+    /// ahead they reach, and what stopped them, is published.
+    @MainActor
+    @Test func anHLSStreamReportsHowFarAheadItIsRead() async throws {
+        SimulatedOrigin.reset(link: SimulatedLink(roundTrip: 0.02))
+        let directory = try #require(Bundle.module.url(forResource: "playlist", withExtension: "m3u8", subdirectory: "HLSResume"))
+            .deletingLastPathComponent()
+        for file in try FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false)) {
+            SimulatedOrigin.serve("/hls/\(file)", body: try Data(contentsOf: directory.appendingPathComponent(file)))
+        }
+        let engine = SampleBufferPlayerEngine()
+        engine.transportSessionConfiguration = SimulatedOrigin.configuration()
+        var started = false
+        engine.onPlaybackStarted = { started = true }
+        engine.prepare(url: SimulatedOrigin.url("/hls/playlist.m3u8"), delivery: .segmentedManifest,
+                       startSeconds: 0, initialAudioOrdinal: nil)
+        engine.attach(displayLayer: AVSampleBufferDisplayLayer())
+        engine.play()
+        let deadline = ContinuousClock.now + .seconds(20)
+        while !(started && engine.demuxReadAheadLimit != nil), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        #expect(started)
+        #expect(engine.demuxReadAheadLimit != nil)
+        #expect(engine.demuxReadAheadSeconds > 1)
+        engine.shutdown()
+        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
     }
 
     // MARK: - Helpers

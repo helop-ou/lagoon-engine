@@ -254,4 +254,55 @@ struct DemuxBackpressureTests {
             hasAudio: true
         ) == .read)
     }
+
+    // MARK: - Which limit stopped the read
+
+    /// Reading on reports no limit; a full audio queue reports audio.
+    @Test func aReadHasNoLimitAndAnAudioWaitIsAudio() {
+        let limit = { (decision: DemuxBackpressureDecision, audioCount: Int) in
+            DemuxBackpressurePolicy.limit(
+                for: decision, audioCount: audioCount, hasAudio: true,
+                deliveryIsCached: false, videoIntakeCount: 0, videoIntakeBytes: 0
+            )
+        }
+        #expect(limit(.read, 0) == nil)
+        #expect(limit(.waitForAudio(below: 288), 360) == .audio)
+    }
+
+    /// At the decoded video hard limit the loop parks for whichever of the
+    /// audio high water and the intake bounds ran out first.
+    @Test func aVideoWaitNamesWhatRanOut() {
+        let uncachedHighWater = DemuxBackpressurePolicy.audioCushionTarget(deliveryIsCached: false)
+        let limit = { (audioCount: Int, intakeCount: Int, intakeBytes: Int, hasAudio: Bool) in
+            DemuxBackpressurePolicy.limit(
+                for: .waitForVideo(below: 30), audioCount: audioCount, hasAudio: hasAudio,
+                deliveryIsCached: false, videoIntakeCount: intakeCount, videoIntakeBytes: intakeBytes
+            )
+        }
+        #expect(limit(uncachedHighWater, 10, 0, true) == .audio)
+        #expect(limit(10, DemuxBackpressurePolicy.videoIntakeHardLimit, 0, true) == .videoIntake)
+        #expect(limit(10, 10, DemuxBackpressurePolicy.videoIntakeByteBudget, true) == .videoIntakeBytes)
+        #expect(limit(10, 10, 0, true) == .video)
+        #expect(limit(uncachedHighWater, 10, 0, false) == .video)
+    }
+
+    /// The limit follows the decision the loop actually took.
+    @Test func theLimitMatchesAnUncachedDecisionAtTheIntakeBound() {
+        let decision = DemuxBackpressurePolicy.decision(
+            videoCount: 30,
+            audioCount: 40,
+            audioBufferedSeconds: 1,
+            videoFrameRate: 24,
+            videoIsDecoded: true,
+            hasAudio: true,
+            deliveryIsCached: false,
+            videoIntakeCount: DemuxBackpressurePolicy.videoIntakeHardLimit,
+            videoIntakeBytes: 0
+        )
+        #expect(decision == .waitForVideo(below: 30))
+        #expect(DemuxBackpressurePolicy.limit(
+            for: decision, audioCount: 40, hasAudio: true, deliveryIsCached: false,
+            videoIntakeCount: DemuxBackpressurePolicy.videoIntakeHardLimit, videoIntakeBytes: 0
+        ) == .videoIntake)
+    }
 }
