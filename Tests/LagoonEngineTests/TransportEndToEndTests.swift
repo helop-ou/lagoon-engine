@@ -179,6 +179,7 @@ struct TransportEndToEndTests {
         for file in try FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false)) {
             SimulatedOrigin.serve("/hls/\(file)", body: try Data(contentsOf: directory.appendingPathComponent(file)))
         }
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
         let engine = SampleBufferPlayerEngine()
         engine.transportSessionConfiguration = SimulatedOrigin.configuration()
         var started = false

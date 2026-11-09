@@ -59,6 +59,7 @@ struct HLSSubtitleRenditionTests {
     @Test func playbackStartsAndChoosingARenditionNeitherBlocksNorSeeks() async throws {
         let fixture = try RenditionFixture()
         defer { fixture.remove() }
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
         let engine = SampleBufferPlayerEngine()
         var started = false
         var failure: String?
