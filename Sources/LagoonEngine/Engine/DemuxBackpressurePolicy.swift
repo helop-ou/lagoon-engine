@@ -17,6 +17,8 @@ public nonisolated enum DemuxReadAheadLimit: String, Sendable {
     case videoIntake
     /// The same, by bytes.
     case videoIntakeBytes
+    /// An uncached stream reached its read-ahead target.
+    case target
 }
 
 /// Balances two streams read through one interleaved demux cursor. Soft
@@ -49,6 +51,35 @@ nonisolated enum DemuxBackpressurePolicy {
     static let videoIntakeHardLimit = 600
     static let videoIntakeByteBudget = 128 * 1_048_576
 
+    /// Without a cache the queues read on to this much media ahead of the
+    /// clock, at normal speed, past the watermarks above. A 24 fps transcode
+    /// stopped 7 to 10 s ahead on the compressed video high water, so one slow
+    /// segment response stalled it. The hard limits and the byte budget still
+    /// hold: a 4K remux reaches the intake's 128 MB first, about 13 s at
+    /// 80 Mbps.
+    static let uncachedReadAheadSeconds: Double = 30
+    /// Intake units without a cache: 30 s at 60 fps. The byte budget still
+    /// bounds the memory.
+    static let uncachedVideoIntakeHardLimit = 1_800
+
+    /// Whether an uncached stream reads on past the watermarks: short of its
+    /// target, with audio under its hard water and the intake under its
+    /// bounds.
+    static func readsOnToTarget(
+        readAheadSeconds: Double?,
+        playbackRate: Double,
+        audioCount: Int,
+        hasAudio: Bool,
+        deliveryIsCached: Bool,
+        videoIntakeCount: Int,
+        videoIntakeBytes: Int
+    ) -> Bool {
+        guard !deliveryIsCached, let readAheadSeconds, readAheadSeconds.isFinite,
+              readAheadSeconds < uncachedReadAheadSeconds * PlaybackRatePolicy.clamped(playbackRate) else { return false }
+        if hasAudio, audioCount >= uncachedAudioHardWater { return false }
+        return videoIntakeCount < uncachedVideoIntakeHardLimit && videoIntakeBytes < videoIntakeByteBudget
+    }
+
     /// Which limit a wait decision stopped on; nil for a read. Mirrors the
     /// branches of `decision`, which it is only ever called after.
     static func limit(
@@ -57,8 +88,15 @@ nonisolated enum DemuxBackpressurePolicy {
         hasAudio: Bool,
         deliveryIsCached: Bool,
         videoIntakeCount: Int,
-        videoIntakeBytes: Int
+        videoIntakeBytes: Int,
+        readAheadSeconds: Double? = nil,
+        playbackRate: Double = 1
     ) -> DemuxReadAheadLimit? {
+        if case .read = decision { return nil }
+        if !deliveryIsCached, let readAheadSeconds,
+           readAheadSeconds >= uncachedReadAheadSeconds * PlaybackRatePolicy.clamped(playbackRate) {
+            return .target
+        }
         switch decision {
         case .read:
             return nil
@@ -119,8 +157,20 @@ nonisolated enum DemuxBackpressurePolicy {
         playbackRate: Double = 1,
         decodedFrameBytes: Int64 = 0,
         videoIntakeCount: Int = 0,
-        videoIntakeBytes: Int = 0
+        videoIntakeBytes: Int = 0,
+        readAheadSeconds: Double? = nil
     ) -> DemuxBackpressureDecision {
+        if readsOnToTarget(
+            readAheadSeconds: readAheadSeconds,
+            playbackRate: playbackRate,
+            audioCount: audioCount,
+            hasAudio: hasAudio,
+            deliveryIsCached: deliveryIsCached,
+            videoIntakeCount: videoIntakeCount,
+            videoIntakeBytes: videoIntakeBytes
+        ) {
+            return .read
+        }
         let audioHighWater = deliveryIsCached ? Self.audioHighWater : uncachedAudioHighWater
         let audioLowWater = deliveryIsCached ? Self.audioLowWater : uncachedAudioLowWater
         let audioHardWater = deliveryIsCached ? Self.audioHardWater : uncachedAudioHardWater
