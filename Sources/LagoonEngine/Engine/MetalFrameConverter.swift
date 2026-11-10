@@ -87,6 +87,7 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
     private let commandQueue: MTLCommandQueue
     private let pipeline: MTLComputePipelineState
     private let textureCache: CVMetalTextureCache
+    private let emptyGrainBuffer: MTLBuffer
     private let pageSize = Int(getpagesize())
     /// Staging buffers for the copy path, one per frame in flight.
     private let stagingLock = NSLock()
@@ -121,6 +122,10 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         self.commandQueue = commandQueue
         pipeline = try device.makeComputePipelineState(function: function)
         textureCache = cache
+        guard let empty = device.makeBuffer(length: 16, options: .storageModeShared) else {
+            throw ConverterError.buffer
+        }
+        emptyGrainBuffer = empty
     }
 
     /// Whether Metal can write the pool's buffers; picks lossless-compressed
@@ -131,12 +136,12 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
 
     /// Runs the kernel and blocks until the GPU is done, so the caller may
     /// release the source frame on return.
-    func convert(luma: Plane, cb: Plane, cr: Plane, into destination: CVPixelBuffer) throws {
+    func convert(luma: Plane, cb: Plane, cr: Plane, into destination: CVPixelBuffer, grain: AV1FilmGrain? = nil) throws {
         let done = DispatchSemaphore(value: 0)
         // The semaphore hands `outcome` to the completion thread and back;
         // accesses never overlap, which the compiler cannot see.
         nonisolated(unsafe) var outcome: Result<Void, Error> = .success(())
-        try convertAsync(luma: luma, cb: cb, cr: cr, into: destination) { result in
+        try convertAsync(luma: luma, cb: cb, cr: cr, into: destination, grain: grain) { result in
             outcome = result
             done.signal()
         }
@@ -152,6 +157,7 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         cb: Plane,
         cr: Plane,
         into destination: CVPixelBuffer,
+        grain: AV1FilmGrain? = nil,
         completion: @escaping @Sendable (Result<Void, Error>) -> Void
     ) throws {
         let started = ProcessInfo.processInfo.systemUptime
@@ -184,6 +190,12 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(source.buffer, offset: 0, index: 0)
         encoder.setBytes(&parameters, length: MemoryLayout<Parameters>.stride, index: 1)
+        var grainParameters = grain?.parameters ?? .none
+        encoder.setBytes(&grainParameters, length: MemoryLayout<AV1FilmGrain.Parameters>.stride, index: 2)
+        let grainBuffers = try grainTables(grain)
+        for (offset, buffer) in grainBuffers.enumerated() {
+            encoder.setBuffer(buffer, offset: 0, index: 3 + offset)
+        }
         encoder.setTexture(CVMetalTextureGetTexture(lumaTexture), index: 0)
         encoder.setTexture(CVMetalTextureGetTexture(chromaTexture), index: 1)
         let grid = MTLSize(width: configuration.width / 2, height: configuration.height / 2, depth: 1)
@@ -196,9 +208,10 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         encoder.endEncoding()
         // Also handed off: the completion handler releases or returns it.
         nonisolated(unsafe) let sourceBufferHold = source.buffer
+        nonisolated(unsafe) let grainBufferHold = grainBuffers
         commandBuffer.addCompletedHandler { [self] finished in
             // Keep the IOSurface and frame pages alive until the GPU is done.
-            withExtendedLifetime((lumaTexture, chromaTexture, sourceBufferHold)) {}
+            withExtendedLifetime((lumaTexture, chromaTexture, sourceBufferHold, grainBufferHold)) {}
             CVMetalTextureCacheFlush(textureCache, 0)
             if source.staged {
                 stagingLock.withLock { freeStaging.append(sourceBufferHold) }
@@ -228,6 +241,30 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
             }
         }
         commandBuffer.commit()
+    }
+
+    /// The luma, Cb and Cr templates, the scaling tables and the block
+    /// offsets, in the kernel's buffer order. A frame without grain binds
+    /// one empty buffer to each, which the kernel never reads.
+    private func grainTables(_ grain: AV1FilmGrain?) throws -> [MTLBuffer] {
+        guard let grain else { return Array(repeating: emptyGrainBuffer, count: 5) }
+        func buffer<T>(_ values: [T]) throws -> MTLBuffer {
+            guard let buffer = values.withUnsafeBytes({ bytes -> MTLBuffer? in
+                let made = device.makeBuffer(length: max(bytes.count, 16), options: .storageModeShared)
+                if let made, let base = bytes.baseAddress {
+                    made.contents().copyMemory(from: base, byteCount: bytes.count)
+                }
+                return made
+            }) else { throw ConverterError.buffer }
+            return buffer
+        }
+        return [
+            try buffer(grain.lumaGrain),
+            try buffer(grain.cbGrain),
+            try buffer(grain.crGrain),
+            try buffer(grain.scaling),
+            try buffer(grain.offsets),
+        ]
     }
 
     private func destinationTextures(for pixelBuffer: CVPixelBuffer) throws -> (CVMetalTexture, CVMetalTexture) {
