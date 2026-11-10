@@ -65,6 +65,32 @@ struct EngineConfigurationTests {
             .playbackStall, level: .error, variant: [], fields: [:]
         ))
     }
+
+    @Test func everyDeclaredDiagnosticIsListedUnderItsOwnName() throws {
+        // A host maps from allCases, so an event declared but not listed would
+        // never reach its mapping test.
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appending(path: "Sources/LagoonEngine/Diagnostics/EngineDiagnostics.swift"),
+            encoding: .utf8
+        )
+        #expect(declaredNames(in: source, of: "EngineDiagnosticEvent")
+            == EngineDiagnosticEvent.allCases.map(\.rawValue))
+        #expect(declaredNames(in: source, of: "EngineDiagnosticIncident")
+            == EngineDiagnosticIncident.allCases.map(\.rawValue))
+    }
+
+    private func declaredNames(in source: String, of type: String) -> [String] {
+        let body = source.components(separatedBy: "struct \(type):")[1]
+            .components(separatedBy: "\n}\n")[0]
+        return body.matches(of: #/static let (\w+) = Self\(rawValue: "(\w+)"\)/#).map { match in
+            #expect(match.output.1 == match.output.2)
+            return String(match.output.1)
+        }
+    }
 }
 
 private final class TuningAnswers: @unchecked Sendable {
