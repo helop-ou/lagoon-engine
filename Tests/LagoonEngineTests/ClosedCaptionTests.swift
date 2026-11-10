@@ -54,7 +54,10 @@ struct ClosedCaptionTests {
         let engine = SampleBufferPlayerEngine()
         var failure: String?
         engine.onError = { failure = $0.message }
-        engine.prepare(url: url, startSeconds: 0, initialAudioOrdinal: nil)
+        // Paused before it is ready, inside the caption, so a slow runner
+        // cannot play past it.
+        engine.prepare(url: url, startSeconds: 0.6, initialAudioOrdinal: nil)
+        engine.pause()
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         engine.addExternalSubtitle(ExternalSubtitleTrack(
             url: URL(string: "https://example.invalid/subtitle.srt")!,
@@ -68,9 +71,8 @@ struct ClosedCaptionTests {
         // Generous: other suites' main-actor tests run while this one waits.
         let deadline = ContinuousClock.now + .seconds(30)
         let captionsID = SampleBufferPlayerEngine.closedCaptionTrackID
-        engine.play()
-        while !engine.subtitleTracks.contains(where: { $0.engineID == captionsID }), failure == nil,
-              ContinuousClock.now < deadline {
+        while !engine.subtitleTracks.contains(where: { $0.engineID == captionsID }) || engine.isBuffering,
+              failure == nil, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(failure == nil)
@@ -92,11 +94,8 @@ struct ClosedCaptionTests {
 
         engine.selectSubtitleTrack(id: captionsID)
         #expect(engine.subtitleTracks.last?.isSelected == true)
-        engine.seek(to: 0.6)
-        while engine.currentSubtitleText != "HELLO", failure == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(engine.currentSubtitleText == "HELLO")
+        // A text track: its recent lines replay from the backlog at once.
+        #expect(engine.currentSubtitleText == "HELLO", "at \(engine.timePosition)")
         engine.shutdown()
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
     }
