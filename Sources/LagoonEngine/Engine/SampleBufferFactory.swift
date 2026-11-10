@@ -62,7 +62,9 @@ nonisolated enum SampleBufferFactory {
     static func videoFormatDescription(
         codecpar: UnsafeMutablePointer<AVCodecParameters>,
         parameterSets: BitstreamParameterSets? = nil,
-        dolbyVisionOverride: AVDOVIDecoderConfigurationRecord? = nil
+        dolbyVisionOverride: AVDOVIDecoderConfigurationRecord? = nil,
+        firstRPUProfile: UInt8? = nil,
+        frameRate: Double = 0
     ) -> CMFormatDescription? {
         var codecType: CMVideoCodecType
         let atomKey: String
@@ -136,11 +138,16 @@ nonisolated enum SampleBufferFactory {
         // it becomes dvh1. Profile 8 keeps hvc1 plus dvvC, so other displays
         // fall back to the base layer's tags. Profile 7 is tagged as 8 when
         // converted (`dolbyVisionOverride`); otherwise it and profile 4 get
-        // no atom and play as HDR10. Profile 8.6 is tagged as 8.1.
+        // no atom and play as HDR10. Profile 8.6 is tagged as 8.1. A missing
+        // or wrong record is fixed first (`DolbyVisionRecordPolicy`).
         if let dolbyVisionOverride {
             atoms["dvvC"] = doviConfigurationBox(dolbyVisionOverride)
         } else if codecpar.pointee.codec_id == AV_CODEC_ID_HEVC,
-           let dovi = doviConfiguration(codecpar: codecpar) {
+           let dovi = signalledDolbyVision(
+               codecpar: codecpar,
+               firstRPUProfile: firstRPUProfile,
+               frameRate: frameRate
+           ) {
             switch dovi.dv_profile {
             case 5:
                 codecType = kCMVideoCodecType_DolbyVisionHEVC
@@ -731,6 +738,20 @@ nonisolated enum SampleBufferFactory {
     /// The stream's Dolby Vision configuration, if the container has one.
     static func doviConfiguration(codecpar: UnsafeMutablePointer<AVCodecParameters>) -> AVDOVIDecoderConfigurationRecord? {
         sideData(codecpar, type: AV_PKT_DATA_DOVI_CONF)
+    }
+
+    /// The record the stream is signalled with: the container's, unless
+    /// `DolbyVisionRecordPolicy` replaces or drops it.
+    static func signalledDolbyVision(
+        codecpar: UnsafeMutablePointer<AVCodecParameters>,
+        firstRPUProfile: UInt8?,
+        frameRate: Double
+    ) -> AVDOVIDecoderConfigurationRecord? {
+        DolbyVisionRecordPolicy.signalled(
+            container: doviConfiguration(codecpar: codecpar),
+            stream: DolbyVisionRecordPolicy.Stream(codecpar: codecpar, frameRate: frameRate),
+            firstRPUProfile: firstRPUProfile
+        )
     }
 
     /// One typed side-data entry from the codec parameters, where FFmpeg
