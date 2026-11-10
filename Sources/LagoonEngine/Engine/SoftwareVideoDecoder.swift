@@ -329,7 +329,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         guard Self.supports(
                   codecID: codecID,
                   interlaced: FFmpegDemuxer.isInterlaced(fieldOrder: codecpar.pointee.field_order),
-                  highBitDepth: FFmpegDemuxer.isHighBitDepthH264(codecpar)
+                  highBitDepth: FFmpegDemuxer.isHighBitDepthH264(codecpar) || FFmpegDemuxer.isExtendedChromaH264(codecpar)
               ),
               let codec = selectedCodec,
               let context = avcodec_alloc_context3(codec) else {
@@ -706,9 +706,14 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                 || decodedFormat == AV_PIX_FMT_YUVJ420P
                 || decodedFormat == AV_PIX_FMT_NV12
         )
+        // 4:2:2, 4:4:4 and 12-bit only through the GPU stage set up for them.
+        let isGPUOnly = decodedFormat != AV_PIX_FMT_YUV420P10LE
+            && decodedFormat == sourcePixelFormat && gpuConverter != nil
+            && Self.gpuSourceLayout(decodedFormat) != nil
         let isSupported10Bit = outputBitDepth == 10 && (
             decodedFormat == AV_PIX_FMT_YUV420P10LE
                 || decodedFormat == AV_PIX_FMT_P010LE
+                || isGPUOnly
         )
         let frameWidth = Int(frame.pointee.width)
         let frameHeight = Int(frame.pointee.height)
@@ -733,7 +738,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         // released right after (~24 MiB at 4K 10-bit).
         let timing = resolvedTiming()
 
-        if let gpuConverter, let gpuOutputPool, decodedFormat == AV_PIX_FMT_YUV420P10LE {
+        if let gpuConverter, let gpuOutputPool, decodedFormat == AV_PIX_FMT_YUV420P10LE || isGPUOnly {
             try submitGPUSample(converter: gpuConverter, pool: gpuOutputPool, timing: timing, deliver: deliver)
             return nil
         }
@@ -945,8 +950,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         }
         profileLock.withLock { profileStorage.surfaceSeconds += surfaceAllocated - surfaceStart }
         guard let sourceY = planePointer(0), let sourceU = planePointer(1), let sourceV = planePointer(2) else {
-            throw DecoderError.unsupportedPixelFormat("missing 10-bit planar planes")
+            throw DecoderError.unsupportedPixelFormat("missing planar planes")
         }
+        let chromaRows = height >> converter.configuration.source.chromaShiftY
         guard let held = av_frame_alloc() else { throw DecoderError.pixelBuffer(-1) }
         // If the reference fails, freeing `held` later would release planes
         // under a running dispatch. Give up before reserving a slot.
@@ -966,8 +972,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         do {
             try converter.convertAsync(
                 luma: .init(base: UnsafeRawPointer(sourceY), stride: planeStride(0), rows: height),
-                cb: .init(base: UnsafeRawPointer(sourceU), stride: planeStride(1), rows: height / 2),
-                cr: .init(base: UnsafeRawPointer(sourceV), stride: planeStride(2), rows: height / 2),
+                cb: .init(base: UnsafeRawPointer(sourceU), stride: planeStride(1), rows: chromaRows),
+                cr: .init(base: UnsafeRawPointer(sourceV), stride: planeStride(2), rows: chromaRows),
                 into: destination
             ) { [self] result in
                 var pointer: UnsafeMutablePointer<AVFrame>? = heldFrame
@@ -1237,6 +1243,21 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     /// The Metal stage for 10-bit planar 4:2:0 (PQ BT.2020 when tone-mapping),
     /// or nil to fall back. Linear P010 unless
     /// `-debug.softwareDecodeGPULossless YES`.
+    /// The planes of a pixel format the GPU stage converts, or nil.
+    static func gpuSourceLayout(_ format: AVPixelFormat) -> MetalFrameConverter.SourceLayout? {
+        switch format {
+        case AV_PIX_FMT_YUV420P10LE: .init(bitDepth: 10, chromaShiftX: 1, chromaShiftY: 1)
+        case AV_PIX_FMT_YUV420P12LE: .init(bitDepth: 12, chromaShiftX: 1, chromaShiftY: 1)
+        case AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUVJ422P: .init(bitDepth: 8, chromaShiftX: 1, chromaShiftY: 0)
+        case AV_PIX_FMT_YUV422P10LE: .init(bitDepth: 10, chromaShiftX: 1, chromaShiftY: 0)
+        case AV_PIX_FMT_YUV422P12LE: .init(bitDepth: 12, chromaShiftX: 1, chromaShiftY: 0)
+        case AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUVJ444P: .init(bitDepth: 8, chromaShiftX: 0, chromaShiftY: 0)
+        case AV_PIX_FMT_YUV444P10LE: .init(bitDepth: 10, chromaShiftX: 0, chromaShiftY: 0)
+        case AV_PIX_FMT_YUV444P12LE: .init(bitDepth: 12, chromaShiftX: 0, chromaShiftY: 0)
+        default: nil
+        }
+    }
+
     private static func makeGPUOutput(
         mode: OutputMode,
         sourcePeakNits: Float,
@@ -1246,7 +1267,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         fullRange: Bool,
         properties: ColorProperties
     ) -> (MetalFrameConverter, CVPixelBufferPool, CVPixelBuffer, lossless: Bool)? {
-        guard sourcePixelFormat == AV_PIX_FMT_YUV420P10LE else { return nil }
+        guard let layout = gpuSourceLayout(sourcePixelFormat) else { return nil }
         if mode.convertsToSDR {
             guard properties.transfer == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
                   properties.matrix == kCVImageBufferYCbCrMatrix_ITU_R_2020 else { return nil }
@@ -1254,7 +1275,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         let targetNits = SoftwareDecodeThreadPolicy.commandLineInteger(
             forKey: "debug.softwareDecodeTargetNits"
         ) ?? 203
-        guard let converter = try? MetalFrameConverter(configuration: .init(
+        var configuration = MetalFrameConverter.Configuration(
             width: width,
             height: height,
             fullRange: fullRange,
@@ -1263,7 +1284,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             targetPeakNits: Float(min(max(targetNits, 100), 1000)),
             outputBitDepth: 10,
             verbose: EngineTuning.current.profilesAV1Pipeline
-        )) else { return nil }
+        )
+        configuration.source = layout
+        guard let converter = try? MetalFrameConverter(configuration: configuration) else { return nil }
         let destinationFullRange = fullRange && !mode.convertsToSDR
         let preferLossless = SoftwareDecodeThreadPolicy.commandLineString(
             forKey: "debug.softwareDecodeGPULossless"
@@ -1438,6 +1461,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_NV12:
             return 8
         case AV_PIX_FMT_YUV420P10LE, AV_PIX_FMT_P010LE:
+            return 10
+        case _ where pixelFormat != AV_PIX_FMT_YUV420P10LE && gpuSourceLayout(pixelFormat) != nil:
+            // Only the GPU converts these, to 10-bit 4:2:0 whatever their depth.
             return 10
         default:
             let declared = bitsPerRawSample > 0 ? bitsPerRawSample : bitsPerCodedSample
