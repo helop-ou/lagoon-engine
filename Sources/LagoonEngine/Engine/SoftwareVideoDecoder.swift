@@ -1,5 +1,6 @@
 import CoreMedia
 import CoreVideo
+import Metal
 import VideoToolbox
 import Foundation
 import Libavcodec
@@ -141,6 +142,11 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     private let baseAttributes: [String: Any]
     private let sourcePixelFormat: AVPixelFormat
     private let sourcePeakNits: Float
+    /// dav1d hands over AV1 film grain instead of applying it, and the GPU
+    /// stage adds it; see `AV1FilmGrain`.
+    let exportsFilmGrain: Bool
+    /// Frames whose grain the GPU stage added.
+    private(set) var gpuGrainedFrames = 0
 
     /// Receives ready frames: synchronously from `decode` on the CPU paths,
     /// from the delivery queue, in decode order, on the GPU path.
@@ -357,6 +363,22 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                 throw DecoderError.codecSetup("libdav1d max frame delay is unavailable")
             }
         }
+        let tuningForExport = EngineTuning.current
+        let exportsFilmGrain = Self.exportsFilmGrainToGPU(
+            codecID: codecID,
+            pixelFormat: AVPixelFormat(rawValue: codecpar.pointee.format),
+            outputMode: Self.outputMode(
+                requestedValue: tuningForExport.softwareDecodeOutputMode,
+                legacyCompressedOutput: tuningForExport.softwareDecodeCompressedOutput,
+                toneMapHDRByDefault: false
+            ),
+            metalAvailable: MTLCreateSystemDefaultDevice() != nil
+        )
+        if exportsFilmGrain {
+            // Read by libdav1d at open: it stops applying grain and attaches
+            // the parameters to every frame instead.
+            context.pointee.export_side_data |= Int32(AV_CODEC_EXPORT_DATA_FILM_GRAIN)
+        }
         guard avcodec_open2(context, codec, nil) >= 0, let decodedFrame = av_frame_alloc() else {
             var pointer: UnsafeMutablePointer<AVCodecContext>? = context
             avcodec_free_context(&pointer)
@@ -464,6 +486,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         self.baseAttributes = baseAttributes
         self.sourcePixelFormat = sourcePixelFormat
         self.sourcePeakNits = peakNits
+        self.exportsFilmGrain = exportsFilmGrain
         codecContext = context
         resolvedThreadCount = context.pointee.thread_count
         codecName = codec.pointee.name.map(String.init(cString:)) ?? "unknown"
@@ -969,12 +992,20 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         // only after the GPU has written it.
         nonisolated(unsafe) let heldFrame = held
         nonisolated(unsafe) let destination = pixelBuffer
+        let source = converter.configuration.source
+        let grain = exportsFilmGrain
+            ? AV1FilmGrain(frame: frame, bitDepth: source.bitDepth, subX: source.chromaShiftX, subY: source.chromaShiftY)
+            : nil
+        if grain != nil {
+            gpuGrainedFrames += 1
+        }
         do {
             try converter.convertAsync(
                 luma: .init(base: UnsafeRawPointer(sourceY), stride: planeStride(0), rows: height),
                 cb: .init(base: UnsafeRawPointer(sourceU), stride: planeStride(1), rows: chromaRows),
                 cr: .init(base: UnsafeRawPointer(sourceV), stride: planeStride(2), rows: chromaRows),
-                into: destination
+                into: destination,
+                grain: grain
             ) { [self] result in
                 var pointer: UnsafeMutablePointer<AVFrame>? = heldFrame
                 av_frame_free(&pointer)
@@ -1244,6 +1275,20 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     /// or nil to fall back. Linear P010 unless
     /// `-debug.softwareDecodeGPULossless YES`.
     /// The planes of a pixel format the GPU stage converts, or nil.
+    /// Only AV1 whose frames take the GPU stage: there the grain costs a
+    /// little GPU time instead of a tenth of the decode. Anything else, or a
+    /// format not known before open, keeps dav1d applying it, since grain
+    /// handed over and then sent down a CPU path would be lost.
+    static func exportsFilmGrainToGPU(
+        codecID: AVCodecID,
+        pixelFormat: AVPixelFormat,
+        outputMode: OutputMode,
+        metalAvailable: Bool
+    ) -> Bool {
+        codecID == AV_CODEC_ID_AV1 && outputMode.usesGPU && metalAvailable
+            && gpuSourceLayout(pixelFormat) != nil
+    }
+
     static func gpuSourceLayout(_ format: AVPixelFormat) -> MetalFrameConverter.SourceLayout? {
         switch format {
         case AV_PIX_FMT_YUV420P10LE: .init(bitDepth: 10, chromaShiftX: 1, chromaShiftY: 1)
