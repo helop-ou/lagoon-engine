@@ -2654,7 +2654,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // Subtitle ordinals: embedded streams in demux order, then external
         // tracks.
         let embeddedSubtitles = demuxer.subtitleStreams
-        let (externals, subtitleMetadata, subtitleOrdinal) = shared.withLock { state -> ([ExternalSubtitleTrack], [PlayerTrackMetadata], Int) in
+        let (subtitleMetadata, subtitleOrdinal) = shared.withLock { state -> ([PlayerTrackMetadata], Int) in
             state.embeddedSubtitleStreamIndices = embeddedSubtitles.map(\.streamIndex)
             state.styledSubtitleHeaders = demuxer.styledSubtitleHeaders
             state.textSubtitleStreamIndices = demuxer.textSubtitleStreamIndices
@@ -2672,7 +2672,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 )
             }
             state.closedCaptionsListed = false
-            return (state.externalSubtitles, state.embeddedSubtitleMetadata, ordinal)
+            return (state.embeddedSubtitleMetadata, ordinal)
         }
         // Before the first packet, so the opening lines reach libass too.
         let generation = shared.withLock { state in
@@ -2682,13 +2682,18 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         styledSubtitleQueue.sync {
             replaceStyledSubtitleRenderer(videoSize: size, generation: generation)
         }
-        let subtitleTracks = Self.subtitleTracks(
-            embedded: embeddedSubtitles,
-            metadata: subtitleMetadata,
-            externals: externals,
-            selectedOrdinal: subtitleOrdinal
-        )
         Task { @MainActor in
+            // Built here, not on the demux thread: a sidecar added or captions
+            // found while the title opened would otherwise be dropped.
+            var subtitleTracks = Self.subtitleTracks(
+                embedded: embeddedSubtitles,
+                metadata: subtitleMetadata,
+                externals: self.externalSubtitles,
+                selectedOrdinal: self.shared.withLock { $0.selectedSubtitleOrdinal }
+            )
+            if self.shared.withLock({ $0.closedCaptionsListed }) {
+                subtitleTracks.append(self.closedCaptionTrack())
+            }
             self.publishStreams(
                 duration: demuxedDuration,
                 videoSize: size,
@@ -2732,16 +2737,19 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// list then, last.
     private func listClosedCaptions() {
         guard !shutdownRequested, !subtitleTracks.contains(where: { $0.engineID == Self.closedCaptionTrackID }) else { return }
-        let selected = shared.withLock { $0.selectedSubtitleOrdinal } == Self.closedCaptionTrackID
-        subtitleTracks.append(PlayerTrack(
+        subtitleTracks.append(closedCaptionTrack())
+    }
+
+    private func closedCaptionTrack() -> PlayerTrack {
+        PlayerTrack(
             engineID: Self.closedCaptionTrackID,
             kind: .subtitle,
             displayName: String(localized: "Closed Captions"),
-            isSelected: selected,
+            isSelected: shared.withLock { $0.selectedSubtitleOrdinal } == Self.closedCaptionTrackID,
             languageTag: nil,
             isForced: false,
             isHearingImpaired: true
-        ))
+        )
     }
 
     nonisolated private static func subtitleTracks(
