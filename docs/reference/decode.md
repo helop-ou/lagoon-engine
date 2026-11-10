@@ -428,3 +428,34 @@ Two smaller changes:
 - Fusing the CPU repack's luma and chroma work into one `concurrentPerform`
   cut p50 by 5–6%. The conversion-chunk count was left alone: one, two and
   three spanned 2.2%, one run each, which is not evidence.
+
+#### Film grain on the GPU
+
+AV1 often carries film grain as parameters for the decoder to synthesise,
+rather than as picture data. dav1d applied it on the CPU, on the path with no
+room to spare: the frame-context gain above shrinks from 43% to 34% with
+grain, and AetherEngine puts grain at about a tenth of a 4K decode's CPU.
+
+When an AV1 stream's frames will take the GPU stage (10-bit, or 4:2:2,
+4:4:4 and 12-bit), `SoftwareVideoDecoder` sets
+`AV_CODEC_EXPORT_DATA_FILM_GRAIN` before `avcodec_open2`. libdav1d then stops
+applying the grain and attaches its parameters to every frame. `AV1FilmGrain`
+builds what the specification's add-noise process (AV1 7.18.3) needs from
+them on the CPU: the grain templates with their auto-regressive filter, the
+scaling tables and one random offset per 32x32 block. `MetalFrameConverter`'s
+kernel adds the grain to each source sample before repacking or tone
+mapping, including the overlap blend at block edges, so the frame is what
+dav1d would have produced.
+
+- 8-bit 4:2:0 AV1 is copied on the CPU, where nothing would add the grain,
+  so dav1d keeps applying it there. So does a stream whose pixel format is
+  unknown before open.
+- `AV1FilmGrainTests` decodes a grain fixture both ways and compares every
+  output sample, luma and chroma, with dav1d's. The fixture is 208x120, so
+  blocks are cut short at both edges, with overlap, a lag-3 filter and
+  chroma points of its own: `ffmpeg -f lavfi -i
+  "testsrc2=size=208x120:rate=10,format=yuv420p,noise=alls=40:allf=t" -t 0.6
+  -c:v libsvtav1 -pix_fmt yuv420p10le -svtav1-params
+  film-grain=25:film-grain-denoise=0 -g 6`.
+- Not yet measured on the Apple TV: the frame-loss bench on a grain-heavy 4K
+  title, before and after.
