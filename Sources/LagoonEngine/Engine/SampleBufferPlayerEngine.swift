@@ -37,6 +37,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     private(set) public var currentSubtitleImages: [SubtitleImage] = []
     /// Positive delays the audio, as in mpv.
     private(set) public var audioDelay: Double = 0
+    private(set) public var audioShaping = AudioShaping.off
     private(set) public var subtitleOffset: Double = 0
     /// HUD line: the selected audio stream as the demuxer sees it (codec,
     /// channels, FFmpeg's Atmos/JOC verdict).
@@ -863,6 +864,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         if reroutes, !audioTracks.isEmpty {
             seek(to: timePosition)
         }
+    }
+
+    public func setAudioShaping(_ shaping: AudioShaping) {
+        guard shaping != audioShaping else { return }
+        audioShaping = shaping
+        shared.withLock { $0.audioShaping = shaping }
+        // The demuxer picks it up on the demux queue, at open or at a seek.
+        guard !audioTracks.isEmpty else { return }
+        seek(to: timePosition)
     }
 
     public func setSubtitleOffset(_ seconds: Double) {
@@ -2512,6 +2522,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         authorization: MediaRequestAuthorization?
     ) -> Bool? {
         var deliveryIsCached = cacheSession != nil
+        demuxer.setAudioShaping(shared.withLock { $0.audioShaping })
         do {
             do {
                 try demuxer.open(
@@ -2702,6 +2713,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             return state.selectedAudioOrdinal
         }
+        // A change made while the title was opening.
+        demuxer.setAudioShaping(shared.withLock { $0.audioShaping })
         applyAudioSelection(ordinal: initialOrdinal)
 
         let tracks = audioTracks(selectedOrdinal: initialOrdinal)
@@ -2970,6 +2983,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // Flush again: anything enqueued since the request-time
         // flush is pre-seek (see the helper).
         pumpQueue.sync { self.flushRenderersAndQueues() }
+        demuxer.setAudioShaping(shared.withLock { $0.audioShaping })
         applyAudioSelection(ordinal: shared.withLock { $0.selectedAudioOrdinal })
         progress.hasPrimedPlayback = true
         primeAndStart(at: target)
@@ -4128,6 +4142,7 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// H.264 the display layer decodes; Picture in Picture subtitles need
         /// it decoded here instead.
         var videoReachesRendererCompressed = false
+        var audioShaping = AudioShaping.off
         /// Media seconds per wall-clock second; scales demux watermarks.
         var playbackRate: Double = 1
         /// First sample actually accepted by the renderer after attach/flush.
