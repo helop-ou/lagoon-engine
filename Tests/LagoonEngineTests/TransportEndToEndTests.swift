@@ -20,26 +20,32 @@ struct TransportEndToEndTests {
 
     /// A server 100 ms away on a 100 Mbps link. Fixed 1 MiB requests spent
     /// about as long waiting for the first byte as transferring, so the fill
-    /// carried under half of what the link delivered.
+    /// carried under half of what the link delivered. Measured against that
+    /// fixed fill under the same load, since a loaded CI runner slows both.
     @Test func aDistantLinkFillsNearItsRate() async throws {
+        let fixed = try #require(await Self.sizedFillRate(growing: false))
+        let sized = try #require(await Self.sizedFillRate(growing: true))
+        #expect(sized > 1.3 * fixed, "filled at \(Int(sized)) B/s against \(Int(fixed)) fixed")
+    }
+
+    /// The rate of the second fill request, the one sized from the first.
+    private static func sizedFillRate(growing: Bool) async throws -> Double? {
         SimulatedOrigin.reset(link: SimulatedLink(roundTrip: 0.1, bytesPerSecond: Self.fastLink))
         let body = Self.pattern(count: 32 * Self.mebibyte)
         SimulatedOrigin.serve("/distant.mkv", body: body)
-        let scope = try Self.scope(path: "/distant.mkv", length: body.count, requestSize: Int64(Self.mebibyte))
+        let scope = try Self.scope(
+            path: "/distant.mkv", length: body.count, requestSize: Int64(Self.mebibyte),
+            maximumFillRequestSize: growing ? PlaybackFillPolicy.maximumRequestBytes : Int64(Self.mebibyte)
+        )
         defer { scope.cancelAndRemove() }
-
-        // The first request measures the link. The second, sized from it, is
-        // what the fill goes on doing. It is timed by its own request: under
-        // the parallel suites, the fill's utility task can wait seconds to be
-        // scheduled at all.
-        #expect((await scope.prefetchNextChunk()).advanced)
-        guard case .fetched(let bytes, let seconds) = await scope.prefetchNextChunk() else {
+        // It is timed by its own request: under the parallel suites, the fill's
+        // utility task can wait seconds to be scheduled at all.
+        guard (await scope.prefetchNextChunk()).advanced,
+              case .fetched(let bytes, let seconds) = await scope.prefetchNextChunk() else {
             Issue.record("The sized request did not fetch")
-            return
+            return nil
         }
-        let rate = Double(bytes) / seconds
-        let delivered = try #require(SimulatedOrigin.deliveredBytesPerSecond)
-        #expect(rate > 0.6 * delivered, "filled at \(Int(rate)) B/s of \(Int(delivered))")
+        return Double(bytes) / seconds
     }
 
     /// Bytes still arriving are not progress enough. The read gives up on the
@@ -211,6 +217,7 @@ struct TransportEndToEndTests {
         path: String,
         length: Int,
         requestSize: Int64,
+        maximumFillRequestSize: Int64 = PlaybackFillPolicy.maximumRequestBytes,
         loader: URLSessionPlaybackRangeLoader? = nil
     ) throws -> PlaybackCacheScope {
         try PlaybackCacheScope(
@@ -220,7 +227,7 @@ struct TransportEndToEndTests {
             directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
             byteLimit: Int64(length),
             requestSize: requestSize,
-            maximumFillRequestSize: PlaybackFillPolicy.maximumRequestBytes,
+            maximumFillRequestSize: maximumFillRequestSize,
             loader: loader ?? Self.loader()
         )
     }
