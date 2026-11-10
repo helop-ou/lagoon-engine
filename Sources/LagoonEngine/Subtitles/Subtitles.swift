@@ -58,6 +58,13 @@ public nonisolated struct SubtitleTextColor: Equatable, Sendable {
     public let green: UInt8
     public let blue: UInt8
     public let alpha: UInt8
+
+    public init(red: UInt8, green: UInt8, blue: UInt8, alpha: UInt8) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.alpha = alpha
+    }
 }
 
 /// One inline-styled span. Styling per run keeps mid-line emphasis without a
@@ -250,6 +257,24 @@ nonisolated final class SubtitleStore: @unchecked Sendable {
                 textCues.append(contentsOf: cues[index].textCues)
                 images.append(contentsOf: cues[index].images)
             }
+        }
+        return (textCues, images)
+    }
+
+    /// What `active(at:)` would show, without dropping expired cues or
+    /// moving the external cursor. For a time ahead of the clock (a frame
+    /// about to reach the renderer), which must not take away cues the
+    /// display tick still needs.
+    func peek(at position: Double) -> (textCues: [SubtitleTextCue], images: [SubtitleImage]) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard position.isFinite else { return ([], []) }
+        let seconds = position - offset
+        var textCues: [SubtitleTextCue] = []
+        var images: [SubtitleImage] = []
+        for cue in cues where cue.start <= seconds && seconds < cue.end {
+            textCues.append(contentsOf: cue.textCues)
+            images.append(contentsOf: cue.images)
         }
         return (textCues, images)
     }
