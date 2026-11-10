@@ -186,6 +186,11 @@ nonisolated final class FFmpegDemuxer {
     private var pictureOrderReader: H264PictureOrderReader?
     /// Video packets whose timestamp is settled, waiting to go out.
     private var settledVideoPackets: [UnsafeMutablePointer<AVPacket>] = []
+    // Closed captions in the video stream; see `ClosedCaptionTrack`.
+    private var closedCaptionCodec: ClosedCaptionExtractor.Codec?
+    private var closedCaptionNALLengthSize: Int?
+    private var closedCaptions: ClosedCaptionTrack?
+    private var pendingCaptionEvents: [SubtitleEvent] = []
     /// Built here from the codec parameters, then taken by the engine, which
     /// runs it on its own queue. The demuxer never decodes video.
     private var softwareVideoDecoder: SoftwareVideoDecoder?
@@ -824,6 +829,7 @@ nonisolated final class FFmpegDemuxer {
             pictureOrderReader = reader
             presentationOrder = H264PresentationOrder(depth: min(Int(videoPar.pointee.video_delay), 16))
         }
+        configureClosedCaptions(videoPar: videoPar)
         videoStream = DemuxedStream(
             streamIndex: bestVideo,
             codecName: String(cString: avcodec_get_name(videoPar.pointee.codec_id)),
@@ -875,6 +881,49 @@ nonisolated final class FFmpegDemuxer {
             rpuRepeater = DolbyVisionRPURepeater()
         }
         return dolbyVisionOverride
+    }
+
+    private func configureClosedCaptions(videoPar: UnsafeMutablePointer<AVCodecParameters>) {
+        closedCaptions = nil
+        pendingCaptionEvents.removeAll()
+        let extradata = videoPar.pointee.extradata.flatMap { bytes in
+            videoPar.pointee.extradata_size > 0
+                ? Data(bytes: bytes, count: Int(videoPar.pointee.extradata_size)) : nil
+        }
+        switch videoPar.pointee.codec_id {
+        case AV_CODEC_ID_H264:
+            closedCaptionCodec = .h264
+            closedCaptionNALLengthSize = extradata.flatMap { $0.count >= 7 && $0[0] == 1 ? Int($0[4] & 0x03) + 1 : nil }
+        case AV_CODEC_ID_HEVC:
+            closedCaptionCodec = .hevc
+            closedCaptionNALLengthSize = extradata.flatMap { HEVCNALUnitRewriter.nalLengthSize(hvcc: $0) }
+        case AV_CODEC_ID_MPEG2VIDEO:
+            closedCaptionCodec = .mpeg2
+            closedCaptionNALLengthSize = nil
+        default:
+            closedCaptionCodec = nil
+        }
+    }
+
+    /// Reads one video packet's captions, before either decode path takes it.
+    private func readClosedCaptions(_ packet: UnsafeMutablePointer<AVPacket>) {
+        guard let codec = closedCaptionCodec, let data = packet.pointee.data, packet.pointee.size > 0,
+              let pts = Self.presentationTimestamp(packet) else { return }
+        let payload = UnsafeRawBufferPointer(start: data, count: Int(packet.pointee.size))
+        // A start-code stream in a length-prefixed container's place (MPEG-TS).
+        let startCodes = payload.count >= 4 && payload[0] == 0 && payload[1] == 0
+            && (payload[2] == 1 || (payload[2] == 0 && payload[3] == 1))
+        let captions = ClosedCaptionExtractor.captions(
+            in: payload,
+            codec: codec,
+            nalLengthSize: startCodes ? nil : closedCaptionNALLengthSize
+        )
+        guard !captions.isEmpty else { return }
+        if closedCaptions == nil {
+            let depth = Int(formatContext?.pointee.streams[Int(videoStreamIndex)]?.pointee.codecpar.pointee.video_delay ?? 0)
+            closedCaptions = ClosedCaptionTrack(timeBase: videoTimeBase, depth: depth + 1)
+        }
+        pendingCaptionEvents += closedCaptions?.add(captions, pts: pts) ?? []
     }
 
     private func configureVideoRandomAccess(
@@ -1235,6 +1284,8 @@ nonisolated final class FFmpegDemuxer {
         videoTimeline?.reset()
         freeHeldVideoPackets()
         pictureOrderReader?.reset()
+        closedCaptions?.flush()
+        pendingCaptionEvents.removeAll()
         // Not the software decoder: the decode stage resets it on its own
         // queue, and flushing here would touch libavcodec from two queues.
         for decoder in subtitleDecoders.values {
@@ -1626,6 +1677,8 @@ nonisolated final class FFmpegDemuxer {
     }
 
     private func videoResult(_ packet: UnsafeMutablePointer<AVPacket>) -> ReadResult {
+        // After the presentation order rebuild, so captions take its times.
+        readClosedCaptions(packet)
         if outputsDecodedVideo {
             // Detached from the reusable packet so the decode stage can keep it.
             guard let detached = SoftwareVideoPacket(cloning: packet, timeBase: videoTimeBase) else {
@@ -1707,6 +1760,10 @@ nonisolated final class FFmpegDemuxer {
 
     func readNext() -> ReadResult {
         guard let ctx = formatContext, let packet else { return .failed("demuxer not open") }
+        if !pendingCaptionEvents.isEmpty {
+            defer { pendingCaptionEvents.removeAll() }
+            return .subtitle(pendingCaptionEvents, streamIndex: ClosedCaptionTrack.streamIndex)
+        }
         if !settledVideoPackets.isEmpty {
             return releaseSettledVideoPacket()
         }
@@ -1724,6 +1781,9 @@ nonisolated final class FFmpegDemuxer {
             if let held = presentationOrder?.drain(), !held.isEmpty {
                 settle(held)
                 return releaseSettledVideoPacket()
+            }
+            if let tail = closedCaptions?.drain(), !tail.isEmpty {
+                return .subtitle(tail, streamIndex: ClosedCaptionTrack.streamIndex)
             }
             // The decode stage drains video. Emit the audio decoder's tail
             // before declaring the end.
