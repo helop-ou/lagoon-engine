@@ -174,6 +174,11 @@ everything: a library that reported by default would report to its author
 about someone else's users. A host that wants diagnostics installs a sink with
 `EngineDiagnostics.use(_:)`.
 
+`EngineDiagnosticEvent` and `EngineDiagnosticIncident` are structs with a
+static constant per value, not enums, so a new one ships in a minor release.
+A host's switch over them needs a `default`, and `allCases` is what a host
+checks its mapping against.
+
 String fields must pass a token rule (letters, digits, `.`, `_`, `-` and `,`).
 A string that fails is dropped, not truncated, because a truncated URL is
 still a URL.
