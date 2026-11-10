@@ -352,6 +352,14 @@ by joining same-codec clips of two sizes with ffmpeg's concat demuxer
   seek. Bitmap streams (PGS, DVD, DVB) are still discarded while unselected
   and still re-demux from the current position when chosen. PGS cues are
   open-ended and close on the next composition.
+- **Closed captions in the video.** H.264 and HEVC carry CEA-608 in an A/53
+  `GA94` registered user-data SEI, and MPEG-2 in picture user data.
+  `ClosedCaptionExtractor` reads each video packet's units up to its first
+  slice, before either decode path takes it, and `ClosedCaptionTrack` puts
+  the `cc_data` back in presentation order and decodes it with FFmpeg's
+  `ccaption`. The track has no stream in the file, so it is listed only once
+  its first caption is read, last and under an id outside the ordinals, so no
+  other track moves. Its events are text, so it gets the backlog too.
 - **HLS subtitle renditions are listed, never read**, chosen or not. libavformat
   fetches a WebVTT rendition inside the audio and video read: before it hands
   over the next packet it opens the rendition's segments one by one until it
