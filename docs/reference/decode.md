@@ -296,6 +296,12 @@ kernel (`SoftwareFrameConversion.metal`):
 - The kernel repacks to P010 and, for PQ BT.2020 sources, tone-maps to BT.709
   SDR with the BT.2390 EETF at 203 nits reference white. It writes straight
   into an IOSurface the renderer takes.
+- It also takes what VideoToolbox does not: 4:2:2 and 4:4:4 at 8, 10 or 12
+  bits, and 12-bit 4:2:0 (`SoftwareVideoDecoder.gpuSourceLayout`). Each code
+  goes to 10 bits first, 8-bit read as bytes, 12-bit rounded, and the chroma
+  under each 2x2 block is averaged, so both modes still see 10-bit 4:2:0.
+  H.264 in a 4:2:2 or 4:4:4 profile is sent to software for it, as High 10
+  is. HEVC range extensions stay on VideoToolbox.
 - **The dispatch is asynchronous on purpose.** The decode queue returns to
   libavcodec at once, and the dav1d picture stays referenced until the kernel
   has read it.
@@ -356,7 +362,9 @@ Regression coverage:
 - `MetalFrameConverterTests`, on the simulator GPU: the repack is exact; the
   tone map matches a Double reference within two codes, keeps black black,
   reaches white at the source peak, never inverts a ramp and keeps grey
-  neutral.
+  neutral. `MetalFrameConverterLayoutTests` pins every extended layout, and
+  `ExtendedChromaDecodeTests` decodes 4:2:2 and 4:4:4 H.264 fixtures and
+  matches the first frame's chroma to libavcodec's own decode.
 - The regression probe reports `videoPath` (the live output stage) and
   `idleRequests` (request-block runs with nothing to give).
   `testControlledFrameLossPlaybackPerformance` bounds `idleRequests` in the
