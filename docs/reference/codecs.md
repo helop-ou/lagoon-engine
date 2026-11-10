@@ -355,7 +355,8 @@ by joining same-codec clips of two sizes with ffmpeg's concat demuxer
 - **Closed captions in the video.** H.264 and HEVC carry CEA-608 in an A/53
   `GA94` registered user-data SEI, and MPEG-2 in picture user data.
   `ClosedCaptionExtractor` reads each video packet's units up to its first
-  slice, before either decode path takes it, and `ClosedCaptionTrack` puts
+  slice, after the H.264 presentation order rebuild and before either decode
+  path takes it, and `ClosedCaptionTrack` puts
   the `cc_data` back in presentation order and decodes it with FFmpeg's
   `ccaption`. The track has no stream in the file, so it is listed only once
   its first caption is read, last and under an id outside the ordinals, so no
