@@ -61,6 +61,16 @@ Without these tags the display renders BT.2020 PQ as washed-out SDR.
   Apple TV 4K with tvOS 27). Its `dvvC` says 8.1 instead, the same HDR10 base
   layer, and the stream then decodes. On an HDR10 display it plays as HDR10.
   Whether a Dolby Vision display engages from its RPUs is untested.
+- `DolbyVisionRecordPolicy` fixes a record before it is signalled. Profile
+  8.2 has an SDR base layer, so its record is dropped and the base plays.
+  Profile 10 is never signalled, so 10.2 already plays its base. Two cases
+  need the first RPU, which the demuxer reads at open and then rewinds, as it
+  does for missing parameter sets. A profile 5 record over a stream whose VUI
+  says BT.2020 PQ is signalled as 8.1 when libdovi reads that RPU as profile
+  8, or its YCbCr would show as IPTPQc2. A 10-bit Matroska HEVC stream with no
+  record and no colorimetry gets a synthesized profile 5 record when its RPU
+  reads as profile 5, or it would show green and purple. Its level comes from
+  FFmpeg's level table. Neither case has been seen on a real title yet.
 
 ## Profile 7 conversion
 
