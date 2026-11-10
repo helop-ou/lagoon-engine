@@ -47,6 +47,7 @@ let package = Package(
                 .copy("Fixtures/LatePGS"),
                 .copy("Fixtures/TextSubtitles"),
                 .copy("Fixtures/UnindexedSeek"),
+                .copy("Fixtures/UntaggedDolbyVision"),
             ],
             swiftSettings: [
                 .defaultIsolation(MainActor.self),
