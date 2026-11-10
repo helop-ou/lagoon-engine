@@ -37,6 +37,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     private(set) public var currentSubtitleImages: [SubtitleImage] = []
     /// Positive delays the audio, as in mpv.
     private(set) public var audioDelay: Double = 0
+    private(set) public var subtitleOffset: Double = 0
     /// HUD line: the selected audio stream as the demuxer sees it (codec,
     /// channels, FFmpeg's Atmos/JOC verdict).
     public private(set) var audioDiagnostic: String?
@@ -840,6 +841,18 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // Compressed buffers carry demuxer stamps, so re-demux from here to
         // stamp every new buffer with the new offset.
         seek(to: timePosition)
+    }
+
+    public func setSubtitleOffset(_ seconds: Double) {
+        let clamped = ((max(-30, min(30, seconds))) * 1000).rounded() / 1000
+        guard clamped != subtitleOffset else { return }
+        subtitleOffset = clamped
+        subtitleStore.setOffset(clamped)
+        shared.withLock {
+            $0.subtitleOffsetMilliseconds = Int64(clamped * 1000)
+            $0.styledSubtitleRenderer?.setOffset(milliseconds: $0.subtitleOffsetMilliseconds)
+        }
+        refreshSubtitles(at: timePosition)
     }
 
     public func selectSubtitleTrack(id: Int?) {
@@ -2303,6 +2316,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             guard state.styledSubtitleGeneration == generation else { return false }
             state.styledSubtitlePending = false
             state.styledSubtitleRenderer = made
+            made?.setOffset(milliseconds: state.subtitleOffsetMilliseconds)
             // Under the lock, so they reach libass before any later chunk.
             for chunk in state.pendingStyledChunks { made?.add(chunk) }
             state.pendingStyledChunks.removeAll()
@@ -3879,6 +3893,7 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// Bumped by every selection and by shutdown; a renderer started for
         /// an older one is dropped instead of installed.
         var styledSubtitleGeneration = 0
+        var subtitleOffsetMilliseconds: Int64 = 0
         /// A renderer is being started for the selection, so the plain cues
         /// stay hidden meanwhile rather than flash up unstyled.
         var styledSubtitlePending = false
