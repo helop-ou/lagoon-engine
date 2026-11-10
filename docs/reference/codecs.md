@@ -472,3 +472,33 @@ play does, three runs each:
 
 The `LatePGS` fixture (first subtitle 11 s in) probed 42 KB before, 6 KB
 after, and its subtitles still decode to images.
+
+### Picture in Picture
+
+Picture in Picture shows only the display layer, so a host's subtitle
+overlay is gone there. `setPictureInPictureSubtitles(_:)` with a
+`BurnedInSubtitleStyle` makes the engine draw the selected subtitles into the
+frames itself until it is called with nil. Outside Picture in Picture nothing
+is drawn and nothing changes.
+
+- **Where.** At the video pump, just before a frame goes to the renderer.
+  `SubtitleStore.peek(at:)` finds what shows at the frame's own time without
+  dropping cues the display tick still needs, since the pump runs ahead of
+  the clock. A libass track renders at the frame's time at most every 100 ms.
+- **Drawing.** `SubtitleOverlayRasterizer` draws text with CoreText in the
+  host's style, placed as a host's overlay places it, and scales bitmaps
+  into their rectangles. It runs only when what shows changes.
+  `SubtitleFrameCompositor` blends the pieces into the 8- or 10-bit 4:2:0
+  frame in place on the GPU, touching only their rectangles, and waits for
+  the GPU before the frame goes on.
+- **HDR.** Subtitle white goes to the BT.2408 reference white, 203 nits on
+  PQ and 75% signal on HLG, in BT.2020, not to the grade's peak.
+- **H.264.** Progressive H.264 reaches the display layer compressed, so
+  there is no frame to draw on. While Picture in Picture wants subtitles and
+  one is chosen, it is re-demuxed from the current position through
+  VideoToolbox here instead, and back when Picture in Picture ends. That
+  costs a short rebuffer as the window opens. Without a subtitle chosen, the
+  route stays as it is.
+
+`PictureInPictureSubtitleTests` pins the blend values, the HDR white levels,
+the layout and the route switch.
