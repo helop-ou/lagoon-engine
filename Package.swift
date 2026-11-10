@@ -43,6 +43,7 @@ let package = Package(
             path: "Tests/LagoonEngineTests",
             resources: [
                 .copy("Fixtures/ClosedCaptions"),
+                .copy("Fixtures/ExtendedChroma"),
                 .copy("Fixtures/HLSResume"),
                 .copy("Fixtures/HLSVideoFirst"),
                 .copy("Fixtures/LatePGS"),
