@@ -343,6 +343,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     )
     @ObservationIgnored nonisolated(unsafe) private var av1PipelineTimer: DispatchSourceTimer?
     @ObservationIgnored nonisolated(unsafe) private var videoDecoder: VideoToolboxDecoder?
+    /// What the open was given, for a decoder made later at a seek.
+    @ObservationIgnored nonisolated(unsafe) private var recommendedPixelBufferAttributes = CVPixelBufferAttributes()
+    /// Pump queue only.
+    @ObservationIgnored nonisolated(unsafe) private var subtitleCompositor: SubtitleFrameCompositor?
+    @ObservationIgnored nonisolated(unsafe) private var burnIn = SubtitleBurnIn()
+    /// Frames that left with subtitles drawn in. Atomic because tests read it.
+    @ObservationIgnored nonisolated private let burnedInFrameCounter = Atomic<Int>(0)
+    nonisolated var burnedInSubtitleFrames: Int { burnedInFrameCounter.load(ordering: .relaxed) }
     /// libavcodec's decoder, driven from a queue of its own so reading and
     /// decoding overlap. Non-nil exactly when the software path is in use.
     @ObservationIgnored nonisolated(unsafe) private var softwareDecodeStage: SoftwareVideoDecodeStage?
@@ -841,6 +849,20 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // Compressed buffers carry demuxer stamps, so re-demux from here to
         // stamp every new buffer with the new offset.
         seek(to: timePosition)
+    }
+
+    public func setPictureInPictureSubtitles(_ style: BurnedInSubtitleStyle?) {
+        let reroutes = shared.withLock { state -> Bool in
+            guard state.pictureInPictureSubtitleStyle != style else { return false }
+            let wasOn = state.pictureInPictureSubtitleStyle != nil
+            state.pictureInPictureSubtitleStyle = style
+            return wasOn != (style != nil) && state.videoReachesRendererCompressed && state.selectedSubtitleOrdinal > 0
+        }
+        // Compressed H.264 has no frame to draw on until it is decoded here,
+        // and the decoder changes only at a seek.
+        if reroutes, !audioTracks.isEmpty {
+            seek(to: timePosition)
+        }
     }
 
     public func setSubtitleOffset(_ seconds: Double) {
@@ -2453,10 +2475,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             authorization: authorization
         ) else { return }
         makeSoftwareDecodeStageIfNeeded()
+        self.recommendedPixelBufferAttributes = recommendedPixelBufferAttributes
         guard makeVideoToolboxDecoderIfNeeded(
             recommendedPixelBufferAttributes: recommendedPixelBufferAttributes
         ) else { return }
+        let compressedH264 = demuxer.videoStream?.codecName == "h264" && !demuxer.outputsDecodedVideo
+        shared.withLock { $0.videoReachesRendererCompressed = compressedH264 }
         publishOpenedStreams()
+        // After the initial subtitle choice is applied.
+        applyPictureInPictureDecodeRoute()
 
         var progress = DemuxLoopProgress()
         while !shared.withLock({ $0.cancelled }) {
@@ -2593,19 +2620,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             // hardware only where the silicon has it.
             let requiresHardware = codecName != "av1"
                 || PlaybackCapabilities.current.hardwareAV1
-            let reorderDepth = demuxer.videoStream?.videoReorderDepth ?? 0
             let makeDecoder = {
-                try VideoToolboxDecoder(
-                    formatDescription: description,
-                    recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
-                    reportedReorderDepth: reorderDepth,
+                try self.makeVideoToolboxDecoder(
+                    description: description,
                     requiresHardware: requiresHardware,
-                    outputHandler: { [weak self] buffer in
-                        self?.acceptDecodedVideo(buffer)
-                    },
-                    errorHandler: { [weak self] error in
-                        self?.failVideoDecode(error)
-                    }
+                    recommendedPixelBufferAttributes: recommendedPixelBufferAttributes
                 )
             }
             do {
@@ -2625,6 +2644,51 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             return false
         }
         return true
+    }
+
+    nonisolated private func makeVideoToolboxDecoder(
+        description: CMVideoFormatDescription,
+        requiresHardware: Bool,
+        recommendedPixelBufferAttributes: CVPixelBufferAttributes
+    ) throws -> VideoToolboxDecoder {
+        try VideoToolboxDecoder(
+            formatDescription: description,
+            recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
+            reportedReorderDepth: demuxer.videoStream?.videoReorderDepth ?? 0,
+            requiresHardware: requiresHardware,
+            outputHandler: { [weak self] buffer in
+                self?.acceptDecodedVideo(buffer)
+            },
+            errorHandler: { [weak self] error in
+                self?.failVideoDecode(error)
+            }
+        )
+    }
+
+    /// While Picture in Picture draws subtitles, H.264 goes through
+    /// VideoToolbox here rather than to the display layer compressed, so
+    /// there is a frame to draw on. Changed only on open or at a seek, when
+    /// the queues hold nothing from the other route. A session that cannot
+    /// be made leaves the stream compressed, without subtitles.
+    nonisolated private func applyPictureInPictureDecodeRoute() {
+        let wanted = shared.withLock {
+            $0.videoReachesRendererCompressed
+                && $0.pictureInPictureSubtitleStyle != nil
+                && $0.selectedSubtitleOrdinal > 0
+        }
+        // Every device decodes H.264 in hardware. Not requiring it lets the
+        // simulator's software decoder answer.
+        if wanted, videoDecoder == nil, let description = demuxer.videoStream?.formatDescription,
+           let decoder = try? makeVideoToolboxDecoder(
+               description: description,
+               requiresHardware: false,
+               recommendedPixelBufferAttributes: recommendedPixelBufferAttributes
+           ) {
+            pumpQueue.sync { videoDecoder = decoder }
+        } else if !wanted, shared.withLock({ $0.videoReachesRendererCompressed }), let decoder = videoDecoder {
+            decoder.invalidate()
+            pumpQueue.sync { videoDecoder = nil }
+        }
     }
 
     /// Applies the initial track selections and hands the opened streams
@@ -2897,6 +2961,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 return .stop
             }
         }
+        applyPictureInPictureDecodeRoute()
         guard prepareVideoDecoderForSeek() else { return .stop }
         // First and synchronously: a frame still in libavcodec is
         // pre-seek and must not land in the emptied queues.
@@ -3832,6 +3897,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 }
                 state.videoSamplesSinceFlush += 1
             }
+            burnInSubtitles(buffer)
             let enqueueStarted = ProcessInfo.processInfo.systemUptime
             renderer.enqueue(buffer)
             av1PipelineTimings.recordEnqueue(
@@ -3839,6 +3905,55 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 to: ProcessInfo.processInfo.systemUptime
             )
             drainVideoIntake()
+        }
+    }
+
+    /// Draws the subtitles showing at a decoded frame's time into it, while
+    /// Picture in Picture asks for them. Pump queue only.
+    nonisolated private func burnInSubtitles(_ buffer: CMSampleBuffer) {
+        let (style, styled) = shared.withLock { ($0.pictureInPictureSubtitleStyle, $0.styledSubtitleRenderer) }
+        guard let style, let pixelBuffer = CMSampleBufferGetImageBuffer(buffer) else { return }
+        let time = CMSampleBufferGetPresentationTimeStamp(buffer)
+        guard time.isNumeric else { return }
+        let showing: (textCues: [SubtitleTextCue], images: [SubtitleImage])
+        if let styled {
+            // libass draws text and all; its own offset applies. A small
+            // window does not need every animation step, and a render
+            // costs milliseconds.
+            let milliseconds = Int64(time.seconds * 1000)
+            if abs(milliseconds - burnIn.styledRenderedAt) >= SubtitleBurnIn.styledRenderInterval {
+                burnIn.styledImages = styled.render(atMilliseconds: milliseconds)
+                burnIn.styledRenderedAt = milliseconds
+            }
+            showing = ([], burnIn.styledImages)
+        } else {
+            showing = subtitleStore.peek(at: time.seconds)
+        }
+        let key = SubtitleBurnIn.Key(
+            textCues: showing.textCues,
+            images: showing.images,
+            style: style,
+            width: CVPixelBufferGetWidth(pixelBuffer),
+            height: CVPixelBufferGetHeight(pixelBuffer)
+        )
+        if key != burnIn.key {
+            burnIn.revision += 1
+            burnIn.overlay = SubtitleOverlayRasterizer.overlay(
+                textCues: key.textCues,
+                images: key.images,
+                style: style,
+                frameWidth: key.width,
+                frameHeight: key.height,
+                revision: burnIn.revision
+            )
+            burnIn.key = key
+        }
+        guard !burnIn.overlay.pieces.isEmpty else { return }
+        if subtitleCompositor == nil {
+            subtitleCompositor = SubtitleFrameCompositor()
+        }
+        if subtitleCompositor?.composite(burnIn.overlay, into: pixelBuffer) == true {
+            burnedInFrameCounter.wrappingAdd(1, ordering: .relaxed)
         }
     }
 
@@ -3883,6 +3998,25 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 }
 
 // MARK: - Support types
+
+/// The last subtitle state drawn into frames, so an unchanged one is not
+/// laid out again for every frame.
+nonisolated struct SubtitleBurnIn {
+    struct Key: Equatable {
+        let textCues: [SubtitleTextCue]
+        let images: [SubtitleImage]
+        let style: BurnedInSubtitleStyle
+        let width: Int
+        let height: Int
+    }
+
+    static let styledRenderInterval: Int64 = 100
+    var key: Key?
+    var overlay = SubtitleOverlay.empty
+    var revision = 0
+    var styledRenderedAt = Int64.min / 2
+    var styledImages: [SubtitleImage] = []
+}
 
 /// Why an audio renderer is being replaced; the cases differ only in
 /// whether playback resumes.
@@ -3988,6 +4122,11 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// boundary, even without a container duration.
         var mediaEndSeconds: Double = 0
         var audioDelaySeconds: Double = 0
+        /// Set while Picture in Picture wants subtitles drawn into frames.
+        var pictureInPictureSubtitleStyle: BurnedInSubtitleStyle?
+        /// H.264 the display layer decodes; Picture in Picture subtitles need
+        /// it decoded here instead.
+        var videoReachesRendererCompressed = false
         /// Media seconds per wall-clock second; scales demux watermarks.
         var playbackRate: Double = 1
         /// First sample actually accepted by the renderer after attach/flush.
