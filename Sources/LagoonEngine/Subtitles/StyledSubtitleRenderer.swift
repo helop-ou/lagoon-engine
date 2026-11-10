@@ -47,6 +47,8 @@ nonisolated final class StyledSubtitleRenderer: @unchecked Sendable {
     private let canvasHeight: Int
     private var timer: DispatchSourceTimer?
     private var lastPublishedEmpty = true
+    /// Queue-only. Positive shows the script later.
+    private var offsetMilliseconds: Int64 = 0
     /// Render and composite cost of the frames that changed, for the bench.
     private let statsLock = NSLock()
     private var renderCount = 0
@@ -178,7 +180,7 @@ nonisolated final class StyledSubtitleRenderer: @unchecked Sendable {
             guard let self else { return }
             let seconds = CMTimebaseGetTime(timebase).seconds
             guard seconds.isFinite else { return }
-            if let images = self.renderIfChanged(atMilliseconds: Int64(seconds * 1000)) {
+            if let images = self.renderIfChanged(atMilliseconds: self.scriptTime(Int64(seconds * 1000))) {
                 publish(images)
             }
         }
@@ -188,6 +190,17 @@ nonisolated final class StyledSubtitleRenderer: @unchecked Sendable {
             self.lastPublishedEmpty = true
             timer.resume()
         }
+    }
+
+    func setOffset(milliseconds: Int64) {
+        queue.async { [self] in
+            offsetMilliseconds = milliseconds
+        }
+    }
+
+    /// The script's time for a playback time. Queue-only.
+    private func scriptTime(_ playbackMilliseconds: Int64) -> Int64 {
+        playbackMilliseconds - offsetMilliseconds
     }
 
     func stop() {
@@ -219,7 +232,7 @@ nonisolated final class StyledSubtitleRenderer: @unchecked Sendable {
     func render(atMilliseconds now: Int64) -> [SubtitleImage] {
         queue.sync {
             var change: Int32 = 0
-            let head = ass_render_frame(renderer, track, now, &change)
+            let head = ass_render_frame(renderer, track, scriptTime(now), &change)
             return head.map { composite($0) } ?? []
         }
     }
