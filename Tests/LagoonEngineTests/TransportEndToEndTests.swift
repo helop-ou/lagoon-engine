@@ -188,7 +188,8 @@ struct TransportEndToEndTests {
                        startSeconds: 0, initialAudioOrdinal: nil)
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         engine.play()
-        let deadline = ContinuousClock.now + .seconds(20)
+        // Generous: a CI runner running the other suites took over 20 s to start.
+        let deadline = ContinuousClock.now + .seconds(60)
         while !(started && engine.demuxReadAheadLimit != nil), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
