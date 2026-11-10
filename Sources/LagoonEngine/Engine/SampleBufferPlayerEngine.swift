@@ -944,19 +944,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             )
         }
         onTrackSelectionChanged?()
-        let (replayed, unread) = shared.withLock {
-            (
-                $0.textSubtitleStreamIndices.contains($0.selectedSubtitleStreamIndex),
-                $0.unreadSubtitleStreamIndices.contains($0.selectedSubtitleStreamIndex)
-            )
-        }
-        if ordinal >= 1, ordinal <= embeddedSubtitleCount, !replayed, !unread {
-            // A bitmap stream has no backlog: re-demux from the previous
-            // keyframe so a line already due appears now, not at the next cue.
-            seek(to: timePosition)
-        } else {
-            refreshSubtitles(at: timePosition)
-        }
+        // A bitmap stream's line on screen comes from the demuxer's packet
+        // store when the demux loop applies the choice, with no seek.
+        refreshSubtitles(at: timePosition)
     }
 
     /// Fetches and parses a Jellyfin external subtitle (vtt/srt delivery).
@@ -2820,7 +2810,20 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     nonisolated private func applyTrackChanges(_ progress: inout DemuxLoopProgress) {
         let desiredSubtitle = shared.withLock { $0.selectedSubtitleStreamIndex }
         if desiredSubtitle != progress.appliedSubtitleStreamIndex {
-            demuxer.selectSubtitle(streamIndex: desiredSubtitle >= 0 ? desiredSubtitle : nil)
+            let position = CMTimebaseGetTime(synchronizer.timebase).seconds
+            let replayed = demuxer.selectSubtitle(
+                streamIndex: desiredSubtitle >= 0 ? desiredSubtitle : nil,
+                at: position.isFinite ? position : nil
+            )
+            // Here, not through a read: past the end of file nothing reads.
+            if !replayed.isEmpty {
+                handle(.subtitle(replayed, streamIndex: desiredSubtitle))
+                // Paused, the display does not refresh on its own.
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.refreshSubtitles(at: self.timePosition)
+                }
+            }
             progress.appliedSubtitleStreamIndex = desiredSubtitle
         }
         let desiredVideoSuspended = shared.withLock { $0.videoOutputSuspended }
@@ -3164,7 +3167,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     nonisolated private func step() {
-        switch demuxer.readNext() {
+        handle(demuxer.readNext())
+    }
+
+    nonisolated private func handle(_ result: FFmpegDemuxer.ReadResult) {
+        switch result {
         case .video(let buffer):
             recordMediaEnd(buffer)
             if let seconds = Self.presentationEnd(of: buffer) {
