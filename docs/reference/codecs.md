@@ -101,6 +101,18 @@ decode only the DD+ core and report "Multichannel".
   accuracy, **not** a frame-loss fix: hardware A/Bs dropped at the same rate
   either way, so do not blame frame loss on timestamp jitter. The HUD's
   `Vtime: grid N/D` line is the check.
+- **H.264 presentation order a container lost.** An MP4 without `ctts` has
+  every pts equal to its dts, and some Matroska files store timestamps in
+  coding order, so B-frames would show in decode order. For H.264 in MP4 or
+  Matroska with a reorder depth, `H264PresentationOrder` reads each access
+  unit's picture order count with FFmpeg's H.264 parser and bumps pictures in
+  that order, holding back the reorder depth as a decoder does. The k-th
+  picture shown takes the k-th smallest timestamp. On a correct file that is
+  each picture's own, so nothing changes until the two orders first disagree.
+  A count the parser cannot read, a field picture, or a count that goes back
+  within an IDR period passes the stream through untouched from there. Both
+  decode paths see the rebuilt timestamps, since it runs before them. A seek
+  drops what it held.
 - **A rate rounded to the millisecond.** Some mkvmerge files declare 23.976
   fps as a 42 ms default duration, which FFmpeg reports as 500/21 (23.81).
   Trusting it kept the display at 60 Hz and pushed the grid out of tolerance
