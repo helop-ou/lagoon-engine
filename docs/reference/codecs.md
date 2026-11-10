@@ -201,21 +201,51 @@ yet.
 
 ### Deinterlacing
 
-The software path makes an interlaced frame progressive before copying it
-out. It is written here, not linked: yadif lives in libavfilter, which is not
+The software path makes interlaced video progressive before copying it out.
+It is written here, not linked: yadif lives in libavfilter, which is not
 among the artifacts, and adding it is a dependency decision.
 
-- `Deinterlacer` does yadif's spatial half: predict along the direction the
-  image runs, and keep the original sample wherever the two fields agree. That
-  agreement test stands in for the temporal half, so a still shot keeps full
-  vertical resolution and only motion is interpolated.
+By default it runs at field rate on the GPU (`FieldRateDeinterlacer`): every
+interlaced frame leaves as two pictures, one per field, half a frame apart,
+so 50i plays at 50 pictures a second and motion keeps all its moments.
+
+- The shown field's rows are copied. Each missing row is predicted along the
+  edge direction that fits best, then held inside the range the same row
+  takes in the other parity's fields either side (`FieldDeinterlace.metal`),
+  as yadif does. A still shot, where those fields agree, comes back whole,
+  detail finer than a field included. Where they differ, the spatial guess
+  stands.
+- That needs the next frame, so the stage holds one frame: one frame of
+  delay, and the last frame's fields leave at the drain.
+- The output is a planar frame in the source's own format over GPU-written
+  memory, handed to the same path a decoded frame takes. 8- and 10-bit 4:2:0
+  are taken; chroma rows alternate fields too and are treated the same way.
+- A progressive frame inside an interlaced stream is shown twice, so the
+  rate the display was set to holds. The display match asks for the field
+  rate (`FFmpegDemuxer.outputFrameRate`), and the demux backpressure counts
+  pictures at it.
+- `EngineTuning.deinterlacesAtFrameRate` turns it off and brings back the CPU
+  pass below, one picture per frame.
+- `FieldRateDeinterlacerTests` pins the kept rows, the field order, still
+  pictures and fine still detail coming back whole, motion not combing, the
+  timings, and an interlaced MPEG-2 file leaving the decoder at 50 pictures a
+  second. Not yet measured on the Apple TV: the frame-loss bench on the 1080i
+  titles at field rate.
+
+The CPU pass, `Deinterlacer`, is yadif's spatial half, used when Metal is
+unavailable or the tuning asks for it: predict along the direction the image
+runs, and keep the original sample wherever the two fields agree. That
+agreement test stands in for the temporal half, so a still shot keeps full
+vertical resolution and only motion is interpolated.
+
 - Against yadif on a real interlaced frame: 0.34 levels per pixel of 255, at
   1.61 ms per frame at 720x576.
 - The frame is made writable first: it may still be a reference for later
   pictures.
-- Only codecs with a software route lose their `IsInterlaced` guard (MPEG-2,
-  and H.264 below). Without that, a server answers an interlaced DVD image
-  with a transcode and the image never reaches the engine.
+
+Only codecs with a software route lose their `IsInterlaced` guard (MPEG-2,
+and H.264 below). Without that, a server answers an interlaced DVD image with
+a transcode and the image never reaches the engine.
 
 ### Interlaced H.264
 
