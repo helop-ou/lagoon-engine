@@ -119,20 +119,20 @@ struct SoftwareDecodePipelineTests {
         let capabilities = PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: true)
         #expect(FFmpegDemuxer.usesCompressedVideoPath(codecID: AV_CODEC_ID_H264, capabilities: capabilities))
         #expect(!SoftwareVideoDecoder.supports(codecID: AV_CODEC_ID_H264))
-        for (interlaced, highBitDepth) in [(true, false), (false, true), (true, true)] {
+        for (interlaced, outsideHardwareProfile) in [(true, false), (false, true), (true, true)] {
             #expect(!FFmpegDemuxer.usesCompressedVideoPath(
                 codecID: AV_CODEC_ID_H264, capabilities: capabilities,
-                interlaced: interlaced, highBitDepth: highBitDepth
+                interlaced: interlaced, outsideHardwareProfile: outsideHardwareProfile
             ))
             #expect(SoftwareVideoDecoder.supports(
-                codecID: AV_CODEC_ID_H264, interlaced: interlaced, highBitDepth: highBitDepth
+                codecID: AV_CODEC_ID_H264, interlaced: interlaced, outsideHardwareProfile: outsideHardwareProfile
             ))
         }
         // HEVC has no software route, 10-bit or not.
         #expect(FFmpegDemuxer.usesCompressedVideoPath(
-            codecID: AV_CODEC_ID_HEVC, capabilities: capabilities, highBitDepth: true
+            codecID: AV_CODEC_ID_HEVC, capabilities: capabilities, outsideHardwareProfile: true
         ))
-        #expect(!SoftwareVideoDecoder.supports(codecID: AV_CODEC_ID_HEVC, highBitDepth: true))
+        #expect(!SoftwareVideoDecoder.supports(codecID: AV_CODEC_ID_HEVC, outsideHardwareProfile: true))
     }
 
     @Test func tenBitH264IsReadFromTheStreamNotItsLabel() {

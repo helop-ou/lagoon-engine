@@ -324,17 +324,18 @@ nonisolated final class FFmpegDemuxer {
     /// software. AV1 is settled per stream at session creation.
     ///
     /// Interlaced H.264 goes to software, the only path with a deinterlacer;
-    /// VideoToolbox would comb on motion. So does 10-bit H.264, which no
-    /// Apple hardware decoder accepts. HEVC has no software route.
+    /// VideoToolbox would comb on motion. So does H.264 outside the hardware's
+    /// profiles, 10-bit, 4:2:2 or 4:4:4, which no Apple hardware decoder
+    /// accepts. HEVC has no software route.
     static func usesCompressedVideoPath(
         codecID: AVCodecID,
         capabilities: PlaybackCapabilities,
         interlaced: Bool = false,
-        highBitDepth: Bool = false
+        outsideHardwareProfile: Bool = false
     ) -> Bool {
         switch codecID {
         case AV_CODEC_ID_H264:
-            !interlaced && !highBitDepth
+            !interlaced && !outsideHardwareProfile
         case AV_CODEC_ID_HEVC:
             true
         case AV_CODEC_ID_AV1:
@@ -760,12 +761,12 @@ nonisolated final class FFmpegDemuxer {
             videoFrameRate = Double(guessedRate.num) / Double(guessedRate.den)
         }
         let videoIsInterlaced = Self.isInterlaced(fieldOrder: videoPar.pointee.field_order)
-        let videoIsHighBitDepthH264 = Self.isHighBitDepthH264(videoPar) || Self.isExtendedChromaH264(videoPar)
+        let videoNeedsSoftwareH264 = Self.isHighBitDepthH264(videoPar) || Self.isExtendedChromaH264(videoPar)
         let usesCompressedVideo = Self.usesCompressedVideoPath(
             codecID: videoPar.pointee.codec_id,
             capabilities: capabilities,
             interlaced: videoIsInterlaced,
-            highBitDepth: videoIsHighBitDepthH264
+            outsideHardwareProfile: videoNeedsSoftwareH264
         ) && (videoPar.pointee.codec_id != AV_CODEC_ID_AV1 || routesAV1ToVideoToolbox)
         // Catch missing or Annex B parameter sets before building the
         // description: it builds either way and only the decoder refuses,
@@ -829,7 +830,7 @@ nonisolated final class FFmpegDemuxer {
            SoftwareVideoDecoder.supports(
                codecID: videoPar.pointee.codec_id,
                interlaced: videoIsInterlaced,
-               highBitDepth: videoIsHighBitDepthH264
+               outsideHardwareProfile: videoNeedsSoftwareH264
            ) {
             let decoder = try SoftwareVideoDecoder(
                 codecpar: videoPar,
