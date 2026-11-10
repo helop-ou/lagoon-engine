@@ -88,6 +88,7 @@ public protocol PlayerEngine: AnyObject, Observable {
     /// Seconds; positive shows subtitles later. Text, bitmap and styled
     /// tracks all move.
     var subtitleOffset: Double { get }
+    var audioShaping: AudioShaping { get }
     /// What the byte cache is holding, for a scrub bar's buffered ranges.
     /// `.empty` for an engine that caches nothing, and for a local file.
     var bufferState: PlaybackBufferState { get }
@@ -111,6 +112,9 @@ public protocol PlayerEngine: AnyObject, Observable {
     /// Adds and selects a sidecar subtitle without restarting playback.
     func addExternalSubtitle(_ track: ExternalSubtitleTrack)
     func setAudioDelay(_ seconds: Double)
+    /// Applies from the current position with a re-demux. Set before
+    /// `prepare`, the title opens with it.
+    func setAudioShaping(_ shaping: AudioShaping)
     /// Clamped to ±30 s. Takes effect at once, without a re-demux.
     func setSubtitleOffset(_ seconds: Double)
     /// Audio-only playback while the app is in the background.
@@ -142,6 +146,8 @@ public extension PlayerEngine {
     var bufferState: PlaybackBufferState { .empty }
     var subtitleSelectionRevision: Int { 0 }
     func retrySubtitleLoad() {}
+    var audioShaping: AudioShaping { .off }
+    func setAudioShaping(_ shaping: AudioShaping) {}
     func setVideoOutputSuspended(_ suspended: Bool) {}
     func setPictureInPictureSubtitles(_ style: BurnedInSubtitleStyle?) {}
     func setHostInBackground(_ background: Bool) {}

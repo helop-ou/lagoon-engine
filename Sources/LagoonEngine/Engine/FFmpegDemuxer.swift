@@ -179,6 +179,12 @@ nonisolated final class FFmpegDemuxer {
     private(set) var unreadSubtitleStreamIndices: Set<Int32> = []
     // Sample-exact timing for passthrough audio; see `PassthroughAudioTimeline`.
     private var passthroughTimelines: [Int32: PassthroughAudioTimeline] = [:]
+    /// Every stream that can pass through, kept while shaping decodes it, so
+    /// turning shaping off goes back to passthrough without a reopen.
+    private var passthroughFormats: [Int32: CMFormatDescription] = [:]
+    /// Applied to every audio decoder; while active, passthrough streams
+    /// decode too. Survives `close`, so a reopen keeps it.
+    private(set) var audioShaping = AudioShaping.off
     // Removes Matroska's millisecond quantization from video PTS.
     private var videoTimeline: VideoFrameTimeline?
     // Rebuilds H.264 presentation order a container lost; see `H264PresentationOrder`.
@@ -1044,11 +1050,14 @@ nonisolated final class FFmpegDemuxer {
            let (passthrough, framesPerPacket) = SampleBufferFactory.audioFormatDescription(codecpar: par) {
             description = passthrough
             fallbackDuration = Double(framesPerPacket) / Double(max(par.pointee.sample_rate, 1))
+            passthroughFormats[Int32(index)] = passthrough
             passthroughTimelines[Int32(index)] = PassthroughAudioTimeline(
                 sampleRate: par.pointee.sample_rate,
                 framesPerPacket: framesPerPacket
             )
-        } else if let decoder = AudioDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
+        }
+        if description == nil || audioShaping.isActive,
+           let decoder = AudioDecoder(codecpar: par, timeBase: stream.pointee.time_base, shaping: audioShaping) {
             description = decoder.formatDescription
             audioDecoders[Int32(index)] = decoder
         }
@@ -1107,6 +1116,25 @@ nonisolated final class FFmpegDemuxer {
             fallbackPacketDuration: 0,
             videoReorderDepth: 0
         ))
+    }
+
+    /// Rebuilds every audio decoder for the new shaping, and moves streams
+    /// that can pass through between passthrough and decoding. Takes effect
+    /// from the next packet, so the engine seeks to apply it.
+    func setAudioShaping(_ shaping: AudioShaping) {
+        guard shaping != audioShaping else { return }
+        audioShaping = shaping
+        guard let ctx = formatContext else { return }
+        for audio in audioStreams {
+            let index = audio.streamIndex
+            guard let stream = ctx.pointee.streams[Int(index)], let par = stream.pointee.codecpar else { continue }
+            if passthroughFormats[index] != nil, !shaping.isActive {
+                audioDecoders[index] = nil
+                passthroughTimelines[index]?.reset()
+            } else if let decoder = AudioDecoder(codecpar: par, timeBase: stream.pointee.time_base, shaping: shaping) {
+                audioDecoders[index] = decoder
+            }
+        }
     }
 
     /// Demuxes only the chosen audio stream; libavformat discards the rest.
@@ -1924,7 +1952,7 @@ nonisolated final class FFmpegDemuxer {
             return buffers.isEmpty ? .skipped : .audio(buffers, streamIndex: streamIndex)
         }
         if let audio = audioStreams.first(where: { $0.streamIndex == streamIndex }),
-           let description = audio.formatDescription,
+           let description = passthroughFormats[streamIndex],
            let timeBase = audioTimeBases[streamIndex] {
             // Sample-exact pts; the container stamp only anchors the chain.
             let ptsValue = packet.pointee.pts != avNoPTS ? packet.pointee.pts : packet.pointee.dts
@@ -2009,6 +2037,7 @@ nonisolated final class FFmpegDemuxer {
         // Free decoder C resources here, on the demux queue, rather than
         // whenever the engine is released.
         audioDecoders.removeAll(keepingCapacity: false)
+        passthroughFormats.removeAll(keepingCapacity: false)
         subtitleDecoders.removeAll(keepingCapacity: false)
         styledSubtitleHeaders.removeAll(keepingCapacity: false)
         textSubtitleStreamIndices.removeAll(keepingCapacity: false)
