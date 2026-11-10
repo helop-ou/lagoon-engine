@@ -60,6 +60,31 @@ opt-in test reads `LAGOON_LAYOUT_CHANGE_TS_FIXTURE_URL`. The fixture is three
 two-second MPEG-TS clips joined with `cat`: `sine` encoded with `-c:a aac -f
 mpegts` as stereo 48 kHz, 5.1 48 kHz (`pan=5.1|c0=c0|…`) and stereo 44.1 kHz.
 
+### Audio shaping
+
+`setAudioShaping(_:)` takes a night mode, a dialogue boost and a channel
+limit. All of it runs in `AudioDecoder`, so while any of it is on, every track
+decodes to LPCM, including AC-3, E-AC-3 and AAC that would otherwise pass
+through. That loses Atmos. Turned off, those streams pass through again. A
+change applies through a re-demux from the current position, as the audio
+delay does.
+
+- **Channel limit.** The output layout becomes the limit's (stereo or 5.1)
+  and swresample downmixes to it with its own default levels.
+- **Dialogue boost.** With a centre channel, the remix matrix
+  (`AudioShapingMatrix`) is swresample's own with the centre 3 dB up and every
+  other channel 3 dB down. Stereo has no centre, so `AudioShaper` adds the
+  1 kHz band-pass of the mid signal back to both sides, about 6 dB at 1 kHz.
+  Sound panned to one side has little mid and stays as it was.
+- **Night mode.** A feed-forward compressor linked across channels: -30 dB
+  threshold, 4:1, 10 dB makeup, 10 ms attack, 250 ms release.
+- **Limiter.** While anything is on, a peak limiter with instant attack holds
+  every sample under -1 dBFS.
+
+No stage reads ahead of the sample it is shaping, so shaping adds no latency
+and the clock needs no correction. `AudioShapingTests` pins each stage on
+generated signals.
+
 ### Atmos from E-AC3 JOC
 
 Verified on hardware. When FFmpeg reports `AV_PROFILE_EAC3_DDP_ATMOS`, the
