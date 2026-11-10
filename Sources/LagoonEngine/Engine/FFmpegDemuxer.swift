@@ -750,9 +750,18 @@ nonisolated final class FFmpegDemuxer {
                     )
                     : nil
             }
+        let firstRPUProfile = videoUsesStartCodes
+            ? nil
+            : firstDolbyVisionRPUProfile(
+                ctx: ctx,
+                streamIndex: bestVideo,
+                codecpar: videoPar,
+                lengthSize: filterNALLengthSize
+            )
         let dolbyVisionOverride = configureDolbyVisionRewrite(
             videoPar: videoPar,
-            filterNALLengthSize: filterNALLengthSize
+            filterNALLengthSize: filterNALLengthSize,
+            firstRPUProfile: firstRPUProfile
         )
         var videoDescription: CMFormatDescription? = if usesCompressedVideo {
             SampleBufferFactory.videoFormatDescription(
@@ -772,7 +781,9 @@ nonisolated final class FFmpegDemuxer {
                         )
                     )
                 },
-                dolbyVisionOverride: dolbyVisionOverride
+                dolbyVisionOverride: dolbyVisionOverride,
+                firstRPUProfile: firstRPUProfile,
+                frameRate: videoFrameRate
             )
         } else {
             nil
@@ -818,7 +829,8 @@ nonisolated final class FFmpegDemuxer {
     /// Dolby Vision configuration, if any.
     private func configureDolbyVisionRewrite(
         videoPar: UnsafeMutablePointer<AVCodecParameters>,
-        filterNALLengthSize: Int?
+        filterNALLengthSize: Int?,
+        firstRPUProfile: UInt8?
     ) -> AVDOVIDecoderConfigurationRecord? {
         // Dolby Vision profile 7: convert to 8.1 or strip to HDR10 (see
         // `DolbyVisionProfileConverter`). Needs a known NAL length size.
@@ -838,7 +850,11 @@ nonisolated final class FFmpegDemuxer {
                 stripStatsLock.unlock()
             }
         } else if videoPar.pointee.codec_id == AV_CODEC_ID_HEVC,
-                  let dovi = SampleBufferFactory.doviConfiguration(codecpar: videoPar),
+                  let dovi = SampleBufferFactory.signalledDolbyVision(
+                      codecpar: videoPar,
+                      firstRPUProfile: firstRPUProfile,
+                      frameRate: videoFrameRate
+                  ),
                   DolbyVisionRPURepeater.applies(toProfile: dovi.dv_profile),
                   dovi.rpu_present_flag != 0,
                   let lengthSize = filterNALLengthSize {
@@ -1108,6 +1124,46 @@ nonisolated final class FFmpegDemuxer {
         // VPS, SPS, PPS, in decoder order.
         let ordered = [32, 33, 34].compactMap { sets[UInt8($0)] }
         return ordered.count == 3 ? ordered : nil
+    }
+
+    /// libdovi's profile for the stream's first RPU, when
+    /// `DolbyVisionRecordPolicy` cannot trust the record without it. Rewinds
+    /// afterwards, as `harvestedHEVCParameterSets` does. nil (no reads)
+    /// otherwise.
+    private func firstDolbyVisionRPUProfile(
+        ctx: UnsafeMutablePointer<AVFormatContext>,
+        streamIndex: Int32,
+        codecpar: UnsafeMutablePointer<AVCodecParameters>,
+        lengthSize: Int?
+    ) -> UInt8? {
+        guard let lengthSize,
+              DolbyVisionRecordPolicy.needsFirstRPU(
+                  container: SampleBufferFactory.doviConfiguration(codecpar: codecpar),
+                  stream: DolbyVisionRecordPolicy.Stream(codecpar: codecpar, frameRate: videoFrameRate),
+                  isMatroska: Self.isMatroska(ctx)
+              ),
+              let probe = av_packet_alloc() else { return nil }
+        var owned: UnsafeMutablePointer<AVPacket>? = probe
+        defer { av_packet_free(&owned) }
+
+        var profile: UInt8?
+        var packetsRead = 0
+        while packetsRead < Self.parameterSetProbeLimit {
+            guard av_read_frame(ctx, probe) >= 0 else { break }
+            packetsRead += 1
+            defer { av_packet_unref(probe) }
+            guard probe.pointee.stream_index == streamIndex, let data = probe.pointee.data else { continue }
+            profile = DolbyVisionRecordPolicy.guessedProfile(
+                ofFirstRPUIn: UnsafeRawBufferPointer(start: data, count: Int(probe.pointee.size)),
+                lengthSize: lengthSize
+            )
+            break
+        }
+
+        if avformat_seek_file(ctx, streamIndex, Int64.min, 0, 0, 0) < 0 {
+            _ = av_seek_frame(ctx, streamIndex, 0, seekBackwardFlag)
+        }
+        return profile
     }
 
     /// Walks one length-prefixed packet, keeping the first of each
