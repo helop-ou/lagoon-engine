@@ -349,18 +349,27 @@ by joining same-codec clips of two sizes with ffmpeg's concat demuxer
   with no seek. A seek re-demuxed only from the keyframe before the position,
   missing a line that started earlier, and flushed the video on the main
   actor (57–76 ms per switch on an Apple TV 4K). The backlog restarts on a
-  seek. Bitmap streams (PGS, DVD, DVB) are still discarded while unselected
-  and still re-demux from the current position when chosen. PGS cues are
-  open-ended and close on the next composition.
+  seek. PGS cues are open-ended and close on the next composition.
+- **Packet store.** Every decodable subtitle stream is read, bitmap ones
+  included, and `SubtitlePacketStore` keeps each packet for the session,
+  32 MB across all streams, oldest read first out, a packet read again after
+  a seek kept once. An unselected bitmap stream is only stored, never
+  decoded. Choosing one decodes its stored packets from 30 s before the
+  position through what has been read, from a clean decoder, so the line on
+  screen shows with no seek and no video flush. The demux loop delivers them
+  itself, since past the end of file nothing reads. A seek replays the
+  selected stream's packets from 30 s before the target up to it, which
+  finds a line that began before the landing keyframe, and the same packets
+  read again behind the replay are not decoded twice.
 - **Closed captions in the video.** H.264 and HEVC carry CEA-608 in an A/53
   `GA94` registered user-data SEI, and MPEG-2 in picture user data.
   `ClosedCaptionExtractor` reads each video packet's units up to its first
   slice, after the H.264 presentation order rebuild and before either decode
-  path takes it, and `ClosedCaptionTrack` puts
-  the `cc_data` back in presentation order and decodes it with FFmpeg's
-  `ccaption`. The track has no stream in the file, so it is listed only once
-  its first caption is read, last and under an id outside the ordinals, so no
-  other track moves. Its events are text, so it gets the backlog too.
+  path takes it, and `ClosedCaptionTrack` puts the `cc_data` back in
+  presentation order and decodes it with FFmpeg's `ccaption`. The track has
+  no stream in the file, so it is listed only once its first caption is
+  read, last and under an id outside the ordinals, so no other track moves.
+  Its events are text, so it gets the backlog too.
 - **HLS subtitle renditions are listed, never read**, chosen or not. libavformat
   fetches a WebVTT rendition inside the audio and video read: before it hands
   over the next packet it opens the rendition's segments one by one until it
