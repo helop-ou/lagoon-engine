@@ -6,7 +6,8 @@ import Libavutil
 import Libswresample
 
 /// Decodes codecs CoreAudio won't take compressed (DTS, TrueHD, FLAC, Opus,
-/// Vorbis, …) into interleaved Float32 LPCM. Runs on the demux queue.
+/// Vorbis, …), and every codec while `AudioShaping` is on, into interleaved
+/// Float32 LPCM. Runs on the demux queue.
 nonisolated final class AudioDecoder {
     private let codecContext: UnsafeMutablePointer<AVCodecContext>
     private let frame: UnsafeMutablePointer<AVFrame>
@@ -20,9 +21,12 @@ nonisolated final class AudioDecoder {
     private var resamplerInputFormat = AV_SAMPLE_FMT_NONE
     private var resamplerInputRate: Int32 = 0
     private var resamplerInputLayout = AVChannelLayout()
-    /// The declared layout `formatDescription` promises; every rebuild
-    /// resamples to it, never to what the decoder reports now.
+    /// The declared layout `formatDescription` promises, or the channel
+    /// limit's; every rebuild resamples to it, never to what the decoder
+    /// reports now.
     private var outputLayout = AVChannelLayout()
+    private let shaping: AudioShaping
+    private var shaper: AudioShaper?
 
     /// Fixed from the stream's declared rate and layout, so the renderer
     /// format never changes mid-stream.
@@ -39,7 +43,7 @@ nonisolated final class AudioDecoder {
     /// every boundary, heard as clicking.
     private var continuationSeconds: Double?
 
-    init?(codecpar: UnsafeMutablePointer<AVCodecParameters>, timeBase: AVRational) {
+    init?(codecpar: UnsafeMutablePointer<AVCodecParameters>, timeBase: AVRational, shaping: AudioShaping = .off) {
         guard let codec = avcodec_find_decoder(codecpar.pointee.codec_id),
               let context = avcodec_alloc_context3(codec) else {
             return nil
@@ -57,12 +61,26 @@ nonisolated final class AudioDecoder {
         }
 
         let rate = max(codecpar.pointee.sample_rate, 1)
-        let channelCount = max(codecpar.pointee.ch_layout.nb_channels, 1)
+        let declaredChannels = max(codecpar.pointee.ch_layout.nb_channels, 1)
+        var layout = AVChannelLayout()
+        if codecpar.pointee.ch_layout.order == AV_CHANNEL_ORDER_UNSPEC
+            || av_channel_layout_copy(&layout, &codecpar.pointee.ch_layout) < 0 {
+            av_channel_layout_default(&layout, declaredChannels)
+        }
+        var describedLayout = codecpar.pointee.ch_layout
+        var channelCount = declaredChannels
+        if let limit = shaping.channelLimit, declaredChannels > limit.rawValue {
+            av_channel_layout_uninit(&layout)
+            av_channel_layout_default(&layout, limit.rawValue)
+            describedLayout = layout
+            channelCount = limit.rawValue
+        }
         guard let description = Self.lpcmFormatDescription(
             sampleRate: rate,
             channels: channelCount,
-            layout: codecpar.pointee.ch_layout
+            layout: describedLayout
         ) else {
+            av_channel_layout_uninit(&layout)
             var ctx: UnsafeMutablePointer<AVCodecContext>? = context
             avcodec_free_context(&ctx)
             var framePtr: UnsafeMutablePointer<AVFrame>? = frame
@@ -76,9 +94,10 @@ nonisolated final class AudioDecoder {
         sampleRate = rate
         channels = channelCount
         formatDescription = description
-        if codecpar.pointee.ch_layout.order == AV_CHANNEL_ORDER_UNSPEC
-            || av_channel_layout_copy(&outputLayout, &codecpar.pointee.ch_layout) < 0 {
-            av_channel_layout_default(&outputLayout, channelCount)
+        outputLayout = layout
+        self.shaping = shaping
+        if shaping.isActive {
+            shaper = AudioShaper(shaping: shaping, sampleRate: rate, channels: Int(channelCount))
         }
         pendingSamples = NSMutableData(
             capacity: 2048 * Int(channelCount) * MemoryLayout<Float32>.size
@@ -113,6 +132,7 @@ nonisolated final class AudioDecoder {
         pendingSampleCount = 0
         pendingStartSeconds = nil
         continuationSeconds = nil
+        shaper?.reset()
     }
 
     /// End of stream: emits the remaining frames, then flushes so a later
@@ -183,6 +203,13 @@ nonisolated final class AudioDecoder {
                 &frame.pointee.ch_layout, inputFormat, inputRate,
                 0, nil
             )
+            if status >= 0, let matrix = AudioShapingMatrix.coefficients(
+                from: &frame.pointee.ch_layout,
+                to: &outputLayout,
+                liftingCentre: shaping.dialogueBoost
+            ) {
+                swr_set_matrix(context, matrix, Int32(AudioShapingMatrix.stride))
+            }
             guard status >= 0, swr_init(context) >= 0 else {
                 swr_free(&context)
                 return nil
@@ -191,6 +218,9 @@ nonisolated final class AudioDecoder {
             resamplerInputFormat = inputFormat
             resamplerInputRate = inputRate
             av_channel_layout_copy(&resamplerInputLayout, &frame.pointee.ch_layout)
+            shaper?.liftsSpeechBand = av_channel_layout_index_from_channel(
+                &frame.pointee.ch_layout, AV_CHAN_FRONT_CENTER
+            ) < 0
         }
 
         let inSamples = Int(frame.pointee.nb_samples)
@@ -226,6 +256,7 @@ nonisolated final class AudioDecoder {
         if let start = pendingStartSeconds {
             continuationSeconds = start + Double(pendingSampleCount) / Double(sampleRate)
         }
+        shaper?.process(pendingSamples.mutableBytes.assumingMemoryBound(to: Float.self), frames: pendingSampleCount)
         guard let buffer = makeSampleBuffer(
             data: pendingSamples,
             samples: pendingSampleCount,
