@@ -3,31 +3,68 @@ import os
 
 /// What the engine observed, in its own vocabulary. A host maps these to its
 /// own schema; by default they are discarded.
-public nonisolated enum EngineDiagnosticEvent: String, Sendable, CaseIterable {
-    case playbackPlay
-    case playbackPause
-    case playbackSeek
-    case playbackFinished
-    case playbackTrack
-    case playbackStallBegin
-    case playbackStallEnd
-    case playbackRendererRecovery
-    case playbackCacheFallback
-    case playbackSubtitleLoadFailed
+///
+/// A struct rather than an enum, so a new event is not a breaking change: a
+/// host's switch over it needs a `default`. Add each new event to `allCases`.
+public nonisolated struct EngineDiagnosticEvent: RawRepresentable, Hashable, Sendable, CaseIterable {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public static let playbackPlay = Self(rawValue: "playbackPlay")
+    public static let playbackPause = Self(rawValue: "playbackPause")
+    public static let playbackSeek = Self(rawValue: "playbackSeek")
+    public static let playbackFinished = Self(rawValue: "playbackFinished")
+    public static let playbackTrack = Self(rawValue: "playbackTrack")
+    public static let playbackStallBegin = Self(rawValue: "playbackStallBegin")
+    public static let playbackStallEnd = Self(rawValue: "playbackStallEnd")
+    public static let playbackRendererRecovery = Self(rawValue: "playbackRendererRecovery")
+    public static let playbackCacheFallback = Self(rawValue: "playbackCacheFallback")
+    public static let playbackSubtitleLoadFailed = Self(rawValue: "playbackSubtitleLoadFailed")
     /// The first frame is up. Carries the milliseconds to each step of the
     /// start: `firstByteMs`, `containerOpenedMs`, `streamsProbedMs` and
     /// `firstFrameMs`.
-    case playbackStartup
+    public static let playbackStartup = Self(rawValue: "playbackStartup")
     /// Nothing came back from the source within a few seconds of the open.
-    case playbackSlowStart
+    public static let playbackSlowStart = Self(rawValue: "playbackSlowStart")
+
+    public static let allCases: [Self] = [
+        .playbackPlay,
+        .playbackPause,
+        .playbackSeek,
+        .playbackFinished,
+        .playbackTrack,
+        .playbackStallBegin,
+        .playbackStallEnd,
+        .playbackRendererRecovery,
+        .playbackCacheFallback,
+        .playbackSubtitleLoadFailed,
+        .playbackStartup,
+        .playbackSlowStart,
+    ]
 }
 
 /// Something that went wrong and is worth counting and fingerprinting across
-/// viewers, unlike a routine event.
-public nonisolated enum EngineDiagnosticIncident: String, Sendable, CaseIterable {
-    case playbackStall
-    case playbackRendererRecovery
-    case playbackSubtitleLoadFailed
+/// viewers, unlike a routine event. A struct for the same reason as
+/// `EngineDiagnosticEvent`.
+public nonisolated struct EngineDiagnosticIncident: RawRepresentable, Hashable, Sendable, CaseIterable {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public static let playbackStall = Self(rawValue: "playbackStall")
+    public static let playbackRendererRecovery = Self(rawValue: "playbackRendererRecovery")
+    public static let playbackSubtitleLoadFailed = Self(rawValue: "playbackSubtitleLoadFailed")
+
+    public static let allCases: [Self] = [
+        .playbackStall,
+        .playbackRendererRecovery,
+        .playbackSubtitleLoadFailed,
+    ]
 }
 
 public nonisolated enum EngineDiagnosticLevel: String, Sendable, Comparable {
