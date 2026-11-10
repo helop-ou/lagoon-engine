@@ -59,14 +59,6 @@ struct ClosedCaptionTests {
         engine.prepare(url: url, startSeconds: 0.6, initialAudioOrdinal: nil)
         engine.pause()
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
-        engine.addExternalSubtitle(ExternalSubtitleTrack(
-            url: URL(string: "https://example.invalid/subtitle.srt")!,
-            preloadedData: Data("1\n00:00:05,000 --> 00:00:06,000\nSidecar\n".utf8),
-            title: "Sidecar",
-            language: "eng",
-            select: false,
-            isDownloaded: true
-        ))
 
         // Generous: other suites' main-actor tests run while this one waits.
         let deadline = ContinuousClock.now + .seconds(30)
@@ -76,6 +68,16 @@ struct ClosedCaptionTests {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(failure == nil)
+        // Once open, as a viewer's downloaded subtitle arrives: before, the
+        // engine does not yet know how many embedded tracks come first.
+        engine.addExternalSubtitle(ExternalSubtitleTrack(
+            url: URL(string: "https://example.invalid/subtitle.srt")!,
+            preloadedData: Data("1\n00:00:05,000 --> 00:00:06,000\nSidecar\n".utf8),
+            title: "Sidecar",
+            language: "eng",
+            select: false,
+            isDownloaded: true
+        ))
         let captions = try #require(engine.subtitleTracks.last)
         #expect(captions.engineID == captionsID)
         #expect(captions.isHearingImpaired)
