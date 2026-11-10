@@ -857,15 +857,18 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     public func selectSubtitleTrack(id: Int?) {
         let ordinal = id ?? 0
+        let isCaptions = ordinal == Self.closedCaptionTrackID
         guard !shutdownRequested, ordinal >= 0,
-              ordinal <= embeddedSubtitleCount + externalSubtitles.count else { return }
+              isCaptions || ordinal <= embeddedSubtitleCount + externalSubtitles.count else { return }
         EngineDiagnostics.record(.playbackTrack, [
             "track": .string("subtitle"),
-            "trackSource": .string(ordinal == 0 ? "off" : ordinal > embeddedSubtitleCount ? "external" : "embedded"),
+            "trackSource": .string(
+                ordinal == 0 ? "off" : isCaptions ? "captions" : ordinal > embeddedSubtitleCount ? "external" : "embedded"
+            ),
             "position": .double(timePosition.rounded(toPlaces: 1)),
         ])
         cancelExternalSubtitleLoad()
-        if ordinal > embeddedSubtitleCount {
+        if ordinal > embeddedSubtitleCount, !isCaptions {
             loadExternalSubtitle(ordinal: ordinal)
         } else {
             commitSubtitleSelection(ordinal: ordinal)
@@ -886,8 +889,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     private func commitSubtitleSelection(ordinal: Int, cues: [SubtitleCue] = [], styledScript: Data? = nil) {
         let generation = shared.withLock { state in
             state.selectedSubtitleOrdinal = ordinal
-            state.selectedSubtitleStreamIndex = ordinal > 0 && ordinal <= embeddedSubtitleCount
-                ? state.embeddedSubtitleStreamIndices[ordinal - 1] : -1
+            state.selectedSubtitleStreamIndex = Self.subtitleStreamIndex(
+                ordinal: ordinal, embedded: state.embeddedSubtitleStreamIndices
+            )
             state.styledSubtitleGeneration += 1
             state.pendingStyledChunks.removeAll()
             state.styledSubtitlePending = ordinal > 0 && EngineTuning.current.rendersStyledSubtitles
@@ -895,7 +899,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             // The demux subtitle callback holds this lock through its cue
             // write, so an old embedded packet cannot land after an external
             // track is committed.
-            if ordinal > embeddedSubtitleCount {
+            if ordinal > embeddedSubtitleCount, ordinal != Self.closedCaptionTrackID {
                 subtitleStore.replaceExternalTrack(with: cues)
             } else {
                 subtitleStore.resetForEmbeddedPlayback()
@@ -994,7 +998,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         externalSubtitles.append(track)
         shared.withLock { $0.externalSubtitles = externalSubtitles }
         let ordinal = embeddedSubtitleCount + externalSubtitles.count
-        subtitleTracks += [PlayerTrack(
+        let captions = subtitleTracks.firstIndex { $0.engineID == Self.closedCaptionTrackID } ?? subtitleTracks.endIndex
+        subtitleTracks.insert(contentsOf: [PlayerTrack(
             engineID: ordinal,
             kind: .subtitle,
             displayName: Self.externalTrackName(for: track),
@@ -1003,7 +1008,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             isForced: track.isForced,
             isHearingImpaired: track.isHearingImpaired,
             source: track.isDownloaded ? .downloaded : .external
-        )]
+        )], at: captions)
         selectSubtitleTrack(id: ordinal)
     }
 
@@ -2671,9 +2676,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 state.selectedSubtitleOrdinal = state.initialSubtitleOrdinal ?? 0
             }
             let ordinal = state.selectedSubtitleOrdinal
-            if ordinal >= 1, ordinal <= embeddedSubtitles.count {
-                state.selectedSubtitleStreamIndex = embeddedSubtitles[ordinal - 1].streamIndex
+            if ordinal >= 1, ordinal <= embeddedSubtitles.count || ordinal == Self.closedCaptionTrackID {
+                state.selectedSubtitleStreamIndex = Self.subtitleStreamIndex(
+                    ordinal: ordinal, embedded: state.embeddedSubtitleStreamIndices
+                )
             }
+            state.closedCaptionsListed = false
             return (state.externalSubtitles, state.embeddedSubtitleMetadata, ordinal)
         }
         // Before the first packet, so the opening lines reach libass too.
@@ -2719,6 +2727,31 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 isHearingImpaired: metadata?.isHearingImpaired ?? false
             )
         })
+    }
+
+    /// The engine id of the closed captions in the video, outside the
+    /// ordinals so no other track moves when they turn up.
+    static let closedCaptionTrackID = 1_000_000
+
+    nonisolated private static func subtitleStreamIndex(ordinal: Int, embedded: [Int32]) -> Int32 {
+        if ordinal == closedCaptionTrackID { return ClosedCaptionTrack.streamIndex }
+        return ordinal > 0 && ordinal <= embedded.count ? embedded[ordinal - 1] : -1
+    }
+
+    /// Captions are found only once the demuxer reads them, so they join the
+    /// list then, last.
+    private func listClosedCaptions() {
+        guard !shutdownRequested, !subtitleTracks.contains(where: { $0.engineID == Self.closedCaptionTrackID }) else { return }
+        let selected = shared.withLock { $0.selectedSubtitleOrdinal } == Self.closedCaptionTrackID
+        subtitleTracks.append(PlayerTrack(
+            engineID: Self.closedCaptionTrackID,
+            kind: .subtitle,
+            displayName: String(localized: "Closed Captions"),
+            isSelected: selected,
+            languageTag: nil,
+            isForced: false,
+            isHearingImpaired: true
+        ))
     }
 
     nonisolated private static func subtitleTracks(
@@ -3166,6 +3199,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 kickPumps()
             }
         case .subtitle(let events, let streamIndex):
+            let foundCaptions = shared.withLock { state in
+                guard streamIndex == ClosedCaptionTrack.streamIndex, !state.closedCaptionsListed else { return false }
+                state.closedCaptionsListed = true
+                state.textSubtitleStreamIndices.insert(streamIndex)
+                return true
+            }
+            if foundCaptions {
+                Task { @MainActor [weak self] in self?.listClosedCaptions() }
+            }
             shared.withLock { state in
                 if state.textSubtitleStreamIndices.contains(streamIndex) {
                     state.subtitleBacklog.record(events, streamIndex: streamIndex)
@@ -3903,6 +3945,8 @@ nonisolated private final class SharedState: @unchecked Sendable {
         var pendingStyledChunks: [StyledSubtitleChunk] = []
         var styledSubtitleHeaders: [Int32: String] = [:]
         var textSubtitleStreamIndices: Set<Int32> = []
+        /// Whether this open has seen captions in the video yet.
+        var closedCaptionsListed = false
         var unreadSubtitleStreamIndices: Set<Int32> = []
         /// What choosing a text stream replays instead of seeking.
         var subtitleBacklog = SubtitleBacklog()
