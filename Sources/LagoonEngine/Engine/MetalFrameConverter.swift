@@ -2,8 +2,9 @@ import CoreVideo
 import Foundation
 import Metal
 
-/// Turns a decoded 10-bit planar frame into a renderer-ready Core Video buffer
-/// on the GPU.
+/// Turns a decoded planar frame into a renderer-ready 4:2:0 Core Video buffer
+/// on the GPU: 10-bit 4:2:0 as dav1d gives it, and 4:2:2, 4:4:4 or 12-bit
+/// sources that VideoToolbox does not take.
 ///
 /// dav1d needs every Apple TV core. The P010 repack and PQ-to-SDR transfer
 /// cost ~0.5 of a core on the CPU; this kernel does both in ~1 ms of GPU time.
@@ -26,6 +27,17 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         var outputDepth: UInt32
         var sourcePeakNits: Float
         var targetPeakNits: Float
+        var sourceDepth: UInt32
+        var chromaShiftX: UInt32
+        var chromaShiftY: UInt32
+    }
+
+    /// The decoded frame's planes: bits per sample and chroma subsampling.
+    struct SourceLayout: Equatable, Sendable {
+        var bitDepth = 10
+        /// log2 of the horizontal chroma subsampling: 1 halves, 0 keeps.
+        var chromaShiftX = 1
+        var chromaShiftY = 1
     }
 
     struct Configuration: Sendable {
@@ -42,6 +54,7 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         let outputBitDepth: Int
         /// Prints GPU-versus-wall timing every 120 frames.
         var verbose: Bool = false
+        var source = SourceLayout()
     }
 
     enum ConverterError: LocalizedError {
@@ -146,7 +159,7 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
         let mapped = ProcessInfo.processInfo.systemUptime
         // Handed off to the completion handler, not shared.
         nonisolated(unsafe) let (lumaTexture, chromaTexture) = try destinationTextures(for: destination)
-        let elementSize = MemoryLayout<UInt16>.stride
+        let elementSize = configuration.source.bitDepth > 8 ? MemoryLayout<UInt16>.stride : 1
         var parameters = Parameters(
             width: UInt32(configuration.width),
             height: UInt32(configuration.height),
@@ -159,7 +172,10 @@ nonisolated final class MetalFrameConverter: @unchecked Sendable {
             toneMap: configuration.toneMap ? 1 : 0,
             outputDepth: UInt32(configuration.outputBitDepth),
             sourcePeakNits: configuration.sourcePeakNits,
-            targetPeakNits: configuration.targetPeakNits
+            targetPeakNits: configuration.targetPeakNits,
+            sourceDepth: UInt32(configuration.source.bitDepth),
+            chromaShiftX: UInt32(configuration.source.chromaShiftX),
+            chromaShiftY: UInt32(configuration.source.chromaShiftY)
         )
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {

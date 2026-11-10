@@ -1,11 +1,14 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// GPU output stage for software-decoded 10-bit planar video.
+// GPU output stage for software-decoded planar video: 4:2:0, 4:2:2 or
+// 4:4:4, 8, 10 or 12 bits, always written as 4:2:0.
 //
 // One thread handles one 2x2 luma block, which is exactly one chroma sample
-// in 4:2:0, so the kernel reads four luma and two chroma samples and writes
-// four luma and one interleaved chroma pair. Two modes:
+// in 4:2:0, so the kernel reads four luma samples and the chroma samples
+// under the block, and writes four luma and one interleaved chroma pair.
+// Codes are taken to 10 bits first and chroma is averaged down to 4:2:0, so
+// both modes see 10-bit 4:2:0. Two modes:
 //
 //   toneMap == 0: repack planar little-endian 10-bit (low bits) into P010
 //                 (high bits, interleaved chroma). No colour change.
@@ -26,7 +29,18 @@ struct LagoonPlanarConvertParameters {
     uint outputDepth;    // 10 → P010 texels, 8 → NV12 texels
     float sourcePeakNits;
     float targetPeakNits;
+    uint sourceDepth;    // 8 reads bytes, 10 or 12 reads uint16 elements
+    uint chromaShiftX;   // log2 horizontal chroma subsampling: 1 or 0
+    uint chromaShiftY;   // log2 vertical chroma subsampling: 1 or 0
 };
+
+// One sample's code at 10 bits. `index` counts source elements.
+static inline uint sampleCode(device const uint16_t *source, uint index, uint depth) {
+    if (depth == 8) { return uint(((device const uchar *)source)[index]) << 2; }
+    const uint code = uint(source[index]);
+    if (depth == 12) { return min((code + 2) >> 2, 1023u); }
+    return min(code, 1023u);
+}
 
 constant float PQ_M1 = 0.1593017578125f;
 constant float PQ_M2 = 78.84375f;
@@ -83,16 +97,28 @@ kernel void lagoonConvertPlanar10(
     const uint y = gid.y * 2;
     if (x >= p.width || y >= p.height) { return; }
 
-    device const uint16_t *luma = source + p.lumaOffset;
     const uint lumaCodes[4] = {
-        min(uint(luma[y * p.lumaStride + x]), 1023u),
-        min(uint(luma[y * p.lumaStride + x + 1]), 1023u),
-        min(uint(luma[(y + 1) * p.lumaStride + x]), 1023u),
-        min(uint(luma[(y + 1) * p.lumaStride + x + 1]), 1023u),
+        sampleCode(source, p.lumaOffset + y * p.lumaStride + x, p.sourceDepth),
+        sampleCode(source, p.lumaOffset + y * p.lumaStride + x + 1, p.sourceDepth),
+        sampleCode(source, p.lumaOffset + (y + 1) * p.lumaStride + x, p.sourceDepth),
+        sampleCode(source, p.lumaOffset + (y + 1) * p.lumaStride + x + 1, p.sourceDepth),
     };
-    const uint chromaIndex = gid.y * p.chromaStride + gid.x;
-    const uint cbCode = min(uint(source[p.cbOffset + chromaIndex]), 1023u);
-    const uint crCode = min(uint(source[p.crOffset + chromaIndex]), 1023u);
+    // The chroma samples under this block: one in 4:2:0, two stacked in
+    // 4:2:2, four in 4:4:4, averaged.
+    const uint spanX = 2u >> p.chromaShiftX;
+    const uint spanY = 2u >> p.chromaShiftY;
+    uint cbSum = 0;
+    uint crSum = 0;
+    for (uint dy = 0; dy < spanY; dy++) {
+        for (uint dx = 0; dx < spanX; dx++) {
+            const uint index = (gid.y * spanY + dy) * p.chromaStride + gid.x * spanX + dx;
+            cbSum += sampleCode(source, p.cbOffset + index, p.sourceDepth);
+            crSum += sampleCode(source, p.crOffset + index, p.sourceDepth);
+        }
+    }
+    const uint count = spanX * spanY;
+    const uint cbCode = (cbSum + count / 2) / count;
+    const uint crCode = (crSum + count / 2) / count;
 
     // Destination texel normalisation: P010 carries the 10-bit code in the
     // high bits of a 16-bit word; NV12 is a plain 8-bit code.
