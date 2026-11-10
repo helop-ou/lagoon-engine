@@ -10,7 +10,7 @@ import Testing
 /// demuxer's side: font attachments and raw ASS chunks.
 @Suite("Styled subtitles")
 struct StyledSubtitleRendererTests {
-    private static let script = """
+    static let script = """
     [Script Info]
     ScriptType: v4.00+
     PlayResX: 1920
