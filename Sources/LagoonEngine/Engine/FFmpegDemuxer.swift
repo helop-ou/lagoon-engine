@@ -191,6 +191,15 @@ nonisolated final class FFmpegDemuxer {
     private var closedCaptionNALLengthSize: Int?
     private var closedCaptions: ClosedCaptionTrack?
     private var pendingCaptionEvents: [SubtitleEvent] = []
+    // Every subtitle packet read this session; see `SubtitlePacketStore`.
+    private var subtitlePackets = SubtitlePacketStore()
+    private var selectedSubtitleStreamIndex: Int32 = -1
+    /// The last packet a replay decoded, per stream, so the same packets read
+    /// again after a seek are not shown twice.
+    private var replayedThrough: [Int32: Int64] = [:]
+    private var pendingSubtitleReplay: (events: [SubtitleEvent], streamIndex: Int32)?
+    /// How far back a replay starts: past the start of a line still on screen.
+    static let subtitleReplayLookback = 30.0
     /// Built here from the codec parameters, then taken by the engine, which
     /// runs it on its own queue. The demuxer never decodes video.
     private var softwareVideoDecoder: SoftwareVideoDecoder?
@@ -1052,17 +1061,17 @@ nonisolated final class FFmpegDemuxer {
         isHLS: Bool
     ) {
         // List every subtitle stream, decodable or not, so per-type
-        // ordinals match the host's stream list. Unselected bitmap
-        // streams stay discarded; text streams are always read.
+        // ordinals match the host's stream list. Every decodable one is read,
+        // selected or not, so its packets are stored.
         stream.pointee.discard = AVDISCARD_ALL
         // In an HLS input a WebVTT stream is a rendition with its own playlist.
         if isHLS, par.pointee.codec_id == AV_CODEC_ID_WEBVTT {
             unreadSubtitleStreamIndices.insert(Int32(index))
         } else if let decoder = SubtitleDecoder(codecpar: par, timeBase: stream.pointee.time_base) {
             subtitleDecoders[Int32(index)] = decoder
+            stream.pointee.discard = AVDISCARD_DEFAULT
             if Self.isTextSubtitle(par.pointee.codec_id) {
                 textSubtitleStreamIndices.insert(Int32(index))
-                stream.pointee.discard = AVDISCARD_DEFAULT
             }
         }
         if let header = Self.styledSubtitleHeader(par) {
@@ -1100,13 +1109,49 @@ nonisolated final class FFmpegDemuxer {
 
     /// The same for embedded subtitles; nil when off or external. Text
     /// streams stay on whatever is selected.
-    func selectSubtitle(streamIndex: Int32?) {
-        guard let ctx = formatContext else { return }
+    /// A bitmap stream chosen at `seconds` returns its stored events from a
+    /// little before it, so the line on screen shows without a re-demux. A
+    /// text stream's recent lines come from the engine's backlog instead.
+    @discardableResult
+    func selectSubtitle(streamIndex: Int32?, at seconds: Double? = nil) -> [SubtitleEvent] {
+        guard let ctx = formatContext else { return [] }
+        selectedSubtitleStreamIndex = streamIndex ?? -1
         for stream in subtitleStreams {
             let read = !unreadSubtitleStreamIndices.contains(stream.streamIndex)
-                && (stream.streamIndex == streamIndex || textSubtitleStreamIndices.contains(stream.streamIndex))
+                && (stream.streamIndex == streamIndex || subtitleDecoders[stream.streamIndex] != nil)
             ctx.pointee.streams[Int(stream.streamIndex)]?.pointee.discard = read ? AVDISCARD_DEFAULT : AVDISCARD_ALL
         }
+        guard let streamIndex, let seconds, !textSubtitleStreamIndices.contains(streamIndex) else { return [] }
+        return replaySubtitles(streamIndex: streamIndex, from: seconds, through: nil)
+    }
+
+    /// Decodes a stream's stored packets from `subtitleReplayLookback` before
+    /// `seconds` to `through` (seconds, or everything read), from a clean
+    /// decoder.
+    private func replaySubtitles(streamIndex: Int32, from seconds: Double, through: Double?) -> [SubtitleEvent] {
+        guard let decoder = subtitleDecoders[streamIndex],
+              let timeBase = formatContext?.pointee.streams[Int(streamIndex)]?.pointee.time_base,
+              timeBase.num > 0, timeBase.den > 0 else { return [] }
+        let ticks = { (seconds: Double) in Int64(seconds * Double(timeBase.den) / Double(timeBase.num)) }
+        let lower = ticks(seconds - Self.subtitleReplayLookback)
+        let upper = through.map(ticks) ?? .max
+        let packets = subtitlePackets.packets(for: streamIndex, in: lower...max(lower, upper))
+        decoder.flush()
+        guard let last = packets.last, let replay = av_packet_alloc() else { return [] }
+        var owned: UnsafeMutablePointer<AVPacket>? = replay
+        defer { av_packet_free(&owned) }
+        var events: [SubtitleEvent] = []
+        for stored in packets {
+            guard av_new_packet(replay, Int32(stored.data.count)) >= 0 else { break }
+            stored.data.copyBytes(to: replay.pointee.data, count: stored.data.count)
+            replay.pointee.pts = stored.pts
+            replay.pointee.dts = replay.pointee.pts
+            replay.pointee.duration = stored.duration
+            events += subtitleEvents(decoder: decoder, packet: replay, streamIndex: streamIndex)
+            av_packet_unref(replay)
+        }
+        replayedThrough[streamIndex] = last.pts
+        return events
     }
 
     /// A codec whose events are text, not bitmaps: SubRip, ASS, WebVTT,
@@ -1290,6 +1335,14 @@ nonisolated final class FFmpegDemuxer {
         // queue, and flushing here would touch libavcodec from two queues.
         for decoder in subtitleDecoders.values {
             decoder.flush()
+        }
+        // A line that began before the landing keyframe is in the store.
+        replayedThrough.removeAll()
+        pendingSubtitleReplay = nil
+        // Handed out by the next read, which follows every seek.
+        if selectedSubtitleStreamIndex >= 0 {
+            let events = replaySubtitles(streamIndex: selectedSubtitleStreamIndex, from: seconds, through: seconds)
+            pendingSubtitleReplay = events.isEmpty ? nil : (events, selectedSubtitleStreamIndex)
         }
         ioLock.withLock {
             ioReadSeconds = 0
@@ -1760,6 +1813,10 @@ nonisolated final class FFmpegDemuxer {
 
     func readNext() -> ReadResult {
         guard let ctx = formatContext, let packet else { return .failed("demuxer not open") }
+        if let replay = pendingSubtitleReplay {
+            pendingSubtitleReplay = nil
+            return .subtitle(replay.events, streamIndex: replay.streamIndex)
+        }
         if !pendingCaptionEvents.isEmpty {
             defer { pendingCaptionEvents.removeAll() }
             return .subtitle(pendingCaptionEvents, streamIndex: ClosedCaptionTrack.streamIndex)
@@ -1876,20 +1933,49 @@ nonisolated final class FFmpegDemuxer {
             return .audio([buffer], streamIndex: streamIndex)
         }
         if let decoder = subtitleDecoders[streamIndex] {
-            var events = decoder.decode(packet: packet)
-            if styledSubtitleHeaders[streamIndex] != nil,
-               let chunk = Self.styledChunk(packet, timeBase: formatContext?.pointee.streams[Int(streamIndex)]?.pointee.time_base) {
-                events.append(.styledChunk(chunk))
+            if packet.pointee.pts != avNoPTS, let data = packet.pointee.data, packet.pointee.size > 0 {
+                subtitlePackets.add(.init(
+                    pts: packet.pointee.pts,
+                    duration: packet.pointee.duration,
+                    data: Data(bytes: data, count: Int(packet.pointee.size))
+                ), streamIndex: streamIndex)
+                if let through = replayedThrough[streamIndex] {
+                    // Read again after a seek, and already shown by the replay.
+                    if packet.pointee.pts <= through { return .skipped }
+                    replayedThrough[streamIndex] = nil
+                }
             }
+            // An unselected bitmap stream is only stored: its pictures cost.
+            guard streamIndex == selectedSubtitleStreamIndex || textSubtitleStreamIndices.contains(streamIndex) else {
+                return .skipped
+            }
+            let events = subtitleEvents(decoder: decoder, packet: packet, streamIndex: streamIndex)
             return events.isEmpty ? .skipped : .subtitle(events, streamIndex: streamIndex)
         }
         return .skipped
+    }
+
+    private func subtitleEvents(
+        decoder: SubtitleDecoder,
+        packet: UnsafeMutablePointer<AVPacket>,
+        streamIndex: Int32
+    ) -> [SubtitleEvent] {
+        var events = decoder.decode(packet: packet)
+        if styledSubtitleHeaders[streamIndex] != nil,
+           let chunk = Self.styledChunk(packet, timeBase: formatContext?.pointee.streams[Int(streamIndex)]?.pointee.time_base) {
+            events.append(.styledChunk(chunk))
+        }
+        return events
     }
 
     func close() {
         freeHeldVideoPackets()
         presentationOrder = nil
         pictureOrderReader = nil
+        subtitlePackets.removeAll()
+        replayedThrough.removeAll()
+        pendingSubtitleReplay = nil
+        selectedSubtitleStreamIndex = -1
         if packet != nil {
             av_packet_free(&packet)
         }
