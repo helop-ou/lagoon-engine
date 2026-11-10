@@ -2708,9 +2708,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let demuxedDuration = demuxer.durationSeconds
         let size = videoDimensions()
         // Without a known rate there is no meaningful mode to request.
-        let displayMatch: DisplayMatchRequest? = if demuxer.videoFrameRate > 0,
+        // Field-rate output asks the display for the field rate: 50 for 50i.
+        let displayMatch: DisplayMatchRequest? = if demuxer.outputFrameRate > 0,
             let description = demuxer.videoStream?.formatDescription {
-            DisplayMatchRequest(formatDescription: description, frameRate: Float(demuxer.videoFrameRate))
+            DisplayMatchRequest(formatDescription: description, frameRate: Float(demuxer.outputFrameRate))
         } else {
             nil
         }
@@ -3023,7 +3024,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             videoCount: videoBacklog,
             audioCount: audioCount,
             audioBufferedSeconds: audioQueue.bufferedDuration,
-            videoFrameRate: demuxer.videoFrameRate,
+            videoFrameRate: demuxer.outputFrameRate,
             videoIsDecoded: videoIsDecoded,
             videoIsSoftwareDecoded: videoIsSoftwareDecoded,
             hasAudio: hasAudio,

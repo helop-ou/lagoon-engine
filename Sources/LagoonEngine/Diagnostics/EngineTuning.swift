@@ -24,6 +24,9 @@ public nonisolated struct EngineTuning: Sendable {
     /// The superseded boolean form of the above. Nil unless a host still sets
     /// it.
     public var softwareDecodeCompressedOutput: Bool?
+    /// Deinterlace to one picture per frame on the CPU, as before field-rate
+    /// deinterlacing on the GPU.
+    public var deinterlacesAtFrameRate = false
 
     // MARK: Subtitles
 

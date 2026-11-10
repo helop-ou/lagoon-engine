@@ -135,6 +135,10 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     private var transferOutputPool: CVPixelBufferPool?
     private var gpuConverter: MetalFrameConverter?
     private var gpuOutputPool: CVPixelBufferPool?
+    /// Set for an interlaced stream: each frame leaves as two pictures, one
+    /// per field. Nil leaves interlaced frames to the CPU `Deinterlacer`.
+    private let fieldDeinterlacer: FieldRateDeinterlacer?
+    var outputsFieldRate: Bool { fieldDeinterlacer != nil }
     /// What a rebuild keeps from open: the mode resolved then, so a new size
     /// never changes how frames are coloured, and the inputs to build it.
     private let outputMode: OutputMode
@@ -487,6 +491,10 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         self.sourcePixelFormat = sourcePixelFormat
         self.sourcePeakNits = peakNits
         self.exportsFilmGrain = exportsFilmGrain
+        fieldDeinterlacer = FFmpegDemuxer.isInterlaced(fieldOrder: codecpar.pointee.field_order)
+            && !tuning.deinterlacesAtFrameRate
+            ? FieldRateDeinterlacer(width: resolvedWidth, height: resolvedHeight, format: sourcePixelFormat)
+            : nil
         codecContext = context
         resolvedThreadCount = context.pointee.thread_count
         codecName = codec.pointee.name.map(String.init(cString:)) ?? "unknown"
@@ -596,6 +604,9 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         let status = avcodec_send_packet(codecContext, nil)
         guard status >= 0 else { throw DecoderError.decode(status) }
         try receiveFrames(deliver: deliver)
+        if let fieldDeinterlacer {
+            try deliverFields(try fieldDeinterlacer.drain(), deliver: deliver)
+        }
         waitForPendingOutput()
         try rethrowGPUFailure()
     }
@@ -646,6 +657,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     func flush() {
         waitForPendingOutput()
         avcodec_flush_buffers(codecContext)
+        fieldDeinterlacer?.reset()
         corruptPacketLock.withLock { corruptPackets.reset() }
         timeline?.reset()
         // Reset on seek, as the bench does, so the profile covers one scene.
@@ -667,6 +679,12 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             guard status >= 0 else { break }
             defer { av_frame_unref(frame) }
             corruptPacketLock.withLock { corruptPackets.recordDecoded() }
+            if let fieldDeinterlacer {
+                let fields = try fieldDeinterlacer.push(frame, timing: resolvedTiming())
+                av_frame_unref(frame)
+                try deliverFields(fields, deliver: deliver)
+                continue
+            }
             let buffer = try makeSampleBuffer(deliver: deliver)
             let converted = Self.now()
             detailedTimings.recordOutput(at: converted)
@@ -675,6 +693,28 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                 $0.conversionSeconds += converted - received
             }
             if let buffer {
+                deliver(buffer)
+            }
+        }
+    }
+
+    /// Each field's picture through the same output as a decoded frame, in
+    /// place of it, at the field's own time.
+    private func deliverFields(_ fields: [FieldRateDeinterlacer.Field], deliver: @escaping Delivery) throws {
+        var remaining = fields[...]
+        defer {
+            for field in remaining {
+                var pointer: UnsafeMutablePointer<AVFrame>? = field.frame
+                av_frame_free(&pointer)
+            }
+        }
+        while let field = remaining.popFirst() {
+            av_frame_unref(frame)
+            av_frame_move_ref(frame, field.frame)
+            var pointer: UnsafeMutablePointer<AVFrame>? = field.frame
+            av_frame_free(&pointer)
+            defer { av_frame_unref(frame) }
+            if let buffer = try makeSampleBuffer(deliver: deliver, timing: field.timing) {
                 deliver(buffer)
             }
         }
@@ -722,7 +762,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     }
 
     /// The ready sample on CPU paths, or nil when the GPU will deliver it.
-    private func makeSampleBuffer(deliver: @escaping Delivery) throws -> CMSampleBuffer? {
+    private func makeSampleBuffer(deliver: @escaping Delivery, timing fieldTiming: CMSampleTimingInfo? = nil) throws -> CMSampleBuffer? {
         let decodedFormat = AVPixelFormat(rawValue: frame.pointee.format)
         let isSupported8Bit = outputBitDepth == 8 && (
             decodedFormat == AV_PIX_FMT_YUV420P
@@ -759,7 +799,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         }
         // Read frame properties before copying, so the picture can be
         // released right after (~24 MiB at 4K 10-bit).
-        let timing = resolvedTiming()
+        let timing = fieldTiming ?? resolvedTiming()
 
         if let gpuConverter, let gpuOutputPool, decodedFormat == AV_PIX_FMT_YUV420P10LE || isGPUOnly {
             try submitGPUSample(converter: gpuConverter, pool: gpuOutputPool, timing: timing, deliver: deliver)

@@ -282,6 +282,9 @@ nonisolated final class FFmpegDemuxer {
     private(set) var durationSeconds: Double = 0
     /// Best-guess frame rate for display matching; 0 when unknown.
     private(set) var videoFrameRate: Double = 0
+    /// Pictures a second as the renderer receives them: the field rate when
+    /// the software decoder deinterlaces at field rate.
+    private(set) var outputFrameRate: Double = 0
     /// The pts grid in force, for the HUD (demux queue only).
     var videoGridDescription: String? {
         softwareGridDescription ?? videoTimeline?.gridDescription
@@ -759,6 +762,7 @@ nonisolated final class FFmpegDemuxer {
         )
         if guessedRate.num > 0, guessedRate.den > 0 {
             videoFrameRate = Double(guessedRate.num) / Double(guessedRate.den)
+            outputFrameRate = videoFrameRate
         }
         let videoIsInterlaced = Self.isInterlaced(fieldOrder: videoPar.pointee.field_order)
         let videoNeedsSoftwareH264 = Self.isHighBitDepthH264(videoPar) || Self.isExtendedChromaH264(videoPar)
@@ -841,6 +845,9 @@ nonisolated final class FFmpegDemuxer {
             softwareVideoDecoder = decoder
             softwareGridDescription = decoder.gridDescription
             outputsDecodedVideo = true
+            if decoder.outputsFieldRate {
+                outputFrameRate = videoFrameRate * 2
+            }
             videoDescription = decoder.formatDescription
         }
         guard let videoDescription else {
