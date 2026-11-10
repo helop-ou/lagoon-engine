@@ -47,6 +47,7 @@ let package = Package(
                 .copy("Fixtures/FilmGrain"),
                 .copy("Fixtures/HLSResume"),
                 .copy("Fixtures/HLSVideoFirst"),
+                .copy("Fixtures/Interlaced"),
                 .copy("Fixtures/LatePGS"),
                 .copy("Fixtures/PresentationOrder"),
                 .copy("Fixtures/TextSubtitles"),
