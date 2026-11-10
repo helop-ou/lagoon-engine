@@ -3205,9 +3205,6 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 state.textSubtitleStreamIndices.insert(streamIndex)
                 return true
             }
-            if foundCaptions {
-                Task { @MainActor [weak self] in self?.listClosedCaptions() }
-            }
             shared.withLock { state in
                 if state.textSubtitleStreamIndices.contains(streamIndex) {
                     state.subtitleBacklog.record(events, streamIndex: streamIndex)
@@ -3229,6 +3226,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                         }
                     }
                 }
+            }
+            // Once the backlog holds them, so a viewer who picks the track
+            // at once sees the line.
+            if foundCaptions {
+                Task { @MainActor [weak self] in self?.listClosedCaptions() }
             }
         case .skipped:
             break
