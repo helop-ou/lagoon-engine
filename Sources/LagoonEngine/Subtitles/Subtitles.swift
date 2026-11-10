@@ -174,6 +174,12 @@ nonisolated final class SubtitleStore: @unchecked Sendable {
     private var externalNextIndex = 0
     private var externalActiveIndices: [Int] = []
     private var externalLastSeconds: Double?
+    private var offset: Double = 0
+
+    /// Seconds; positive shows every cue later.
+    func setOffset(_ seconds: Double) {
+        lock.withLock { offset = seconds }
+    }
 
     func add(_ cue: SubtitleCue) {
         lock.lock()
@@ -222,10 +228,11 @@ nonisolated final class SubtitleStore: @unchecked Sendable {
         return cues.count
     }
 
-    func active(at seconds: Double) -> (textCues: [SubtitleTextCue], images: [SubtitleImage]) {
+    func active(at position: Double) -> (textCues: [SubtitleTextCue], images: [SubtitleImage]) {
         lock.lock()
         defer { lock.unlock() }
-        guard seconds.isFinite else { return ([], []) }
+        guard position.isFinite else { return ([], []) }
+        let seconds = position - offset
         var textCues: [SubtitleTextCue] = []
         var images: [SubtitleImage] = []
         switch source {
