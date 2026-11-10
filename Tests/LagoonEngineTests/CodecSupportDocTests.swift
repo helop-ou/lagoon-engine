@@ -107,11 +107,15 @@ enum CodecSupportDocument {
         }
         lines += [
             "",
-            "The software path takes 8-bit and 10-bit 4:2:0 only. Anything"
-            + " else — 4:2:2,",
-            "4:4:4, 12-bit — fails the title rather than being converted,"
-            + " because a",
-            "silent conversion is worse than an error that says what happened.",
+            "The software path takes 4:2:0, 4:2:2 and 4:4:4 at 8, 10 or 12"
+            + " bits. Anything",
+            "but 8-bit 4:2:0 goes through the GPU stage, which writes 10-bit"
+            + " 4:2:0: chroma is",
+            "averaged down and 12-bit codes are rounded to 10, so those sources"
+            + " lose that",
+            "detail. A frame the GPU stage was not set up for fails the title"
+            + " with its pixel",
+            "format named.",
             "",
             "## Audio",
             "",

@@ -52,8 +52,9 @@ nonisolated enum EngineCodecSupport {
         Video(AV_CODEC_ID_H264, "H.264", .either, softwareOnlyWhenInterlacedOrTenBit: true, note:
             "Progressive 8-bit H.264 is handed to the renderer compressed. "
             + "Interlaced H.264 decodes in software, because that is the only "
-            + "path with a deinterlacer, and so does 10-bit H.264 (High 10), "
-            + "which no Apple hardware decoder accepts."),
+            + "path with a deinterlacer, and so does H.264 outside the hardware "
+            + "profiles, 10-bit (High 10), 4:2:2 and 4:4:4, which no Apple "
+            + "hardware decoder accepts."),
         Video(AV_CODEC_ID_HEVC, "HEVC", .videoToolbox, note:
             "Always compressed, interlaced included. There is no software "
             + "fallback, and a device without HEVC hardware fails the title "
