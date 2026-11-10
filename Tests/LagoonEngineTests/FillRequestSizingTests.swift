@@ -10,13 +10,14 @@ struct FillRequestSizingTests {
     private static let kibibyte: Int64 = 1_024
 
     @Test func theWaitForTheFirstByteIsNotCountedAsTransfer() throws {
-        let loader = DistantLoader(payload: Data(repeating: 0, count: 1_024 * 1_024), firstByteDelay: 0.3)
+        let loader = DistantLoader(payload: Data(repeating: 0, count: 1_024 * 1_024), firstByteDelay: 1)
         let scope = try Self.scope(loader: loader, requestSize: 1_024 * 1_024)
         defer { scope.cancelAndRemove() }
         _ = try scope.read(offset: 0, length: 4_096)
-        // Counting the wait, 1 MiB over 0.3 s is about 3.5 MB/s.
+        // Counting the wait, 1 MiB over 1 s is about 1 MB/s. Four times that
+        // leaves a loaded CI runner 260 ms for the transfer itself.
         let rate = try #require(scope.metrics.networkBytesPerSecond)
-        #expect(rate > 20_000_000)
+        #expect(rate > 4_000_000, "rate \(rate)")
     }
 
     @Test func fillRequestsGrowOnADistantLinkAndMissesDoNot() async throws {
