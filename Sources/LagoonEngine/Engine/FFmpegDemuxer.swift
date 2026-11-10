@@ -181,6 +181,11 @@ nonisolated final class FFmpegDemuxer {
     private var passthroughTimelines: [Int32: PassthroughAudioTimeline] = [:]
     // Removes Matroska's millisecond quantization from video PTS.
     private var videoTimeline: VideoFrameTimeline?
+    // Rebuilds H.264 presentation order a container lost; see `H264PresentationOrder`.
+    private var presentationOrder: H264PresentationOrder<UnsafeMutablePointer<AVPacket>>?
+    private var pictureOrderReader: H264PictureOrderReader?
+    /// Video packets whose timestamp is settled, waiting to go out.
+    private var settledVideoPackets: [UnsafeMutablePointer<AVPacket>] = []
     /// Built here from the codec parameters, then taken by the engine, which
     /// runs it on its own queue. The demuxer never decodes video.
     private var softwareVideoDecoder: SoftwareVideoDecoder?
@@ -811,6 +816,14 @@ nonisolated final class FFmpegDemuxer {
         if !outputsDecodedVideo {
             configureVideoRandomAccess(videoPar: videoPar, guessedRate: guessedRate)
         }
+        // MPEG-TS and HLS carry their own presentation timestamps.
+        if videoPar.pointee.video_delay > 0,
+           !videoUsesStartCodes,
+           Self.isMatroska(ctx) || Self.isMP4(ctx),
+           let reader = H264PictureOrderReader(codecpar: videoPar) {
+            pictureOrderReader = reader
+            presentationOrder = H264PresentationOrder(depth: min(Int(videoPar.pointee.video_delay), 16))
+        }
         videoStream = DemuxedStream(
             streamIndex: bestVideo,
             codecName: String(cString: avcodec_get_name(videoPar.pointee.codec_id)),
@@ -1220,6 +1233,8 @@ nonisolated final class FFmpegDemuxer {
             passthroughTimelines[index]?.reset()
         }
         videoTimeline?.reset()
+        freeHeldVideoPackets()
+        pictureOrderReader?.reset()
         // Not the software decoder: the decode stage resets it on its own
         // queue, and flushing here would touch libavcodec from two queues.
         for decoder in subtitleDecoders.values {
@@ -1266,6 +1281,11 @@ nonisolated final class FFmpegDemuxer {
         let timedOut = io.deadlineExpired
         io.deadline = nil
         return (status, timedOut)
+    }
+
+    private static func isMP4(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+        guard let name = ctx.pointee.iformat?.pointee.name else { return false }
+        return String(cString: name).hasPrefix("mov,")
     }
 
     private static func isMatroska(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
@@ -1584,6 +1604,100 @@ nonisolated final class FFmpegDemuxer {
         case drop
     }
 
+    private func settle(_ settled: [(UnsafeMutablePointer<AVPacket>, Int64)]) {
+        for (held, timestamp) in settled {
+            held.pointee.pts = timestamp
+            settledVideoPackets.append(held)
+        }
+    }
+
+    private func releaseSettledVideoPacket() -> ReadResult {
+        var held: UnsafeMutablePointer<AVPacket>? = settledVideoPackets.removeFirst()
+        defer { av_packet_free(&held) }
+        return videoResult(held!)
+    }
+
+    private func freeHeldVideoPackets() {
+        for packet in (presentationOrder?.reset() ?? []) + settledVideoPackets {
+            var held: UnsafeMutablePointer<AVPacket>? = packet
+            av_packet_free(&held)
+        }
+        settledVideoPackets.removeAll()
+    }
+
+    private func videoResult(_ packet: UnsafeMutablePointer<AVPacket>) -> ReadResult {
+        if outputsDecodedVideo {
+            // Detached from the reusable packet so the decode stage can keep it.
+            guard let detached = SoftwareVideoPacket(cloning: packet, timeBase: videoTimeBase) else {
+                return .failed("out of memory copying a video packet")
+            }
+            return .videoPacket(detached)
+        }
+        guard let description = videoStream?.formatDescription else { return .skipped }
+        // Convert start codes first, so everything below sees one framing.
+        var strippedPayload: Data?
+        if videoUsesStartCodes, let data = packet.pointee.data {
+            strippedPayload = AnnexBStream.lengthPrefixed(
+                UnsafeRawBufferPointer(start: data, count: Int(packet.pointee.size))
+            )
+        }
+        if let lengthSize = videoNALLengthSize {
+            let filtered: Data? = if let converted = strippedPayload {
+                converted.withUnsafeBytes {
+                    rewrittenDolbyVisionPayload(payload: $0, lengthSize: lengthSize)
+                }
+            } else if let data = packet.pointee.data {
+                rewrittenDolbyVisionPayload(
+                    payload: UnsafeRawBufferPointer(start: data, count: Int(packet.pointee.size)),
+                    lengthSize: lengthSize
+                )
+            } else {
+                nil
+            }
+            if let filtered {
+                strippedPayload = filtered
+            }
+        }
+        // Drop mid-GOP and leading pictures after a seek. Before the snap,
+        // so a dropped packet never anchors the frame grid.
+        if case .drop = postSeekVideoDecision(packet: packet, payload: strippedPayload) {
+            return .skipped
+        }
+        // Snap pts to the frame grid; dts stays the container's.
+        var timing: CMSampleTimingInfo?
+        if videoTimeline != nil, packet.pointee.pts != avNoPTS {
+            let containerSeconds = Double(packet.pointee.pts)
+                * Double(videoTimeBase.num) / Double(max(videoTimeBase.den, 1))
+            if let snapped = videoTimeline!.snapped(containerSeconds: containerSeconds) {
+                let scaledDTS = packet.pointee.dts == avNoPTS
+                    ? nil
+                    : packet.pointee.dts.multipliedReportingOverflow(by: Int64(videoTimeBase.num))
+                let dts: CMTime = if let scaledDTS, !scaledDTS.overflow {
+                    CMTime(value: scaledDTS.partialValue, timescale: max(videoTimeBase.den, 1))
+                } else {
+                    .invalid
+                }
+                timing = CMSampleTimingInfo(
+                    duration: videoTimeline!.frameDuration,
+                    presentationTimeStamp: snapped,
+                    decodeTimeStamp: dts
+                )
+            }
+        }
+        guard let buffer = SampleBufferFactory.sampleBuffer(
+            packet: packet,
+            formatDescription: description,
+            timeBase: videoTimeBase,
+            isVideo: true,
+            fallbackDuration: 0,
+            isKeyFrame: packet.pointee.flags & keyPacketFlag != 0,
+            timingOverride: timing,
+            payloadOverride: strippedPayload,
+            markDroppableFrames: markDroppableFrames
+        ) else { return .skipped }
+        return .video(buffer)
+    }
+
     private static func presentationTimestamp(
         _ packet: UnsafeMutablePointer<AVPacket>
     ) -> Int64? {
@@ -1593,6 +1707,9 @@ nonisolated final class FFmpegDemuxer {
 
     func readNext() -> ReadResult {
         guard let ctx = formatContext, let packet else { return .failed("demuxer not open") }
+        if !settledVideoPackets.isEmpty {
+            return releaseSettledVideoPacket()
+        }
         var status = readFrameTimed(ctx, packet)
         // Only AVERROR_EOF ends the stream. Other errors (past the
         // transport's own retries) retry briefly, then fail rather than end
@@ -1604,6 +1721,10 @@ nonisolated final class FFmpegDemuxer {
             status = readFrameTimed(ctx, packet)
         }
         if status == avErrorEOF || isInterrupted {
+            if let held = presentationOrder?.drain(), !held.isEmpty {
+                settle(held)
+                return releaseSettledVideoPacket()
+            }
             // The decode stage drains video. Emit the audio decoder's tail
             // before declaring the end.
             if !didDrainAudioAtEOF {
@@ -1648,76 +1769,19 @@ nonisolated final class FFmpegDemuxer {
             }
         }
 
-        if streamIndex == videoStreamIndex, outputsDecodedVideo {
-            // Detached from the reusable packet so the decode stage can keep it.
-            guard let detached = SoftwareVideoPacket(cloning: packet, timeBase: videoTimeBase) else {
+        if streamIndex == videoStreamIndex, let presentationOrder, let pictureOrderReader,
+           let timestamp = Self.presentationTimestamp(packet) {
+            guard let held = av_packet_clone(packet) else {
                 return .failed("out of memory copying a video packet")
             }
-            return .videoPacket(detached)
+            let picture = pictureOrderReader.picture(in: packet)
+            var order = presentationOrder
+            settle(order.append(held, .init(order: picture.order, isIDR: picture.isIDR, timestamp: timestamp)))
+            self.presentationOrder = order
+            return settledVideoPackets.isEmpty ? .skipped : releaseSettledVideoPacket()
         }
-        if streamIndex == videoStreamIndex, let description = videoStream?.formatDescription {
-            // Convert start codes first, so everything below sees one framing.
-            var strippedPayload: Data?
-            if videoUsesStartCodes, let data = packet.pointee.data {
-                strippedPayload = AnnexBStream.lengthPrefixed(
-                    UnsafeRawBufferPointer(start: data, count: Int(packet.pointee.size))
-                )
-            }
-            if let lengthSize = videoNALLengthSize {
-                let filtered: Data? = if let converted = strippedPayload {
-                    converted.withUnsafeBytes {
-                        rewrittenDolbyVisionPayload(payload: $0, lengthSize: lengthSize)
-                    }
-                } else if let data = packet.pointee.data {
-                    rewrittenDolbyVisionPayload(
-                        payload: UnsafeRawBufferPointer(start: data, count: Int(packet.pointee.size)),
-                        lengthSize: lengthSize
-                    )
-                } else {
-                    nil
-                }
-                if let filtered {
-                    strippedPayload = filtered
-                }
-            }
-            // Drop mid-GOP and leading pictures after a seek. Before the snap,
-            // so a dropped packet never anchors the frame grid.
-            if case .drop = postSeekVideoDecision(packet: packet, payload: strippedPayload) {
-                return .skipped
-            }
-            // Snap pts to the frame grid; dts stays the container's.
-            var timing: CMSampleTimingInfo?
-            if videoTimeline != nil, packet.pointee.pts != avNoPTS {
-                let containerSeconds = Double(packet.pointee.pts)
-                    * Double(videoTimeBase.num) / Double(max(videoTimeBase.den, 1))
-                if let snapped = videoTimeline!.snapped(containerSeconds: containerSeconds) {
-                    let scaledDTS = packet.pointee.dts == avNoPTS
-                        ? nil
-                        : packet.pointee.dts.multipliedReportingOverflow(by: Int64(videoTimeBase.num))
-                    let dts: CMTime = if let scaledDTS, !scaledDTS.overflow {
-                        CMTime(value: scaledDTS.partialValue, timescale: max(videoTimeBase.den, 1))
-                    } else {
-                        .invalid
-                    }
-                    timing = CMSampleTimingInfo(
-                        duration: videoTimeline!.frameDuration,
-                        presentationTimeStamp: snapped,
-                        decodeTimeStamp: dts
-                    )
-                }
-            }
-            guard let buffer = SampleBufferFactory.sampleBuffer(
-                packet: packet,
-                formatDescription: description,
-                timeBase: videoTimeBase,
-                isVideo: true,
-                fallbackDuration: 0,
-                isKeyFrame: packet.pointee.flags & keyPacketFlag != 0,
-                timingOverride: timing,
-                payloadOverride: strippedPayload,
-                markDroppableFrames: markDroppableFrames
-            ) else { return .skipped }
-            return .video(buffer)
+        if streamIndex == videoStreamIndex {
+            return videoResult(packet)
         }
         if let decoder = audioDecoders[streamIndex] {
             let buffers = decoder.decode(packet: packet)
@@ -1763,6 +1827,9 @@ nonisolated final class FFmpegDemuxer {
     }
 
     func close() {
+        freeHeldVideoPackets()
+        presentationOrder = nil
+        pictureOrderReader = nil
         if packet != nil {
             av_packet_free(&packet)
         }
