@@ -115,6 +115,11 @@ public protocol PlayerEngine: AnyObject, Observable {
     func setSubtitleOffset(_ seconds: Double)
     /// Audio-only playback while the app is in the background.
     func setVideoOutputSuspended(_ suspended: Bool)
+    /// Picture in Picture shows only the display layer, so a host's overlay
+    /// is gone there. With a style, the engine draws the selected subtitles
+    /// into the frames until this is called with nil. Starting it can cost a
+    /// short rebuffer: H.264 the renderer would decode is decoded here.
+    func setPictureInPictureSubtitles(_ style: BurnedInSubtitleStyle?)
     /// The app is in the background, picture showing or not. A decode
     /// session the system takes there suspends video until the app returns,
     /// rather than failing playback.
@@ -138,6 +143,7 @@ public extension PlayerEngine {
     var subtitleSelectionRevision: Int { 0 }
     func retrySubtitleLoad() {}
     func setVideoOutputSuspended(_ suspended: Bool) {}
+    func setPictureInPictureSubtitles(_ style: BurnedInSubtitleStyle?) {}
     func setHostInBackground(_ background: Bool) {}
     var audioOutputPathDiagnostic: String { "unknown" }
     var videoOutputPathDiagnostic: String { "unknown" }
