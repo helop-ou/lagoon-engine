@@ -378,6 +378,24 @@ nonisolated final class FFmpegDemuxer {
         )
     }
 
+    /// Whether an H.264 stream is 4:2:2 or 4:4:4, which VideoToolbox does not
+    /// decode on Apple TV or iPhone: the pixel format, else the profile.
+    static func isExtendedChromaH264(profile: Int32, pixelFormat: AVPixelFormat) -> Bool {
+        if let layout = SoftwareVideoDecoder.gpuSourceLayout(pixelFormat), layout.chromaShiftY == 0 { return true }
+        return h264ExtendedChromaProfiles.contains(profile & ~h264IntraFlag)
+    }
+
+    static func isExtendedChromaH264(_ codecpar: UnsafePointer<AVCodecParameters>) -> Bool {
+        codecpar.pointee.codec_id == AV_CODEC_ID_H264 && isExtendedChromaH264(
+            profile: codecpar.pointee.profile,
+            pixelFormat: AVPixelFormat(rawValue: codecpar.pointee.format)
+        )
+    }
+
+    /// AV_PROFILE_H264_HIGH_422, HIGH_444, HIGH_444_PREDICTIVE and CAVLC_444.
+    private static let h264ExtendedChromaProfiles: Set<Int32> = [122, 144, 244, 44]
+    private static let h264IntraFlag: Int32 = 2048
+
     /// AV_PROFILE_H264_HIGH_10 and its intra variant, which Swift does not
     /// import.
     private static let h264High10Profile: Int32 = 110
@@ -742,7 +760,7 @@ nonisolated final class FFmpegDemuxer {
             videoFrameRate = Double(guessedRate.num) / Double(guessedRate.den)
         }
         let videoIsInterlaced = Self.isInterlaced(fieldOrder: videoPar.pointee.field_order)
-        let videoIsHighBitDepthH264 = Self.isHighBitDepthH264(videoPar)
+        let videoIsHighBitDepthH264 = Self.isHighBitDepthH264(videoPar) || Self.isExtendedChromaH264(videoPar)
         let usesCompressedVideo = Self.usesCompressedVideoPath(
             codecID: videoPar.pointee.codec_id,
             capabilities: capabilities,
