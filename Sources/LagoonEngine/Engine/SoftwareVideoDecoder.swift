@@ -274,7 +274,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     static func supports(
         codecID: AVCodecID,
         interlaced: Bool = false,
-        highBitDepth: Bool = false
+        outsideHardwareProfile: Bool = false
     ) -> Bool {
         codecID == AV_CODEC_ID_VC1
             || codecID == AV_CODEC_ID_WMV3
@@ -282,7 +282,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             || codecID == AV_CODEC_ID_MPEG2VIDEO
             || codecID == AV_CODEC_ID_AV1
             || codecID == AV_CODEC_ID_VP9
-            || (codecID == AV_CODEC_ID_H264 && (interlaced || highBitDepth))
+            || (codecID == AV_CODEC_ID_H264 && (interlaced || outsideHardwareProfile))
     }
 
     /// Resolves the output-mode selector, still honouring the older boolean
@@ -329,7 +329,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         guard Self.supports(
                   codecID: codecID,
                   interlaced: FFmpegDemuxer.isInterlaced(fieldOrder: codecpar.pointee.field_order),
-                  highBitDepth: FFmpegDemuxer.isHighBitDepthH264(codecpar) || FFmpegDemuxer.isExtendedChromaH264(codecpar)
+                  outsideHardwareProfile: FFmpegDemuxer.isHighBitDepthH264(codecpar) || FFmpegDemuxer.isExtendedChromaH264(codecpar)
               ),
               let codec = selectedCodec,
               let context = avcodec_alloc_context3(codec) else {

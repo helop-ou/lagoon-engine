@@ -41,7 +41,7 @@ struct CodecSupportDocTests {
         for entry in EngineCodecSupport.video {
             let progressive = SoftwareVideoDecoder.supports(codecID: entry.id, interlaced: false)
             let interlaced = SoftwareVideoDecoder.supports(codecID: entry.id, interlaced: true)
-            let tenBit = SoftwareVideoDecoder.supports(codecID: entry.id, highBitDepth: true)
+            let tenBit = SoftwareVideoDecoder.supports(codecID: entry.id, outsideHardwareProfile: true)
             if entry.softwareOnlyWhenInterlacedOrTenBit {
                 #expect(!progressive, "\(entry.name) should reach software only interlaced or 10-bit")
                 #expect(interlaced, "\(entry.name) is documented as deinterlaced in software")
@@ -67,7 +67,7 @@ struct CodecSupportDocTests {
                 codecID: codec, capabilities: capabilities, interlaced: false
             ) || SoftwareVideoDecoder.supports(codecID: codec, interlaced: false)
                 || SoftwareVideoDecoder.supports(codecID: codec, interlaced: true)
-                || SoftwareVideoDecoder.supports(codecID: codec, highBitDepth: true)
+                || SoftwareVideoDecoder.supports(codecID: codec, outsideHardwareProfile: true)
             if routed {
                 #expect(
                     documented.contains(codec.rawValue),
