@@ -40,6 +40,12 @@ in the [engine guide](../engine.md).
 - Audio delay follows mpv: positive delays audio. It re-stamps buffers at
   enqueue (`CMSampleBufferCreateCopyWithNewTiming`) and re-demuxes from the
   current position on change.
+- Subtitle offset: positive shows subtitles later, up to 30 s either way.
+  `SubtitleStore` looks cues up at the position minus the offset and libass
+  renders at its clock minus it, so text, bitmap and styled tracks move
+  together, at once and without a re-demux. A positive offset shows cues
+  already passed, since the store keeps a cue until it ends at the shifted
+  time. A negative one shows cues only as far ahead as the demuxer has read.
 
 ## HDR and Dolby Vision tagging
 
