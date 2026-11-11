@@ -344,6 +344,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     )
     @ObservationIgnored nonisolated(unsafe) private var av1PipelineTimer: DispatchSourceTimer?
     @ObservationIgnored nonisolated(unsafe) private var videoDecoder: VideoToolboxDecoder?
+    /// Set at open, before any video is delivered.
+    @ObservationIgnored nonisolated(unsafe) private var unreferencedPictures: UnreferencedPictureReader?
     /// Sees each video sample as the renderer takes it, and nil for a flush.
     /// Pump queue.
     @ObservationIgnored nonisolated(unsafe) var rendererVideoObserverForTesting: ((CMSampleBuffer?) -> Void)?
@@ -2488,6 +2490,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             authorization: authorization
         ) else { return }
         makeSoftwareDecodeStageIfNeeded()
+        unreferencedPictures = demuxer.outputsDecodedVideo
+            ? nil
+            : demuxer.videoStream?.formatDescription.flatMap { UnreferencedPictureReader(formatDescription: $0) }
         guard makeVideoToolboxDecoderIfNeeded(
             recommendedPixelBufferAttributes: recommendedPixelBufferAttributes
         ) else { return }
@@ -3198,6 +3203,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     nonisolated private func deliverVideo(_ item: VideoIntakeItem) {
         switch item {
         case .sample(let buffer):
+            // Decoded only to reach the start, and nothing depends on it.
+            if endsBeforeStart(buffer), unreferencedPictures?.isUnreferenced(buffer) == true { return }
             if let videoDecoder {
                 do {
                     try videoDecoder.decode(buffer)
