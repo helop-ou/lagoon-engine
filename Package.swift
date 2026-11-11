@@ -50,6 +50,7 @@ let package = Package(
                 .copy("Fixtures/Interlaced"),
                 .copy("Fixtures/LatePGS"),
                 .copy("Fixtures/PresentationOrder"),
+                .copy("Fixtures/SeekLanding"),
                 .copy("Fixtures/TextSubtitles"),
                 .copy("Fixtures/UnindexedSeek"),
                 .copy("Fixtures/UntaggedDolbyVision"),
