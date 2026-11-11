@@ -2931,7 +2931,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 return .stop
             }
         }
-        guard prepareVideoDecoderForSeek() else { return .stop }
+        // The request's flush may still be queued behind the pump, which
+        // feeds parked video to the decoder under the feed lock. Drop what is
+        // parked and rebuild the decoder under that lock: a sample reaching
+        // the decoder mid-rebuild failed with -12903 on the Apple TV.
+        videoFeedLock.lock()
+        videoIntake.removeAll()
+        let decoderReady = prepareVideoDecoderForSeek()
+        videoFeedLock.unlock()
+        guard decoderReady else { return .stop }
         // First and synchronously: a frame still in libavcodec is
         // pre-seek and must not land in the emptied queues.
         softwareDecodeStage?.reset()
