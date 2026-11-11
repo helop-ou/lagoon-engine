@@ -303,6 +303,13 @@ Learned on hardware:
   Decoded pictures that end at or before the floor are dropped, and on the
   compressed path, where the display layer decodes, they are marked
   `DoNotDisplay`. `SeekLandingTests` pins both, on H.264 and on VP9.
+- **And what nothing references is not decoded at all.** Reaching the target
+  is most of a seek's time: about 8 ms a picture for 4K HEVC on the Apple TV,
+  up to a 10 s GOP of them. `UnreferencedPictureReader` reads the NAL headers:
+  H.264 slices with `nal_ref_idc` 0, and HEVC sub-layer non-reference slices
+  in the highest temporal sub-layer. Before the start floor those samples are
+  never handed on. Half of F1 S07E01's pictures are `TRAIL_N`, and six seeks
+  went from 0.60–4.30 s to 0.56–2.42 s.
 
 Result on the Apple TV, 60 s bench windows: every rung `stalls 0 · audioDry 0`,
 decoded queue `30/30/30`, lead 3.9–4.3 s, 0.21–0.69% dropped. Intake peaks: 216
