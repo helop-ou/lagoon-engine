@@ -63,9 +63,19 @@ struct ClosedCaptionTests {
         // Generous: other suites' main-actor tests run while this one waits.
         let deadline = ContinuousClock.now + .seconds(30)
         let captionsID = SampleBufferPlayerEngine.closedCaptionTrackID
-        while !engine.subtitleTracks.contains(where: { $0.engineID == captionsID }) || engine.isBuffering,
-              failure == nil, ContinuousClock.now < deadline {
+        while engine.isBuffering, failure == nil, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
+        }
+        // Decoded ahead, the demuxer can park one picture short of the erase
+        // that completes the caption. Play and pause in one turn wakes the
+        // renderer, which takes more frames, and the clock never moves.
+        if !engine.subtitleTracks.contains(where: { $0.engineID == captionsID }) {
+            engine.play()
+            engine.pause()
+            while !engine.subtitleTracks.contains(where: { $0.engineID == captionsID }),
+                  failure == nil, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
         }
         #expect(failure == nil)
         // Once open, as a viewer's downloaded subtitle arrives: before, the

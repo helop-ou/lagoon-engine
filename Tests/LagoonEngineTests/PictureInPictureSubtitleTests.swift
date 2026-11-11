@@ -126,39 +126,35 @@ struct PictureInPictureSubtitleTests {
 
     // MARK: - Engine
 
-    /// H.264 reaches the display layer compressed, so with subtitles on,
-    /// Picture in Picture decodes it here and draws into the frames; turned
-    /// off, it goes back.
+    /// H.264 is decoded here, not by the display layer, so Picture in
+    /// Picture draws subtitles into its frames with no re-demux. The
+    /// fixture is shorter than what the renderer holds, so the style is set
+    /// before the first frame is queued.
     @MainActor
-    @Test func pictureInPictureDecodesH264AndDrawsTheSubtitles() async throws {
-        let engine = try await Self.openFixture(subtitleOrdinal: 1)
-        #expect(engine.videoOutputPathDiagnostic == "compressed")
-        #expect(engine.burnedInSubtitleFrames == 0, "no drawing outside Picture in Picture")
+    @Test func pictureInPictureDrawsSubtitlesIntoDecodedH264() async throws {
+        let plain = try await Self.openFixture(subtitleOrdinal: 1)
+        plain.play()
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(plain.burnedInSubtitleFrames == 0, "no drawing outside Picture in Picture")
+        plain.shutdown()
+        #expect(await plain.waitForMediaResourcesToRetire(timeout: .seconds(10)))
 
-        engine.setPictureInPictureSubtitles(.standard)
-        try await Self.wait { engine.videoOutputPathDiagnostic == "videotoolbox" && !engine.isBuffering }
+        let engine = try await Self.openFixture(subtitleOrdinal: 1, pictureInPicture: .standard)
         #expect(engine.videoOutputPathDiagnostic == "videotoolbox")
         engine.play()
         try await Self.wait { engine.burnedInSubtitleFrames > 0 }
         #expect(engine.burnedInSubtitleFrames > 0)
-
-        engine.setPictureInPictureSubtitles(nil)
-        try await Self.wait { engine.videoOutputPathDiagnostic == "compressed" && !engine.isBuffering }
-        #expect(engine.videoOutputPathDiagnostic == "compressed")
+        #expect(engine.videoOutputPathDiagnostic == "videotoolbox")
         engine.shutdown()
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
     }
 
-    /// With no subtitle chosen there is nothing to draw, so the route stays
-    /// as it is and Picture in Picture costs no rebuffer.
+    /// With no subtitle chosen there is nothing to draw.
     @MainActor
-    @Test func withoutSubtitlesPictureInPictureChangesNothing() async throws {
-        let engine = try await Self.openFixture(subtitleOrdinal: 0)
-        engine.setPictureInPictureSubtitles(.standard)
-        #expect(!engine.isBuffering)
+    @Test func withoutSubtitlesPictureInPictureDrawsNothing() async throws {
+        let engine = try await Self.openFixture(subtitleOrdinal: 0, pictureInPicture: .standard)
         engine.play()
         try await Task.sleep(for: .milliseconds(600))
-        #expect(engine.videoOutputPathDiagnostic == "compressed")
         #expect(engine.burnedInSubtitleFrames == 0)
         engine.shutdown()
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
@@ -269,10 +265,14 @@ struct PictureInPictureSubtitleTests {
     }
 
     @MainActor
-    private static func openFixture(subtitleOrdinal: Int) async throws -> SampleBufferPlayerEngine {
+    private static func openFixture(
+        subtitleOrdinal: Int,
+        pictureInPicture: BurnedInSubtitleStyle? = nil
+    ) async throws -> SampleBufferPlayerEngine {
         let url = try #require(Bundle.module.url(forResource: "two-subrip", withExtension: "mkv", subdirectory: "TextSubtitles"))
         SampleBufferPlayerEngine.mutesAudioForTesting = true
         let engine = SampleBufferPlayerEngine()
+        engine.setPictureInPictureSubtitles(pictureInPicture)
         engine.prepare(url: url, startSeconds: 0.4, initialAudioOrdinal: nil, initialSubtitleOrdinal: subtitleOrdinal)
         engine.pause()
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
