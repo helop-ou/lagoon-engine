@@ -274,8 +274,15 @@ Learned on hardware:
   resumes partway into a fragment whose audio starts at the keyframe, and
   that stale audio filled the high water just when the renderer held least.
   `step()` drops audio ending at or before the last start position
-  (`audioAdmissionFloorSeconds`, set by every prime), and priming measures its
+  (`startFloorSeconds`, set by every prime), and priming measures its
   reserve as renderer-side delivery plus `bufferedDuration(after:)` the target.
+- **Nor may video.** A start or seek lands on the keyframe before its target,
+  and the decoder needs every picture from there, up to a GOP of them. They
+  reach the renderer late, and it showed them as fast as it could until it
+  caught the clock up: a visible fast-forward into the target after each seek.
+  Decoded pictures that end at or before the floor are dropped, and on the
+  compressed path, where the display layer decodes, they are marked
+  `DoNotDisplay`. `SeekLandingTests` pins both, on H.264 and on VP9.
 
 Result on the Apple TV, 60 s bench windows: every rung `stalls 0 · audioDry 0`,
 decoded queue `30/30/30`, lead 3.9–4.3 s, 0.21–0.69% dropped. Intake peaks: 216
