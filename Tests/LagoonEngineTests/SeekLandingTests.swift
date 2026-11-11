@@ -60,3 +60,33 @@ private final class ShownPictures: @unchecked Sendable {
         lock.withLock { ends.append(end) }
     }
 }
+
+@Suite("Hidden pictures")
+struct HiddenPictureMarkTests {
+    /// The compressed path hands pictures before the target to the display
+    /// layer, which needs them to decode the rest, marked not to be shown.
+    @Test func aMarkedPictureIsNotDisplayed() throws {
+        var format: CMFormatDescription?
+        CMVideoFormatDescriptionCreate(
+            allocator: nil, codecType: kCMVideoCodecType_H264, width: 16, height: 16, extensions: nil,
+            formatDescriptionOut: &format
+        )
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 24), presentationTimeStamp: .zero, decodeTimeStamp: .invalid
+        )
+        var buffer: CMSampleBuffer?
+        CMSampleBufferCreate(
+            allocator: nil, dataBuffer: nil, dataReady: true, makeDataReadyCallback: nil, refcon: nil,
+            formatDescription: try #require(format), sampleCount: 1, sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing, sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &buffer
+        )
+        let sample = try #require(buffer)
+        func doNotDisplay() -> Bool? {
+            let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]]
+            return attachments?.first?[kCMSampleAttachmentKey_DoNotDisplay] as? Bool
+        }
+        #expect(doNotDisplay() != true)
+        SampleBufferFactory.markDoNotDisplay(sample)
+        #expect(doNotDisplay() == true)
+    }
+}
