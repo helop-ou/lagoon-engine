@@ -30,6 +30,13 @@ in the [engine guide](../engine.md).
   seek is published, the flush runs ahead of the demux loop's own, which is
   the barrier, and a seek costs 35–52 ms, almost all of it
   `synchronizer.rate = 0`.
+- Every rate change runs on one serial clock queue. A stop (pause, seek,
+  stall) is not waited for: seek and pause cost 0.1–0.3 ms on the main
+  thread, and the clock still stops within 2 ms of the call. A start is
+  waited for, because `clockPosition` and SyncPlay's Ready read the clock
+  right after it, and being on the same queue it can never be overtaken by a
+  stop still running. Play costs about 16 ms. Code that reads the rate on the
+  main thread reads `requestedClockRate`, the rate last asked for.
 - Playback binds the first presentable media time to a near-future host time
   with `setRate(_:time:atHostTime:)`, so audio and video start on one
   deadline.
