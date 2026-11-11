@@ -598,6 +598,17 @@ nonisolated enum SampleBufferFactory {
         return sampleBuffer
     }
 
+    static func markDoNotDisplay(_ buffer: CMSampleBuffer) {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: true),
+              CFArrayGetCount(attachments) > 0 else { return }
+        let dictionary = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
+        CFDictionarySetValue(
+            dictionary,
+            Unmanaged.passUnretained(kCMSampleAttachmentKey_DoNotDisplay).toOpaque(),
+            Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+        )
+    }
+
     /// Whether a sample can start a decoder, from its NotSync attachment,
     /// for `PlaybackRendererStartPolicy`. Absent means sync, which also suits
     /// decoded frames.
