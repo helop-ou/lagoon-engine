@@ -37,6 +37,12 @@ in the [engine guide](../engine.md).
   right after it, and being on the same queue it can never be overtaken by a
   stop still running. Play costs about 16 ms. Code that reads the rate on the
   main thread reads `requestedClockRate`, the rate last asked for.
+- A seek moves the stopped clock to its target (`setRate(0, time:)`), not
+  just stops it. Left at the old position, a seek back made every new
+  picture late: on the Apple TV, F1 S07E01 (4K HEVC, 10 s GOP) seeking back
+  30 s, the renderer took 30 s of pictures in 13 s behind the loading
+  indicator, and the seek was ready after 15–16 s. With the clock at the
+  target it takes about eight pictures and is ready in 1.5–2.9 s.
 - Playback binds the first presentable media time to a near-future host time
   with `setRate(_:time:atHostTime:)`, so audio and video start on one
   deadline.
