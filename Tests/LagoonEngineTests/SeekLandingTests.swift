@@ -23,11 +23,13 @@ struct SeekLandingTests {
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         try await Self.wait { !engine.isBuffering && !shown.visibleEnds.isEmpty }
         #expect(shown.visibleEnds.allSatisfy { $0 > 1.8 }, "\(shown.visibleEnds.prefix(3))")
+        #expect(shown.hiddenUnreferenced == 0, "a picture nothing references is not decoded before the start")
 
         engine.seek(to: 0.7)
         try await Self.wait { !engine.isBuffering && !shown.visibleEnds.isEmpty }
         #expect(!shown.visibleEnds.isEmpty)
         #expect(shown.visibleEnds.allSatisfy { $0 > 0.7 }, "\(shown.visibleEnds.prefix(3))")
+        #expect(shown.hiddenUnreferenced == 0, "a picture nothing references is not decoded before the target")
         engine.shutdown()
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
     }
@@ -46,16 +48,24 @@ struct SeekLandingTests {
 private final class ShownPictures: @unchecked Sendable {
     private let lock = NSLock()
     private var ends: [Double] = []
+    private var unreferenced = 0
 
     var visibleEnds: [Double] { lock.withLock { ends } }
+    /// Hidden pictures that nothing references, which need not reach the
+    /// renderer at all.
+    var hiddenUnreferenced: Int { lock.withLock { unreferenced } }
 
     func record(_ buffer: CMSampleBuffer?) {
         guard let buffer else {
-            lock.withLock { ends.removeAll() }
+            lock.withLock { ends.removeAll(); unreferenced = 0 }
             return
         }
         let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false) as? [[CFString: Any]]
-        guard attachments?.first?[kCMSampleAttachmentKey_DoNotDisplay] as? Bool != true else { return }
+        guard attachments?.first?[kCMSampleAttachmentKey_DoNotDisplay] as? Bool != true else {
+            let reader = CMSampleBufferGetFormatDescription(buffer).flatMap { UnreferencedPictureReader(formatDescription: $0) }
+            if reader?.isUnreferenced(buffer) == true { lock.withLock { unreferenced += 1 } }
+            return
+        }
         let end = CMTimeAdd(CMSampleBufferGetPresentationTimeStamp(buffer), CMSampleBufferGetDuration(buffer)).seconds
         lock.withLock { ends.append(end) }
     }
