@@ -344,8 +344,6 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     )
     @ObservationIgnored nonisolated(unsafe) private var av1PipelineTimer: DispatchSourceTimer?
     @ObservationIgnored nonisolated(unsafe) private var videoDecoder: VideoToolboxDecoder?
-    /// What the open was given, for a decoder made later at a seek.
-    @ObservationIgnored nonisolated(unsafe) private var recommendedPixelBufferAttributes = CVPixelBufferAttributes()
     /// Pump queue only.
     @ObservationIgnored nonisolated(unsafe) private var subtitleCompositor: SubtitleFrameCompositor?
     @ObservationIgnored nonisolated(unsafe) private var burnIn = SubtitleBurnIn()
@@ -853,17 +851,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     public func setPictureInPictureSubtitles(_ style: BurnedInSubtitleStyle?) {
-        let reroutes = shared.withLock { state -> Bool in
-            guard state.pictureInPictureSubtitleStyle != style else { return false }
-            let wasOn = state.pictureInPictureSubtitleStyle != nil
-            state.pictureInPictureSubtitleStyle = style
-            return wasOn != (style != nil) && state.videoReachesRendererCompressed && state.selectedSubtitleOrdinal > 0
-        }
-        // Compressed H.264 has no frame to draw on until it is decoded here,
-        // and the decoder changes only at a seek.
-        if reroutes, !audioTracks.isEmpty {
-            seek(to: timePosition)
-        }
+        shared.withLock { $0.pictureInPictureSubtitleStyle = style }
     }
 
     public func setAudioShaping(_ shaping: AudioShaping) {
@@ -2485,15 +2473,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             authorization: authorization
         ) else { return }
         makeSoftwareDecodeStageIfNeeded()
-        self.recommendedPixelBufferAttributes = recommendedPixelBufferAttributes
         guard makeVideoToolboxDecoderIfNeeded(
             recommendedPixelBufferAttributes: recommendedPixelBufferAttributes
         ) else { return }
-        let compressedH264 = demuxer.videoStream?.codecName == "h264" && !demuxer.outputsDecodedVideo
-        shared.withLock { $0.videoReachesRendererCompressed = compressedH264 }
         publishOpenedStreams()
-        // After the initial subtitle choice is applied.
-        applyPictureInPictureDecodeRoute()
 
         var progress = DemuxLoopProgress()
         while !shared.withLock({ $0.cancelled }) {
@@ -2623,14 +2606,19 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         recommendedPixelBufferAttributes: CVPixelBufferAttributes
     ) -> Bool {
         guard let codecName = demuxer.videoStream?.codecName,
-              codecName == "hevc" || codecName == "av1",
+              codecName == "hevc" || codecName == "av1" || codecName == "h264",
               !demuxer.outputsDecodedVideo,
               let description = demuxer.videoStream?.formatDescription else { return true }
         do {
             // AV1 may have only Apple's software decoder here; demand
-            // hardware only where the silicon has it.
-            let requiresHardware = codecName != "av1"
-                || PlaybackCapabilities.current.hardwareAV1
+            // hardware only where the silicon has it. Every device decodes
+            // H.264 in hardware, and not requiring it lets the simulator's
+            // software decoder answer.
+            let requiresHardware = switch codecName {
+            case "av1": PlaybackCapabilities.current.hardwareAV1
+            case "h264": false
+            default: true
+            }
             let makeDecoder = {
                 try self.makeVideoToolboxDecoder(
                     description: description,
@@ -2649,6 +2637,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 videoDecoder = try makeDecoder()
             }
         } catch {
+            // The display layer decodes H.264 itself, only with more frame loss.
+            if codecName == "h264" { return true }
             // No demux loop yet to run a rebuild's seek, so report it.
             failVideoDecode(error, allowSessionRecovery: false)
             demuxer.close()
@@ -2674,32 +2664,6 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 self?.failVideoDecode(error)
             }
         )
-    }
-
-    /// While Picture in Picture draws subtitles, H.264 goes through
-    /// VideoToolbox here rather than to the display layer compressed, so
-    /// there is a frame to draw on. Changed only on open or at a seek, when
-    /// the queues hold nothing from the other route. A session that cannot
-    /// be made leaves the stream compressed, without subtitles.
-    nonisolated private func applyPictureInPictureDecodeRoute() {
-        let wanted = shared.withLock {
-            $0.videoReachesRendererCompressed
-                && $0.pictureInPictureSubtitleStyle != nil
-                && $0.selectedSubtitleOrdinal > 0
-        }
-        // Every device decodes H.264 in hardware. Not requiring it lets the
-        // simulator's software decoder answer.
-        if wanted, videoDecoder == nil, let description = demuxer.videoStream?.formatDescription,
-           let decoder = try? makeVideoToolboxDecoder(
-               description: description,
-               requiresHardware: false,
-               recommendedPixelBufferAttributes: recommendedPixelBufferAttributes
-           ) {
-            pumpQueue.sync { videoDecoder = decoder }
-        } else if !wanted, shared.withLock({ $0.videoReachesRendererCompressed }), let decoder = videoDecoder {
-            decoder.invalidate()
-            pumpQueue.sync { videoDecoder = nil }
-        }
     }
 
     /// Applies the initial track selections and hands the opened streams
@@ -2975,7 +2939,6 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 return .stop
             }
         }
-        applyPictureInPictureDecodeRoute()
         guard prepareVideoDecoderForSeek() else { return .stop }
         // First and synchronously: a frame still in libavcodec is
         // pre-seek and must not land in the emptied queues.
@@ -4139,9 +4102,6 @@ nonisolated private final class SharedState: @unchecked Sendable {
         var audioDelaySeconds: Double = 0
         /// Set while Picture in Picture wants subtitles drawn into frames.
         var pictureInPictureSubtitleStyle: BurnedInSubtitleStyle?
-        /// H.264 the display layer decodes; Picture in Picture subtitles need
-        /// it decoded here instead.
-        var videoReachesRendererCompressed = false
         var audioShaping = AudioShaping.off
         /// Media seconds per wall-clock second; scales demux watermarks.
         var playbackRate: Double = 1
