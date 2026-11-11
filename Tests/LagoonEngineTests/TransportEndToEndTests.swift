@@ -192,16 +192,23 @@ struct TransportEndToEndTests {
         engine.onPlaybackStarted = { started = true }
         engine.prepare(url: SimulatedOrigin.url("/hls/playlist.m3u8"), delivery: .segmentedManifest,
                        startSeconds: 0, initialAudioOrdinal: nil)
+        engine.pause()
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
-        engine.play()
         // Generous: a CI runner running the other suites took over 20 s to start.
         let deadline = ContinuousClock.now + .seconds(60)
-        while !(started && engine.demuxReadAheadLimit != nil), ContinuousClock.now < deadline {
+        // A read stopped short of the end names its limit. Tiny decoded
+        // frames can all fit in the renderer, and then only the end stops it.
+        let readToEnd = { engine.duration > 0 && engine.demuxedThroughSeconds >= engine.duration - 1 }
+        while engine.demuxReadAheadLimit == nil, !readToEnd(), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
+        #expect(engine.demuxReadAheadLimit != nil || readToEnd())
 
+        engine.play()
+        while !started, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
         #expect(started)
-        #expect(engine.demuxReadAheadLimit != nil)
         #expect(engine.demuxReadAheadSeconds > 1)
         engine.shutdown()
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
