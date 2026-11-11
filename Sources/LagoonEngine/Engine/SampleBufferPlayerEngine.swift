@@ -344,6 +344,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     )
     @ObservationIgnored nonisolated(unsafe) private var av1PipelineTimer: DispatchSourceTimer?
     @ObservationIgnored nonisolated(unsafe) private var videoDecoder: VideoToolboxDecoder?
+    /// Sees each video sample as the renderer takes it, and nil for a flush.
+    /// Pump queue.
+    @ObservationIgnored nonisolated(unsafe) var rendererVideoObserverForTesting: ((CMSampleBuffer?) -> Void)?
     /// Pump queue only.
     @ObservationIgnored nonisolated(unsafe) private var subtitleCompositor: SubtitleFrameCompositor?
     @ObservationIgnored nonisolated(unsafe) private var burnIn = SubtitleBurnIn()
@@ -1275,6 +1278,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// PTS `PlaybackClockAnchor` would otherwise anchor a backward scrub on.
     nonisolated private func flushRenderersAndQueues() {
         videoRenderer?.flush()
+        rendererVideoObserverForTesting?(nil)
         audioRenderer?.flush()
         videoIntake.removeAll()
         videoQueue.reset()
@@ -3201,6 +3205,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     failVideoDecode(error)
                 }
             } else {
+                // The display layer decodes these itself, so it gets them
+                // all, but shows none of them.
+                if endsBeforeStart(buffer) { SampleBufferFactory.markDoNotDisplay(buffer) }
                 videoQueue.enqueue(buffer)
                 kickPumps()
             }
@@ -3260,7 +3267,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             admitVideo(.packet(packet))
         case .audio(let buffers, let streamIndex):
             let (selected, delay, floor) = shared.withLock {
-                ($0.selectedAudioStreamIndex, $0.audioDelaySeconds, $0.audioAdmissionFloorSeconds)
+                ($0.selectedAudioStreamIndex, $0.audioDelaySeconds, $0.startFloorSeconds)
             }
             if streamIndex == selected {
                 for buffer in buffers {
@@ -3338,7 +3345,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// never drops on a pending seek (the stage discards pre-seek work on
     /// reset); dropping here starved stall re-priming.
     nonisolated private func acceptSoftwareDecodedVideo(_ buffer: CMSampleBuffer) {
-        guard !shared.withLock({ $0.cancelled }) else { return }
+        guard !shared.withLock({ $0.cancelled }), !endsBeforeStart(buffer) else { return }
         publishVideoSizeIfChanged(buffer)
         videoQueue.enqueue(buffer)
         kickPumps()
@@ -3373,10 +3380,18 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             state.videoFramesSinceSessionRebuild += 1
             return false
         }
-        guard !shouldDrop else { return }
+        guard !shouldDrop, !endsBeforeStart(buffer) else { return }
         publishVideoSizeIfChanged(buffer)
         videoQueue.enqueue(buffer)
         kickPumps()
+    }
+
+    /// A seek lands on the keyframe before its target, and the decoder needs
+    /// every picture from there. Those that end before the target are late
+    /// on arrival, and the renderer would show them all at once.
+    nonisolated private func endsBeforeStart(_ buffer: CMSampleBuffer) -> Bool {
+        guard let end = Self.presentationEnd(of: buffer) else { return false }
+        return end <= shared.withLock { $0.startFloorSeconds }
     }
 
     nonisolated private func recordMediaEnd(_ buffer: CMSampleBuffer) {
@@ -3576,7 +3591,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// the main actor.
     nonisolated private func primeAndStart(at target: Double) {
         let generation = shared.withLock { state -> Int in
-            state.audioAdmissionFloorSeconds = target
+            state.startFloorSeconds = target
             return state.playbackGeneration
         }
         let hasAudio = !demuxer.audioStreams.isEmpty
@@ -3895,6 +3910,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 state.videoSamplesSinceFlush += 1
             }
             burnInSubtitles(buffer)
+            rendererVideoObserverForTesting?(buffer)
             let enqueueStarted = ProcessInfo.processInfo.systemUptime
             renderer.enqueue(buffer)
             av1PipelineTimings.recordEnqueue(
@@ -4156,9 +4172,10 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// EOF read while the intake still held video; the loop finishes the
         /// queues once it drains.
         var endOfFilePendingIntake = false
-        /// Where playback last started. Earlier audio is never played, and
-        /// queued it would throttle read-ahead when the renderer holds least.
-        var audioAdmissionFloorSeconds: Double = -.infinity
+        /// Where playback last started. Earlier audio and video are never
+        /// played. Queued audio would throttle read-ahead when the renderer
+        /// holds least, and queued video would race to catch the clock up.
+        var startFloorSeconds: Double = -.infinity
     }
 
     private let lock = NSLock()
