@@ -380,6 +380,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     @ObservationIgnored nonisolated let clockQueue = DispatchQueue(label: "ee.helop.lagoon.clock", qos: .userInteractive)
     /// The rate last asked of the synchronizer, which may still be applying it.
     @ObservationIgnored private var requestedClockRate: Float = 0
+    nonisolated var synchronizerTimeForTesting: Double { synchronizer.currentTime().seconds }
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var finishObserver: Any?
     @ObservationIgnored private var didFinish = false
@@ -753,9 +754,18 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         rearmBench(at: timePosition)
     }
 
-    private func stopClock() {
+    /// `at` moves the stopped clock too. A seek back must: left at the old
+    /// position, every new picture is late, and the renderer showed them all
+    /// at about twice speed until they caught up with it.
+    private func stopClock(at seconds: Double? = nil) {
         requestedClockRate = 0
-        clockQueue.async { [synchronizer] in synchronizer.rate = 0 }
+        clockQueue.async { [synchronizer] in
+            if let seconds {
+                synchronizer.setRate(0, time: CMTime(seconds: seconds, preferredTimescale: 240_000))
+            } else {
+                synchronizer.rate = 0
+            }
+        }
     }
 
     private func setClockRate(_ rate: Float) {
@@ -1289,7 +1299,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         setBuffering(true)
         // A pending group start is now stale; a new one follows Ready.
         scheduledStartHostTime = nil
-        stopClock()
+        stopClock(at: clamped)
         // Enqueue and flush share the pump queue (Apple's post-flush keyframe
         // rule). Not waited for: the audio flush held the main thread ~40 ms.
         // Queued before the seek is published, so the demux loop's own flush,
