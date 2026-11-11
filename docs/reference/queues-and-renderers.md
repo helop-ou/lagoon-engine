@@ -23,6 +23,13 @@ in the [engine guide](../engine.md).
   the queues, seeks with `avformat_seek_file` on the selected video stream
   (`av_seek_frame` only as a demuxer compatibility fallback), then re-primes
   about 12 video buffers.
+- The request flushes on the pump queue without waiting for it. On the Apple
+  TV 4K (3rd gen), 4K HEVC with DTS decoded to LPCM, the synchronous flush
+  held the main thread for 47–58 ms per seek, 38–40 ms of it in the audio
+  renderer's `flush()`, and a seek cost 95–111 ms in all. Queued before the
+  seek is published, the flush runs ahead of the demux loop's own, which is
+  the barrier, and a seek costs 35–52 ms, almost all of it
+  `synchronizer.rate = 0`.
 - Playback binds the first presentable media time to a near-future host time
   with `setRate(_:time:atHostTime:)`, so audio and video start on one
   deadline.
