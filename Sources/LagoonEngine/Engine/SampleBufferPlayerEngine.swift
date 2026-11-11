@@ -374,6 +374,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     @ObservationIgnored nonisolated(unsafe) private var videoRenderer: AVSampleBufferVideoRenderer?
     @ObservationIgnored nonisolated(unsafe) private var audioRenderer: AVSampleBufferAudioRenderer?
     @ObservationIgnored nonisolated private let synchronizer = AVSampleBufferRenderSynchronizer()
+    /// Every rate change goes through here in order. Stopping the clock held
+    /// the main thread for 39–55 ms on the Apple TV, so a stop is not waited
+    /// for. Starts are, since a caller reads the clock right after one.
+    @ObservationIgnored nonisolated let clockQueue = DispatchQueue(label: "ee.helop.lagoon.clock", qos: .userInteractive)
+    /// The rate last asked of the synchronizer, which may still be applying it.
+    @ObservationIgnored private var requestedClockRate: Float = 0
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var finishObserver: Any?
     @ObservationIgnored private var didFinish = false
@@ -706,13 +712,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     // MARK: - Transport (PlayerEngine)
 
     public func play() {
-        guard isPaused || synchronizer.rate == 0 else { return }
+        guard isPaused || requestedClockRate == 0 else { return }
         isPaused = false
         EngineDiagnostics.record(.playbackPlay, ["position": .double(timePosition.rounded(toPlaces: 1))])
         // A buffering engine resumes when its queue gate is satisfied;
         // forcing the clock here would run its timebase ahead of the samples.
         if !isBuffering {
-            synchronizer.rate = Float(effectiveRate)
+            setClockRate(Float(effectiveRate))
         }
         rearmBench(at: timePosition)
     }
@@ -736,15 +742,25 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             play()
             return
         }
-        guard isPaused || synchronizer.rate == 0 else { return }
+        guard isPaused || requestedClockRate == 0 else { return }
         isPaused = false
         EngineDiagnostics.record(.playbackPlay, ["position": .double(timePosition.rounded(toPlaces: 1))])
-        synchronizer.setRate(
-            Float(effectiveRate),
-            time: synchronizer.currentTime(),
-            atHostTime: hostTime
-        )
+        let rate = Float(effectiveRate)
+        requestedClockRate = rate
+        clockQueue.sync {
+            synchronizer.setRate(rate, time: synchronizer.currentTime(), atHostTime: hostTime)
+        }
         rearmBench(at: timePosition)
+    }
+
+    private func stopClock() {
+        requestedClockRate = 0
+        clockQueue.async { [synchronizer] in synchronizer.rate = 0 }
+    }
+
+    private func setClockRate(_ rate: Float) {
+        requestedClockRate = rate
+        clockQueue.sync { synchronizer.rate = rate }
     }
 
     /// The one writer of `isBuffering`, so the transition can be announced.
@@ -764,28 +780,17 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // Demux watermarks scale by the effective rate, correction included.
         shared.withLock { $0.playbackRate = effective }
         if !isPaused, !isBuffering {
-            synchronizer.rate = Float(effective)
+            setClockRate(Float(effective))
         }
     }
 
     public func pause() {
-        guard !isPaused || synchronizer.rate > 0 else { return }
+        guard !isPaused || requestedClockRate > 0 else { return }
         clearPendingStallConfirmation()
         // A group pause overrides a group start that has not arrived yet.
         scheduledStartHostTime = nil
         EngineDiagnostics.record(.playbackPause, ["position": .double(timePosition.rounded(toPlaces: 1))])
-        // Soak diagnostic: the one pause call into AVFoundation's state, so
-        // a slow pause shows up here.
-        if ProcessCPUTrace.enabled {
-            let waitStart = ContinuousClock.now
-            synchronizer.rate = 0
-            print(String(
-                format: "SoakWait name=pauseRate ms=%.1f",
-                Self.milliseconds(ContinuousClock.now - waitStart)
-            ))
-        } else {
-            synchronizer.rate = 0
-        }
+        stopClock()
         isPaused = true
         rearmBench(at: timePosition)
     }
@@ -806,7 +811,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let effective = effectiveRate
         shared.withLock { $0.playbackRate = effective }
         if !isPaused, !isBuffering {
-            synchronizer.rate = Float(effective)
+            setClockRate(Float(effective))
         }
         rearmBench(at: timePosition)
     }
@@ -1075,7 +1080,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             self.timeObserver = nil
         }
         removeFinishObserver()
-        synchronizer.rate = 0
+        requestedClockRate = 0
+        clockQueue.sync { synchronizer.rate = 0 }
 
         let depths = queueDepths
         os_signpost(
@@ -1283,7 +1289,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         setBuffering(true)
         // A pending group start is now stale; a new one follows Ready.
         scheduledStartHostTime = nil
-        synchronizer.rate = 0
+        stopClock()
         // Enqueue and flush share the pump queue (Apple's post-flush keyframe
         // rule). Not waited for: the audio flush held the main thread ~40 ms.
         // Queued before the seek is published, so the demux loop's own flush,
@@ -1378,7 +1384,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let scheduledStart = scheduledStartHostTime
         scheduledStartHostTime = nil
         if isPaused {
-            synchronizer.setRate(0, time: time)
+            requestedClockRate = 0
+            clockQueue.sync { synchronizer.setRate(0, time: time) }
         } else {
             let now = CMClockGetTime(CMClockGetHostTimeClock())
             // Apple's recommended start: anchor to a near-future host time so
@@ -1395,7 +1402,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             } else {
                 hostTime = defaultHostTime
             }
-            synchronizer.setRate(Float(effectiveRate), time: time, atHostTime: hostTime)
+            let rate = Float(effectiveRate)
+            requestedClockRate = rate
+            clockQueue.sync { synchronizer.setRate(rate, time: time, atHostTime: hostTime) }
         }
         // Only after anchoring: SyncPlay's Ready carries `clockPosition`,
         // which reads the synchronizer. Before the anchor it holds the old
@@ -2074,7 +2083,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     private func beginStallRecovery(cause: PlaybackStarvation) {
         clearPendingStallConfirmation()
         setBuffering(true)
-        synchronizer.rate = 0
+        stopClock()
         stallCount += 1
         if cause == .audio {
             audioStallCount += 1
@@ -2143,7 +2152,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                         )
                     }
                     if !self.isPaused {
-                        self.synchronizer.rate = Float(self.effectiveRate)
+                        self.setClockRate(Float(self.effectiveRate))
                     }
                     return
                 case .reprime:
