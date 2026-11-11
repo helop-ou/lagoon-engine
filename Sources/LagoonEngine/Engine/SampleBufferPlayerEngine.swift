@@ -298,7 +298,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     @ObservationIgnored nonisolated private let videoQueue = SampleBufferQueue()
     @ObservationIgnored nonisolated private let audioQueue = SampleBufferQueue()
     @ObservationIgnored nonisolated private let demuxQueue = DispatchQueue(label: "ee.helop.lagoon.demux", qos: .userInitiated)
-    @ObservationIgnored nonisolated private let pumpQueue = DispatchQueue(label: "ee.helop.lagoon.pump", qos: .userInteractive)
+    @ObservationIgnored nonisolated let pumpQueue = DispatchQueue(label: "ee.helop.lagoon.pump", qos: .userInteractive)
     /// Starting libass copies every font and may parse a whole sidecar, and
     /// stopping one waits for a frame in flight, so neither runs on the main
     /// actor. Serial, so replacements land in the order they were asked for.
@@ -1284,25 +1284,17 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // A pending group start is now stale; a new one follows Ready.
         scheduledStartHostTime = nil
         synchronizer.rate = 0
+        // Enqueue and flush share the pump queue (Apple's post-flush keyframe
+        // rule). Not waited for: the audio flush held the main thread ~40 ms.
+        // Queued before the seek is published, so the demux loop's own flush,
+        // the barrier for anything enqueued meanwhile, comes after it.
+        pumpQueue.async { self.flushRenderersAndQueues() }
         shared.withLock {
             $0.pendingSeekSeconds = clamped
             $0.videoBufferedTo = clamped
             $0.playbackGeneration += 1
             // The demuxer delivers these again from the new position.
             $0.subtitleBacklog.removeAll()
-        }
-        // Enqueue, flush and reset share the pump queue, so no old sample
-        // can race in after the flush (Apple's post-flush keyframe rule).
-        // The soak branch times this sync wait.
-        if ProcessCPUTrace.enabled {
-            let waitStart = ContinuousClock.now
-            pumpQueue.sync { self.flushRenderersAndQueues() }
-            print(String(
-                format: "SoakWait name=pumpSync ms=%.1f",
-                Self.milliseconds(ContinuousClock.now - waitStart)
-            ))
-        } else {
-            pumpQueue.sync { self.flushRenderersAndQueues() }
         }
         // The first buffer after a flush must not read as a discontinuity.
         audioContinuity.reset()
