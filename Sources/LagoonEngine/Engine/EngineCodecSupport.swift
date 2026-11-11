@@ -50,7 +50,8 @@ nonisolated enum EngineCodecSupport {
 
     static let video: [Video] = [
         Video(AV_CODEC_ID_H264, "H.264", .either, softwareOnlyWhenInterlacedOrTenBit: true, note:
-            "Progressive 8-bit H.264 is handed to the renderer compressed. "
+            "Progressive 8-bit H.264 is decoded ahead by VideoToolbox, and goes "
+            + "to the renderer compressed only if no session can be made. "
             + "Interlaced H.264 decodes in software, because that is the only "
             + "path with a deinterlacer, and so does H.264 outside the hardware "
             + "profiles, 10-bit (High 10), 4:2:2 and 4:4:4, which no Apple "
