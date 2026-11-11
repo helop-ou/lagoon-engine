@@ -145,11 +145,20 @@ decode only the DD+ core and report "Multichannel".
   to the standard rate when the `NUMBER_OF_FRAMES`/`DURATION` statistics
   agree. A `grid 500/21` or `1000/33` in the HUD means a file without them.
 
-### HEVC decode-ahead and presentation order
+### Decode-ahead and presentation order
 
 Handing compressed full-raster 4K Main10 straight to the renderer drops
 frames. `VideoToolboxDecoder` decodes HEVC ahead, in the engine, and wraps the
 IOSurface-backed pixel buffers as ready sample buffers.
+
+Progressive H.264 takes the same route. Handed to the display layer
+compressed, H.264 High 1080p 23.976 with B-pyramids (The Rookie S4E7, 925 s)
+lost 5.06, 5.12 and 5.26% of frames on the Apple TV 4K (3rd gen) at 24 Hz,
+and 4.95, 4.86 and 5.16% at 60 Hz, in bursts in one scene with every queue
+full. Decoded here, the same window lost 0.14, 0.14 and 0% at 24 Hz and none
+at 60 Hz, for about 135 MB more footprint. If no session can be made for
+H.264, it goes to the display layer compressed as before, without Picture in
+Picture subtitles.
 
 - The pool reconciles tvOS 26's `recommendedPixelBufferAttributes` with the
   engine's IOSurface and Metal needs. Pixel format stays unconstrained, so
@@ -281,7 +290,7 @@ A device profile cannot say "interlaced only", so the demuxer splits it:
   `supports` accepts H.264 only on that route, so a failed hardware
   description for progressive H.264 still fails instead of decoding on the
   CPU.
-- Progressive H.264 stays compressed on VideoToolbox. Unknown field order
+- Progressive H.264 is decoded ahead by VideoToolbox. Unknown field order
   counts as progressive.
 - HEVC keeps its guard: it has no software route, and interlaced HEVC is rare
   in libraries.
@@ -290,7 +299,7 @@ A device profile cannot say "interlaced only", so the demuxer splits it:
   `LAGOON_INTERLACED_H264_FIXTURE_URL` and scores every frame for row
   alternation (a woven field pair on motion scores above 1.5, deinterlaced
   output below 1), with `LAGOON_PROGRESSIVE_H264_FIXTURE_URL` as the control
-  that must stay compressed.
+  that must stay off the software path.
 
 ### 10-bit H.264
 
@@ -338,7 +347,8 @@ and joined files do the same. On the Apple TV 4K (3rd gen), 720p, 1080p, 720p
 clips with continuous timestamps behaved like this:
 
 - **H.264 through the compressed renderer and HEVC through VideoToolbox**
-  played through; the parameter sets travel in the stream.
+  played through; the parameter sets travel in the stream. H.264 has since
+  moved to VideoToolbox too.
 - **The software path** (VP9, AV1 without AV1 silicon, MPEG-2, VC-1, MPEG-4,
   interlaced H.264) failed on its first frame, `.undecodable`, whatever the
   pixel format: its pools, pixel-transfer or Metal stage and format
@@ -351,9 +361,7 @@ flight drain first, since they carry the old description. 8-bit VP9, MPEG-2
 576 to 1080, and 10-bit VP9 on the GPU path all played through on the device.
 
 `videoSize` follows too: decoded frames publish their presentation size when
-it changes, so a host lays subtitles out against the new picture. Progressive
-H.264 reaches the renderer compressed, so its size stays the one read at open.
-A change of bit depth mid-stream is still a verdict.
+it changes, so a host lays subtitles out against the new picture. A change of bit depth mid-stream is still a verdict.
 
 The opt-in test `aStreamThatChangesSizeDecodesAtEachSize` reads
 `LAGOON_RESOLUTION_CHANGE_FIXTURE_URLS`, comma-separated. Make each fixture
@@ -548,12 +556,9 @@ is drawn and nothing changes.
   the GPU before the frame goes on.
 - **HDR.** Subtitle white goes to the BT.2408 reference white, 203 nits on
   PQ and 75% signal on HLG, in BT.2020, not to the grade's peak.
-- **H.264.** Progressive H.264 reaches the display layer compressed, so
-  there is no frame to draw on. While Picture in Picture wants subtitles and
-  one is chosen, it is re-demuxed from the current position through
-  VideoToolbox here instead, and back when Picture in Picture ends. That
-  costs a short rebuffer as the window opens. Without a subtitle chosen, the
-  route stays as it is.
+- **H.264.** Progressive H.264 is decoded here like HEVC, so Picture in
+  Picture draws into its frames with no re-demux. H.264 left compressed,
+  because no session could be made, shows no subtitles in Picture in Picture.
 
 `PictureInPictureSubtitleTests` pins the blend values, the HDR white levels,
-the layout and the route switch.
+the layout and drawing into decoded H.264.

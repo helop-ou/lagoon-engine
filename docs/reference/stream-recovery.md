@@ -154,8 +154,9 @@ on it must report "Error submitting packet to decoder: Invalid data".
 
 ### A damaged picture the renderer plays through
 
-Progressive H.264 goes to `AVSampleBufferVideoRenderer` compressed, so the
-engine's decoder never sees its pictures. On the Apple TV 4K (3rd gen), one
+Progressive H.264 went to `AVSampleBufferVideoRenderer` compressed at the
+time, and still does when no VideoToolbox session can be made, so the
+engine's decoder never saw its pictures. On the Apple TV 4K (3rd gen), one
 damaged H.264 P-picture made the renderer post `didFailToDecode` for it and for
 every picture depending on it: 18 notifications over 0.7 s, each
 `AVFoundationErrorDomain -11821` over `-12909`. Its status stayed `.rendering`,
