@@ -201,6 +201,33 @@ struct PlaybackStartupTests {
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
     }
 
+    /// The viewer backs out while the title is still opening. The open ends
+    /// because it was interrupted, which is not a failure to tell a host
+    /// about: one that descends on a delivery failure would start again.
+    @MainActor
+    @Test func aTitleDismissedWhileOpeningReportsNoFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fifo = directory.appendingPathComponent("silent.mkv")
+        #expect(mkfifo(fifo.path(percentEncoded: false), 0o600) == 0)
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
+        let engine = SampleBufferPlayerEngine()
+        var failures = 0
+        engine.onError = { _ in failures += 1 }
+
+        engine.prepare(url: fifo, startSeconds: 0, initialAudioOrdinal: nil)
+        engine.attach(displayLayer: AVSampleBufferDisplayLayer())
+        engine.play()
+        try await Task.sleep(for: .milliseconds(300))
+        engine.shutdown()
+        let writer = open(fifo.path(percentEncoded: false), O_WRONLY)
+        if writer >= 0 { close(writer) }
+        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(failures == 0)
+    }
+
     // MARK: - Helpers
 
     private static func fixtureURL() throws -> URL {

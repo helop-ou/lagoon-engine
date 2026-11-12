@@ -92,9 +92,73 @@ struct VideoResumeTests {
             .styledChunk(StyledSubtitleChunk(data: Data(), startMilliseconds: 7_500, durationMilliseconds: 100)),
             .cue(late),
         ]
-        #expect(SubtitleReplay.unread(events, after: nil).count == 4)
-        #expect(SubtitleReplay.unread(events, after: 7).map(SubtitleReplay.time(of:)) == [7.5, 9])
-        #expect(SubtitleReplay.unread(events, after: 9).isEmpty)
+        var none: SubtitleReplay.Mark?
+        #expect(SubtitleReplay.unread(events, after: &none).count == 4)
+        var middle: SubtitleReplay.Mark? = SubtitleReplay.Mark(time: 7, count: 1)
+        #expect(SubtitleReplay.unread(events, after: &middle).map(SubtitleReplay.time(of:)) == [7.5, 9])
+        #expect(middle == nil, "past the floor, it has done its work")
+        var end: SubtitleReplay.Mark? = SubtitleReplay.Mark(time: 9, count: 1)
+        #expect(SubtitleReplay.unread(events, after: &end).isEmpty)
+        #expect(end == SubtitleReplay.Mark(time: 9, count: 0))
+    }
+
+    /// A typeset ASS script starts several events at one instant, each in
+    /// its own packet. A resume taken between two of them dropped the ones
+    /// not yet read, and a sign was missing until the next seek.
+    @Test func eventsThatShareATimeWithTheLastOneReadAreKept() {
+        func sign(_ text: String) -> SubtitleEvent {
+            .styledChunk(StyledSubtitleChunk(data: Data(text.utf8), startMilliseconds: 5_000, durationMilliseconds: 100))
+        }
+        func texts(_ events: [SubtitleEvent]) -> [String] {
+            events.compactMap { if case .styledChunk(let chunk) = $0 { String(decoding: chunk.data, as: UTF8.self) } else { nil } }
+        }
+        // Two of the four were read before the resume, in two packets.
+        var read = SubtitleReplay.mark(after: [sign("a")], from: nil)
+        read = SubtitleReplay.mark(after: [sign("b")], from: read)
+        #expect(read == SubtitleReplay.Mark(time: 5, count: 2))
+
+        var floor = read
+        #expect(SubtitleReplay.unread([sign("a")], after: &floor).isEmpty)
+        #expect(SubtitleReplay.unread([sign("b")], after: &floor).isEmpty)
+        #expect(texts(SubtitleReplay.unread([sign("c")], after: &floor)) == ["c"])
+        #expect(floor == nil)
+        #expect(texts(SubtitleReplay.unread([sign("d")], after: &floor)) == ["d"])
+
+        // The same cut inside one packet.
+        var inside = read
+        #expect(texts(SubtitleReplay.unread([sign("a"), sign("b"), sign("c"), sign("d")], after: &inside)) == ["c", "d"])
+
+        // An earlier event read late does not move the mark back.
+        let early = SubtitleEvent.clear(at: 3)
+        #expect(SubtitleReplay.mark(after: [early], from: read) == read)
+        #expect(SubtitleReplay.mark(after: [], from: nil) == nil)
+    }
+
+    /// Before the first start the playhead was still 0, and lifting a
+    /// suspension seeks to the playhead: a title resumed at half an hour
+    /// started from the beginning.
+    @MainActor
+    @Test func aResumeBeforeTheFirstStartKeepsTheStartPosition() async throws {
+        let url = try #require(Bundle.module.url(forResource: "av", withExtension: "mp4", subdirectory: "SeekLanding"))
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
+        let engine = SampleBufferPlayerEngine()
+        engine.prepare(url: url, startSeconds: 4, initialAudioOrdinal: nil)
+        engine.attach(displayLayer: AVSampleBufferDisplayLayer())
+        engine.play()
+        #expect(engine.timePosition == 4)
+        // Locked and unlocked while the title was still loading.
+        engine.setVideoOutputSuspended(true)
+        engine.setVideoOutputSuspended(false)
+
+        var clocks: [Double] = []
+        try await Self.wait {
+            clocks.append(engine.clockPosition)
+            return !engine.isBuffering && engine.clockPosition > 4.3
+        }
+        #expect(engine.clockPosition > 4.3)
+        #expect(!clocks.contains { $0 < 3.9 }, "never played from the beginning: \(clocks.prefix(8))")
+        engine.shutdown()
+        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
     }
 
     /// Ten seconds of H.264 and AAC, a keyframe a second (`av.mp4`: testsrc2
