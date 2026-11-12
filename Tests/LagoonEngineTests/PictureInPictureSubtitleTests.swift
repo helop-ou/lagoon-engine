@@ -154,6 +154,75 @@ struct PictureInPictureSubtitleTests {
         #expect(abs(piece.y - 216) <= 2)
     }
 
+    /// `\\pos` takes any number of digits, and one past the frame converted
+    /// to no `Int`: one subtitle line crashed the host.
+    @Test func aCuePlacedFarOutsideTheFrameIsMovedInsideIt() throws {
+        for position in [
+            SubtitleTextPosition(x: 5e20, y: -5e20),
+            SubtitleTextPosition(x: .infinity, y: .nan),
+            SubtitleTextPosition(x: -.infinity, y: .greatestFiniteMagnitude),
+        ] {
+            let cue = SubtitleTextCue(runs: [SubtitleTextRun(text: "Sign")], alignment: .topLeft, position: position)
+            let overlay = SubtitleOverlayRasterizer.overlay(
+                textCues: [cue], images: [], style: .standard, frameWidth: 1920, frameHeight: 1080, revision: 1
+            )
+            let piece = try #require(overlay.pieces.first)
+            #expect(piece.x >= 0 && piece.x + piece.width <= 1920)
+            #expect(piece.y >= 0 && piece.y + piece.height <= 1080)
+        }
+    }
+
+    @Test func aPositionFromASubtitleFileOfAnyLengthIsDrawn() throws {
+        let cue = try #require(
+            ASSSubtitleTextParser.cue(from: "0,0,Sign,,0,0,0,,{\\pos(100000000000000000000,10)}Sign")
+        )
+        #expect(cue.position != nil)
+        let overlay = SubtitleOverlayRasterizer.overlay(
+            textCues: [cue], images: [], style: .standard, frameWidth: 1920, frameHeight: 1080, revision: 1
+        )
+        #expect(overlay.pieces.count == 1)
+    }
+
+    /// A host that divides by the height of a view not yet laid out.
+    @Test func aSizeThatIsNotANumberDrawsAtTheDefault() throws {
+        let standard = try #require(Self.textPiece(BurnedInSubtitleStyle()))
+        for size in [Double.nan, .infinity, -.infinity] {
+            let piece = try #require(Self.textPiece(BurnedInSubtitleStyle(relativeSize: size)))
+            #expect(piece.height == standard.height, "\(size)")
+        }
+    }
+
+    /// Points passed as a fraction asked for a block of gigabytes.
+    @Test func aSizeOutsideTheRangeIsDrawnAtItsNearestEnd() throws {
+        let largest = try #require(Self.textPiece(BurnedInSubtitleStyle(relativeSize: 0.25)))
+        let smallest = try #require(Self.textPiece(BurnedInSubtitleStyle(relativeSize: 0.01)))
+        #expect(try #require(Self.textPiece(BurnedInSubtitleStyle(relativeSize: 24))).height == largest.height)
+        #expect(try #require(Self.textPiece(BurnedInSubtitleStyle(relativeSize: 0))).height == smallest.height)
+        #expect(try #require(Self.textPiece(BurnedInSubtitleStyle(relativeSize: -3))).height == smallest.height)
+        #expect(largest.height < 1080 / 2 && smallest.height > 0)
+    }
+
+    @Test func aBitmapWithARectangleThatIsNotANumberIsLeftOut() throws {
+        let image = try #require(Self.solidImage(width: 10, height: 4))
+        for rect in [
+            CGRect(x: CGFloat.nan, y: 0.5, width: 0.5, height: 0.1),
+            CGRect(x: 0.25, y: 0.5, width: CGFloat.infinity, height: 0.1),
+            CGRect(x: 1e30, y: 0.5, width: 0.5, height: 0.1),
+        ] {
+            let overlay = SubtitleOverlayRasterizer.overlay(
+                textCues: [], images: [SubtitleImage(image: image, rect: rect)],
+                style: .standard, frameWidth: 400, frameHeight: 200, revision: 1
+            )
+            #expect(overlay.pieces.isEmpty)
+        }
+    }
+
+    private static func textPiece(_ style: BurnedInSubtitleStyle) -> SubtitleOverlayPiece? {
+        SubtitleOverlayRasterizer.overlay(
+            textCues: [.plain("Hello")], images: [], style: style, frameWidth: 1920, frameHeight: 1080, revision: 1
+        ).pieces.first
+    }
+
     @Test func aBitmapFillsItsRectangle() throws {
         let image = try #require(Self.solidImage(width: 10, height: 4))
         let overlay = SubtitleOverlayRasterizer.overlay(
