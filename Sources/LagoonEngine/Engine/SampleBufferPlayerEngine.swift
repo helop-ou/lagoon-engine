@@ -410,6 +410,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     nonisolated func absorbVideoSessionFaultForTesting(_ status: OSStatus) {
         _ = absorbVideoSessionFault(VideoToolboxDecoder.DecoderError.decode(status))
     }
+    /// The audio route a start sees, where the simulator has no AirPlay.
+    @ObservationIgnored var audioOutputsForTesting: [AVAudioSession.Port]?
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var finishObserver: Any?
     @ObservationIgnored private var didFinish = false
@@ -1470,7 +1472,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             let rate = Float(effectiveRate)
             requestedClockRate = rate
-            let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType)
+            let outputs = audioOutputsForTesting
+                ?? AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType)
             if PlaybackClockStart.usesHostTime(outputs: outputs) {
                 clockQueue.sync { synchronizer.setRate(rate, time: time, atHostTime: hostTime) }
             } else {
