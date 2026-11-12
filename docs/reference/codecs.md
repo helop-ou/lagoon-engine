@@ -554,6 +554,14 @@ is drawn and nothing changes.
   `SubtitleFrameCompositor` blends the pieces into the 8- or 10-bit 4:2:0
   frame in place on the GPU, touching only their rectangles, and waits for
   the GPU before the frame goes on.
+- **Compressed frames.** On a device VideoToolbox hands the renderer
+  compressed forms of 4:2:0 (`&xv0` for 10-bit HEVC on an iPhone), which
+  have no planes to draw into. A frame with something to show is copied first by
+  `UncompressedFrameCopier`, through a `VTPixelTransferSession` into a
+  pooled plain buffer of the same depth and range, and the copy goes to the
+  renderer with the frame's timing and marks. Frames with nothing to show
+  stay as decoded. The simulator decodes to plain formats, so it never takes
+  this path, and the tests force it with a test hook.
 - **HDR.** Subtitle white goes to the BT.2408 reference white, 203 nits on
   PQ and 75% signal on HLG, in BT.2020, not to the grade's peak.
 - **H.264.** Progressive H.264 is decoded here like HEVC, so Picture in
@@ -561,4 +569,4 @@ is drawn and nothing changes.
   because no session could be made, shows no subtitles in Picture in Picture.
 
 `PictureInPictureSubtitleTests` pins the blend values, the HDR white levels,
-the layout and drawing into decoded H.264.
+the layout, drawing into decoded H.264, and drawing through a copy.
