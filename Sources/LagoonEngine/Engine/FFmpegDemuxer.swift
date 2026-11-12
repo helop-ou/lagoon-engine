@@ -977,13 +977,10 @@ nonisolated final class FFmpegDemuxer {
         guard let codec = closedCaptionCodec, let data = packet.pointee.data, packet.pointee.size > 0,
               let pts = Self.presentationTimestamp(packet) else { return }
         let payload = UnsafeRawBufferPointer(start: data, count: Int(packet.pointee.size))
-        // A start-code stream in a length-prefixed container's place (MPEG-TS).
-        let startCodes = payload.count >= 4 && payload[0] == 0 && payload[1] == 0
-            && (payload[2] == 1 || (payload[2] == 0 && payload[3] == 1))
         let captions = ClosedCaptionExtractor.captions(
             in: payload,
             codec: codec,
-            nalLengthSize: startCodes ? nil : closedCaptionNALLengthSize
+            nalLengthSize: ClosedCaptionExtractor.framedLengthSize(of: payload, declared: closedCaptionNALLengthSize)
         )
         guard !captions.isEmpty else { return }
         if closedCaptions == nil {
