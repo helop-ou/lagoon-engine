@@ -64,7 +64,10 @@ nonisolated enum EngineCodecSupport {
             "VideoToolbox when the device can make a session for the stream, "
             + "and libdav1d when it cannot. Which one you get is decided by "
             + "trying, once, at open."),
-        Video(AV_CODEC_ID_VP9, "VP9", .software, note: "Always software."),
+        Video(AV_CODEC_ID_VP9, "VP9", .either, note:
+            "VideoToolbox where the device decodes VP9 in hardware and the "
+            + "stream is 4:2:0 (profiles 0 and 2), tried once at open. "
+            + "libavcodec everywhere else, and for 4:2:2 and 4:4:4."),
         Video(AV_CODEC_ID_VC1, "VC-1", .software, note:
             "Always software: Apple ships no VideoToolbox decoder for it."),
         Video(AV_CODEC_ID_WMV3, "WMV3", .software, note:

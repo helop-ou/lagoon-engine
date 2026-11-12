@@ -2536,7 +2536,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             disc: disc,
             recommendedPixelBufferAttributes: recommendedPixelBufferAttributes,
             authorization: authorization
-        ), reopenRefusedAV1InSoftware(
+        ), reopenRefusedStreamInSoftware(
             openTarget: openTarget,
             cacheSession: deliveryIsCached ? cacheSession : nil,
             disc: disc,
@@ -2617,22 +2617,27 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         return deliveryIsCached
     }
 
-    /// A refused VideoToolbox AV1 session reopens once on libdav1d rather
-    /// than failing the title. Never for HEVC, which has no fallback and
-    /// must fail loudly. False after reporting a failure.
-    nonisolated private func reopenRefusedAV1InSoftware(
+    /// A refused VideoToolbox AV1 or VP9 session reopens once on the
+    /// software decoder rather than failing the title. Never for HEVC, which
+    /// has no fallback and must fail loudly. False after reporting a failure.
+    nonisolated private func reopenRefusedStreamInSoftware(
         openTarget: String,
         cacheSession: PlaybackCacheSession?,
         disc: DiscPlaybackRequest?,
         recommendedPixelBufferAttributes: CVPixelBufferAttributes,
         authorization: MediaRequestAuthorization?
     ) -> Bool {
-        guard demuxer.videoStream?.codecName == "av1",
-              !demuxer.outputsDecodedVideo,
-              let description = demuxer.videoStream?.formatDescription,
-              !VideoToolboxDecoder.canDecode(description) else { return true }
+        guard let description = demuxer.videoStream?.formatDescription,
+              let refused = VideoToolboxRefusal.softwareRoute(
+                  codecName: demuxer.videoStream?.codecName,
+                  outputsDecodedVideo: demuxer.outputsDecodedVideo,
+                  canDecode: { VideoToolboxDecoder.canDecode(description, requiringHardware: $0) }
+              ) else { return true }
         demuxer.close()
-        demuxer.disableVideoToolboxAV1()
+        switch refused {
+        case .av1: demuxer.disableVideoToolboxAV1()
+        case .vp9: demuxer.disableVideoToolboxVP9()
+        }
         do {
             try demuxer.open(
                 url: openTarget,
@@ -2683,7 +2688,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         recommendedPixelBufferAttributes: CVPixelBufferAttributes
     ) -> Bool {
         guard let codecName = demuxer.videoStream?.codecName,
-              codecName == "hevc" || codecName == "av1" || codecName == "h264",
+              codecName == "hevc" || codecName == "av1" || codecName == "h264" || codecName == "vp9",
               !demuxer.outputsDecodedVideo,
               let description = demuxer.videoStream?.formatDescription else { return true }
         do {
