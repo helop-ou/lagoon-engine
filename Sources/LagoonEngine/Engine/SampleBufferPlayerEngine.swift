@@ -405,6 +405,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     nonisolated var queuedSamplesForTesting: (intake: Int, video: Int, audio: Int) {
         (videoIntake.count, videoQueue.count, audioQueue.count)
     }
+    /// A decode session fault, as VideoToolbox reports one, without a
+    /// decoder the system can take away.
+    nonisolated func absorbVideoSessionFaultForTesting(_ status: OSStatus) {
+        _ = absorbVideoSessionFault(VideoToolboxDecoder.DecoderError.decode(status))
+    }
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var finishObserver: Any?
     @ObservationIgnored private var didFinish = false
