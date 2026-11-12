@@ -207,3 +207,27 @@ nonisolated enum PlaybackDecodeSessionPolicy {
         return .rebuild
     }
 }
+
+/// Which software route a stream reopens on when VideoToolbox will not make
+/// a session for it. Only codecs with a software decoder behind them.
+nonisolated enum VideoToolboxRefusal {
+    enum SoftwareRoute: Equatable {
+        case av1
+        case vp9
+    }
+
+    /// AV1 may be answered by Apple's software decoder, so any session
+    /// counts. VP9 is opened on hardware only.
+    static func softwareRoute(
+        codecName: String?,
+        outputsDecodedVideo: Bool,
+        canDecode: (_ requiringHardware: Bool) -> Bool
+    ) -> SoftwareRoute? {
+        guard !outputsDecodedVideo else { return nil }
+        switch codecName {
+        case "av1": return canDecode(false) ? nil : .av1
+        case "vp9": return canDecode(true) ? nil : .vp9
+        default: return nil
+        }
+    }
+}

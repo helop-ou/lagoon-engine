@@ -78,12 +78,17 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
     /// Whether VideoToolbox can create a session for this stream at all,
     /// hardware or software. `VTIsHardwareDecodeSupported` only reports
     /// silicon. (AV1 on an A15 has neither and fails with -12906.)
-    static func canDecode(_ formatDescription: CMVideoFormatDescription) -> Bool {
+    /// `requiringHardware` asks the question the real session will: VP9 is
+    /// only ever opened on hardware.
+    static func canDecode(_ formatDescription: CMVideoFormatDescription, requiringHardware: Bool = false) -> Bool {
+        PlaybackCapabilities.registerSupplementalDecoders()
         var session: VTDecompressionSession?
         let status = VTDecompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             formatDescription: formatDescription,
-            decoderSpecification: nil,
+            decoderSpecification: requiringHardware
+                ? [kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder as String: true] as CFDictionary
+                : nil,
             imageBufferAttributes: nil,
             outputCallback: nil,
             decompressionSessionOut: &session
@@ -248,6 +253,7 @@ nonisolated final class VideoToolboxDecoder: @unchecked Sendable {
         // Require hardware: failing beats silently decoding 4K Main10 on the
         // CPU. Except AV1 without silicon, where Apple's software decoder
         // beats the libdav1d alternative.
+        PlaybackCapabilities.registerSupplementalDecoders()
         let decoderSpecification: CFDictionary? = requiresHardware
             ? [
                 kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder as String: true

@@ -306,6 +306,13 @@ nonisolated final class FFmpegDemuxer {
 
     private var routesAV1ToVideoToolbox = true
 
+    /// For a reopen after VideoToolbox refused VP9. Call before `open`.
+    func disableVideoToolboxVP9() {
+        routesVP9ToVideoToolbox = false
+    }
+
+    private var routesVP9ToVideoToolbox = true
+
     /// Hands the software decoder to the caller, once.
     func takeSoftwareVideoDecoder() -> SoftwareVideoDecoder? {
         defer { softwareVideoDecoder = nil }
@@ -330,12 +337,13 @@ nonisolated final class FFmpegDemuxer {
     }
 
     /// Whether a stream goes to VideoToolbox compressed or is decoded in
-    /// software. AV1 is settled per stream at session creation.
+    /// software. AV1 is settled per stream at session creation, and so is
+    /// VP9 where the device decodes it in hardware.
     ///
     /// Interlaced H.264 goes to software, the only path with a deinterlacer;
     /// VideoToolbox would comb on motion. So does H.264 outside the hardware's
     /// profiles, 10-bit, 4:2:2 or 4:4:4, which no Apple hardware decoder
-    /// accepts. HEVC has no software route.
+    /// accepts, and VP9 outside 4:2:0. HEVC has no software route.
     static func usesCompressedVideoPath(
         codecID: AVCodecID,
         capabilities: PlaybackCapabilities,
@@ -349,6 +357,8 @@ nonisolated final class FFmpegDemuxer {
             true
         case AV_CODEC_ID_AV1:
             capabilities.decodesAV1WithVideoToolbox
+        case AV_CODEC_ID_VP9:
+            capabilities.hardwareVP9 && !outsideHardwareProfile
         default:
             false
         }
@@ -772,12 +782,15 @@ nonisolated final class FFmpegDemuxer {
         }
         let videoIsInterlaced = Self.isInterlaced(fieldOrder: videoPar.pointee.field_order)
         let videoNeedsSoftwareH264 = Self.isHighBitDepthH264(videoPar) || Self.isExtendedChromaH264(videoPar)
+        let vp9Record = VP9ConfigurationRecord(codecpar: videoPar, frameRate: videoFrameRate)
+        let videoNeedsSoftwareVP9 = videoPar.pointee.codec_id == AV_CODEC_ID_VP9 && vp9Record?.is420 != true
         let usesCompressedVideo = Self.usesCompressedVideoPath(
             codecID: videoPar.pointee.codec_id,
             capabilities: capabilities,
             interlaced: videoIsInterlaced,
-            outsideHardwareProfile: videoNeedsSoftwareH264
+            outsideHardwareProfile: videoNeedsSoftwareH264 || videoNeedsSoftwareVP9
         ) && (videoPar.pointee.codec_id != AV_CODEC_ID_AV1 || routesAV1ToVideoToolbox)
+            && (videoPar.pointee.codec_id != AV_CODEC_ID_VP9 || routesVP9ToVideoToolbox)
         // Catch missing or Annex B parameter sets before building the
         // description: it builds either way and only the decoder refuses,
         // looking like "no hardware decoder". See `AnnexBStream`.

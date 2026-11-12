@@ -78,11 +78,15 @@ nonisolated enum SampleBufferFactory {
         case AV_CODEC_ID_AV1:
             codecType = kCMVideoCodecType_AV1
             atomKey = "av1C"
+        case AV_CODEC_ID_VP9:
+            codecType = kCMVideoCodecType_VP9
+            atomKey = "vpcC"
         default:
             return nil
         }
-        let containerRecord: Data? = if let extradata = codecpar.pointee.extradata,
-                                         codecpar.pointee.extradata_size > 0 {
+        let containerRecord: Data? = if codecpar.pointee.codec_id == AV_CODEC_ID_VP9 {
+            VP9ConfigurationRecord(codecpar: codecpar, frameRate: frameRate)?.payload
+        } else if let extradata = codecpar.pointee.extradata, codecpar.pointee.extradata_size > 0 {
             Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size))
         } else {
             nil
