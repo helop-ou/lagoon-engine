@@ -55,6 +55,13 @@ in the [engine guide](../engine.md).
 - Playback binds the first presentable media time to a near-future host time
   with `setRate(_:time:atHostTime:)`, so audio and video start on one
   deadline.
+- Not on an AirPlay route (`PlaybackClockStart`). The receiver buffers about
+  two seconds and cannot meet a deadline 0.1 s ahead. On an iPhone AirPlaying
+  to an Apple TV, every seek left the audio renderer holding two to four
+  seconds it never played while the clock ran on, silent until the next route
+  change. `setRate(_:time:)` lets the synchronizer wait until the renderers
+  have enough, which fixed it on the same device. A group start is not
+  honoured there either.
 - A generation token stops an older priming callback from restarting playback
   after a newer seek.
 - When AVFoundation sets `requiresFlushToResumeDecoding`, the engine runs the
