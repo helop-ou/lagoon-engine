@@ -450,7 +450,10 @@ dav1d would have produced.
 
 - 8-bit 4:2:0 AV1 is copied on the CPU, where nothing would add the grain,
   so dav1d keeps applying it there. So does a stream whose pixel format is
-  unknown before open.
+  unknown before open, and one the GPU stage will refuse: it tone-maps PQ in
+  BT.2020 only, so an HLG title asked for as SDR on tvOS takes the transfer
+  path. The decision uses the output mode the stream will be asked for. A
+  GPU stage that then fails to build still loses the grain.
 - `AV1FilmGrainTests` decodes a grain fixture both ways and compares every
   output sample, luma and chroma, with dav1d's. The fixture is 208x120, so
   blocks are cut short at both edges, with overlap, a lag-3 filter and

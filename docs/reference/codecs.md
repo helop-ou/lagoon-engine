@@ -80,6 +80,8 @@ delay does.
   threshold, 4:1, 10 dB makeup, 10 ms attack, 250 ms release.
 - **Limiter.** While anything is on, a peak limiter with instant attack holds
   every sample under -1 dBFS.
+- A sample that is not a number (float PCM carries whatever the file holds)
+  is shaped as silence, so it cannot stay in the filter or the envelope.
 
 No stage reads ahead of the sample it is shaping, so shaping adds no latency
 and the clock needs no correction. `AudioShapingTests` pins each stage on
@@ -258,6 +260,13 @@ so 50i plays at 50 pictures a second and motion keeps all its moments.
   rate the display was set to holds. The display match asks for the field
   rate (`FFmpegDemuxer.outputFrameRate`), and the demux backpressure counts
   pictures at it.
+- A broadcast stream can change size or depth at a programme boundary. The
+  stage copies by the size it was built for, so it shows what it holds and
+  is rebuilt for the new one, and refuses a frame of any other size. Where
+  it cannot be rebuilt, frames go out as decoded.
+- A frame with no duration of its own lasts until the next frame starts.
+  With neither, there is no second field: a picture without a time has no
+  place on the timeline.
 - `EngineTuning.deinterlacesAtFrameRate` turns it off and brings back the CPU
   pass below, one picture per frame.
 - `FieldRateDeinterlacerTests` pins the kept rows, the field order, still
@@ -449,7 +458,9 @@ by joining same-codec clips of two sizes with ffmpeg's concat demuxer
   `GA94` registered user-data SEI, and MPEG-2 in picture user data.
   `ClosedCaptionExtractor` reads each video packet's units up to its first
   slice, after the H.264 presentation order rebuild and before either decode
-  path takes it, and `ClosedCaptionTrack` puts the `cc_data` back in
+  path takes it. A packet is read by unit lengths when it is such units from
+  end to end, and by start codes otherwise: its first bytes do not say, since
+  a first unit of 256 to 511 bytes has the length 00 00 01. `ClosedCaptionTrack` puts the `cc_data` back in
   presentation order and decodes it with FFmpeg's `ccaption`. The track has
   no stream in the file, so it is listed only once its first caption is
   read, last and under an id outside the ordinals, so no other track moves.
@@ -571,7 +582,10 @@ is drawn and nothing changes.
   the clock. A libass track renders at the frame's time at most every 100 ms.
 - **Drawing.** `SubtitleOverlayRasterizer` draws text with CoreText in the
   host's style, placed as a host's overlay places it, and scales bitmaps
-  into their rectangles. It runs only when what shows changes.
+  into their rectangles. It runs only when what shows changes. A cue's
+  position and a style's size are whatever a subtitle file or a host gave:
+  a position past the frame is moved inside it, and the size is drawn within
+  0.01 to 0.25 of the picture's height.
   `SubtitleFrameCompositor` blends the pieces into the 8- or 10-bit 4:2:0
   frame in place on the GPU, touching only their rectangles, and waits for
   the GPU before the frame goes on.
