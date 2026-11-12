@@ -325,9 +325,30 @@ still caught. Anything unknown counts as 8-bit and stays on hardware.
   reports a decoder, at full resolution. Otherwise dav1d, bounded at
   3840×2160: threaded, 30 s of 4K HDR10+ AV1 decodes in 1.66 s, against
   13.26 s on one core. 8K is out, unmeasured.
-- VP9 always takes the software path, capped at 1080p. Widen a software
-  ceiling only after the frame-loss and memory benches show CPU and jetsam
-  headroom on hardware.
+- VP9 goes to VideoToolbox where the device decodes it in hardware
+  (`PlaybackCapabilities.hardwareVP9`) and the stream is 4:2:0, profiles 0
+  and 2. Everywhere else, and for 4:2:2 and 4:4:4, it takes the software
+  path. Widen a software ceiling only after the frame-loss and memory benches
+  show CPU and jetsam headroom on hardware.
+- VP9 is a supplemental decoder. VideoToolbox neither reports nor opens it
+  until the process calls `VTRegisterSupplementalVideoDecoderIfAvailable`,
+  which exists from iOS and tvOS 26.2. The engine registers it once, before
+  the first capability query or session. The Apple TV 4K (3rd gen) on tvOS 27
+  then reports hardware VP9. An iPhone has not been asked.
+- WebM and Matroska carry no `vpcC`, and FFmpeg's MP4 demuxer does not keep
+  the one it reads, so `VP9ConfigurationRecord` writes it from the probed
+  stream: profile, level, bit depth, chroma subsampling, range and colour. A
+  level the container does not state is the lowest in the VP9 levels table
+  that holds the picture size and its rate. Packets pass through as the
+  container framed them, a superframe whole with its hidden frame.
+- A refused session reopens on the software decoder, once, at open
+  (`VideoToolboxRefusal`). VP9 is asked for hardware, since its software
+  route is libavcodec, not Apple's. On the Apple TV 4K (3rd gen) an 8-bit
+  4K profile 0 file (3840×1632 at 23.976) decoded in hardware with no
+  picture lost in three 60 s windows, a correct picture, and four seeks
+  played through. The software route lost none there either, so the gain is
+  the decode work, not frame loss. A 10-bit HDR stream has not been tried on
+  hardware.
 - 8-bit planar/NV12 output becomes Core Video NV12. Little-endian planar
   10-bit is shifted to P010's high bits, with U/V interleaved by an ARM NEON
   primitive (scalar fallback). Native P010 is copied stride-aware.
