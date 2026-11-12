@@ -39,6 +39,73 @@ struct DolbyVisionRecordPolicyTests {
         #expect(Policy.signalled(container: profile5, stream: hdr10, firstRPUProfile: nil)?.dv_profile == 5)
     }
 
+    @Test(arguments: [UInt8(0), 3, 5, 6, 7])
+    func anOutOfSpecProfile8RecordTakesItsBaseLayersCompatibilityID(_ id: UInt8) throws {
+        let container = record(profile: 8, compatibilityID: id)
+        for stream in [hdr10, DolbyVisionRecordPolicy.Stream()] {
+            let signalled = try #require(Policy.signalled(container: container, stream: stream, firstRPUProfile: nil))
+            #expect(signalled.dv_profile == 8)
+            #expect(signalled.dv_bl_signal_compatibility_id == 1)
+            #expect(signalled.dv_level == container.dv_level)
+        }
+        #expect(Policy.signalled(container: container, stream: hlg, firstRPUProfile: nil)?.dv_bl_signal_compatibility_id == 4)
+        #expect(Policy.signalled(container: container, stream: sdr, firstRPUProfile: nil) == nil)
+    }
+
+    @Test(arguments: [UInt8(1), 4])
+    func aProfile8RecordInSpecIsLeftAlone(_ id: UInt8) {
+        let container = record(profile: 8, compatibilityID: id)
+        for stream in [hdr10, hlg, sdr] {
+            #expect(Policy.signalled(container: container, stream: stream, firstRPUProfile: 7)?.dv_bl_signal_compatibility_id == id)
+            #expect(!Policy.needsFirstRPU(container: container, stream: stream, isMatroska: true))
+            #expect(!Policy.convertsProfile7RPUs(container: container, stream: stream, firstRPU: fullEnhancementLayer))
+        }
+    }
+
+    @Test(arguments: [UInt8(0), 3, 5, 6])
+    func anOutOfSpecProfile8RecordIsCheckedOnlyOverAPQBase(_ id: UInt8) {
+        let container = record(profile: 8, compatibilityID: id)
+        #expect(Policy.needsFirstRPU(container: container, stream: hdr10, isMatroska: false))
+        #expect(Policy.needsFirstRPU(container: container, stream: .init(), isMatroska: false))
+        #expect(!Policy.needsFirstRPU(container: container, stream: hlg, isMatroska: true))
+        #expect(!Policy.needsFirstRPU(container: container, stream: sdr, isMatroska: true))
+        #expect(!Policy.needsFirstRPU(container: record(profile: 8, compatibilityID: 2), stream: hdr10, isMatroska: true))
+    }
+
+    @Test(arguments: [UInt8(0), 3, 5, 6])
+    func onlyFullEnhancementLayerMetadataIsConverted(_ id: UInt8) {
+        let container = record(profile: 8, compatibilityID: id)
+        #expect(Policy.convertsProfile7RPUs(container: container, stream: hdr10, firstRPU: fullEnhancementLayer))
+        #expect(Policy.convertsProfile7RPUs(container: container, stream: .init(), firstRPU: fullEnhancementLayer))
+
+        let minimal = Policy.FirstRPU(profile: 7, expectsFullEnhancementLayer: false)
+        #expect(!Policy.convertsProfile7RPUs(container: container, stream: hdr10, firstRPU: minimal))
+        #expect(!Policy.convertsProfile7RPUs(container: container, stream: hdr10, firstRPU: Policy.FirstRPU(profile: 8)))
+        // An unreadable RPU is no evidence: the stream is only relabelled.
+        #expect(!Policy.convertsProfile7RPUs(container: container, stream: hdr10, firstRPU: nil))
+        #expect(!Policy.convertsProfile7RPUs(container: container, stream: hlg, firstRPU: fullEnhancementLayer))
+        #expect(!Policy.convertsProfile7RPUs(container: container, stream: sdr, firstRPU: fullEnhancementLayer))
+    }
+
+    @Test func otherRecordsAreNeverConverted() {
+        #expect(!Policy.convertsProfile7RPUs(container: nil, stream: hdr10, firstRPU: fullEnhancementLayer))
+        for (profile, id) in [(UInt8(5), UInt8(0)), (8, 2), (4, 6)] {
+            let container = record(profile: profile, compatibilityID: id)
+            #expect(!Policy.convertsProfile7RPUs(container: container, stream: hdr10, firstRPU: fullEnhancementLayer))
+        }
+    }
+
+    @Test(arguments: zip(DolbyVisionProfileConverterTests.fixtures, [false, true]))
+    func aProfile7RPUSaysWhichEnhancementLayerItExpects(
+        _ fixture: DolbyVisionProfileConverterTests.RPUFixture,
+        full: Bool
+    ) throws {
+        let shipped = try #require(Data(base64Encoded: fixture.originalBase64))
+        let packet = try lengthPrefixed([slice, Data([0x7C, 0x01]) + shipped.dropFirst(4)])
+        let firstRPU = packet.withUnsafeBytes { Policy.firstRPU(in: $0, lengthSize: 4) }
+        #expect(firstRPU == Policy.FirstRPU(profile: 7, expectsFullEnhancementLayer: full))
+    }
+
     @Test func onlyAnUntaggedTenBitMatroskaStreamIsCheckedWithoutARecord() {
         #expect(Policy.needsFirstRPU(container: nil, stream: .init(), isMatroska: true))
         #expect(!Policy.needsFirstRPU(container: nil, stream: .init(), isMatroska: false))
@@ -86,7 +153,7 @@ struct DolbyVisionRecordPolicyTests {
     @Test(arguments: [("5", UInt8(5)), ("8.1", UInt8(8))])
     func theFirstRPUInAPacketGivesItsProfile(_ generated: String, _ profile: UInt8) throws {
         let packet = try lengthPrefixed([slice, try generatedRPU(profile: generated)])
-        #expect(packet.withUnsafeBytes { Policy.firstRPU(in: $0, lengthSize: 4) }?.profile == profile)
+        #expect(packet.withUnsafeBytes { Policy.firstRPU(in: $0, lengthSize: 4) } == Policy.FirstRPU(profile: profile))
     }
 
     @Test func aPacketWithoutAnIntactRPUGivesNone() throws {
@@ -111,6 +178,26 @@ struct DolbyVisionRecordPolicyTests {
         stream.transfer = AVCOL_TRC_SMPTE2084
         stream.matrix = AVCOL_SPC_BT2020_NCL
         return stream
+    }
+
+    private var hlg: DolbyVisionRecordPolicy.Stream {
+        var stream = DolbyVisionRecordPolicy.Stream()
+        stream.primaries = AVCOL_PRI_BT2020
+        stream.transfer = AVCOL_TRC_ARIB_STD_B67
+        stream.matrix = AVCOL_SPC_BT2020_NCL
+        return stream
+    }
+
+    private var sdr: DolbyVisionRecordPolicy.Stream {
+        var stream = DolbyVisionRecordPolicy.Stream()
+        stream.primaries = AVCOL_PRI_BT709
+        stream.transfer = AVCOL_TRC_BT709
+        stream.matrix = AVCOL_SPC_BT709
+        return stream
+    }
+
+    private var fullEnhancementLayer: DolbyVisionRecordPolicy.FirstRPU {
+        .init(profile: 7, expectsFullEnhancementLayer: true)
     }
 
     /// An IDR slice header's two bytes and some payload. Never decoded.
@@ -190,5 +277,95 @@ struct DolbyVisionFirstRPUDemuxTests {
         }
         #expect(timestamps.count == 12)
         #expect(timestamps.first == 0)
+    }
+}
+
+/// `profile-8-6-mel.mkv` and `profile-8-6-fel.mkv`: twelve 64x64 frames of
+/// 10-bit PQ HEVC under a profile 8 record with compatibility id 6, each
+/// carrying dovi_tool's profile 7 MEL or FEL test RPU. x265
+/// (`aud=1:repeat-headers=1:keyint=12:bframes=0` and the BT.2020 PQ
+/// colorimetry) to Annex B, the RPU appended to each access unit, then
+/// `ffmpeg -c copy -bsf:v "setts=pts=N/(24*TB):dts=N/(24*TB)" -tag:v hvc1
+/// -f mp4`, a `dvvC` box added after the `hvcC`, and `ffmpeg -c copy
+/// -f matroska`.
+@Suite("Out-of-spec Dolby Vision profile 8")
+struct OutOfSpecDolbyVisionProfile8DemuxTests {
+    @Test func metadataForAFullEnhancementLayerIsConverted() throws {
+        let stream = try read("profile-8-6-fel")
+        #expect(stream.compatibilityID == 1)
+        #expect(stream.rpuProfiles == Array(repeating: 8, count: 12))
+        #expect(stream.fullEnhancementLayerRPUs == 0)
+        let stats = try #require(stream.rewriteStats)
+        #expect(stats.mode == .convert)
+        #expect(stats.rpusConverted == 12)
+        #expect(stats.errors == 0)
+        #expect(stats.enhancementLayerType == "FEL")
+    }
+
+    @Test func metadataForAMinimalEnhancementLayerPassesThrough() throws {
+        let stream = try read("profile-8-6-mel")
+        #expect(stream.compatibilityID == 1)
+        #expect(stream.rpuProfiles == Array(repeating: 7, count: 12))
+        #expect(stream.rewriteStats == nil)
+    }
+
+    @Test func strippingLeavesAnOutOfSpecProfile8StreamRelabelled() throws {
+        let stream = try read("profile-8-6-fel", mode: .stripToHDR10)
+        #expect(stream.compatibilityID == 1)
+        #expect(stream.rpuProfiles == Array(repeating: 7, count: 12))
+        #expect(stream.rewriteStats == nil)
+    }
+
+    private struct Stream {
+        var compatibilityID: UInt8
+        var rpuProfiles: [UInt8] = []
+        var fullEnhancementLayerRPUs = 0
+        var rewriteStats: DolbyVisionRewriteStats?
+    }
+
+    private func read(_ name: String, mode: DolbyVisionProfile7Mode = .convert) throws -> Stream {
+        let url = try #require(Bundle.module.url(
+            forResource: name, withExtension: "mkv", subdirectory: "OutOfSpecDolbyVision"
+        ))
+        let demuxer = FFmpegDemuxer(capabilities: PlaybackCapabilities(hardwareHEVC: false))
+        defer { demuxer.close() }
+        demuxer.dolbyVisionProfile7Mode = mode
+        try demuxer.open(url: url.path(percentEncoded: false), recommendedPixelBufferAttributes: CVPixelBufferAttributes())
+
+        let description = try #require(demuxer.videoStream?.formatDescription)
+        #expect(CMFormatDescriptionGetMediaSubType(description) == kCMVideoCodecType_HEVC)
+        let atoms = CMFormatDescriptionGetExtension(
+            description, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms
+        ) as? [String: Any]
+        let dvvC = try #require(atoms?["dvvC"] as? Data)
+        #expect(dvvC[2] >> 1 == 8, "profile 8")
+        var stream = Stream(compatibilityID: dvvC[4] >> 4)
+
+        var timestamps: [Double] = []
+        reading: for _ in 0..<100 {
+            switch demuxer.readNext() {
+            case .video(let buffer):
+                timestamps.append(CMSampleBufferGetPresentationTimeStamp(buffer).seconds)
+                let block = try #require(CMSampleBufferGetDataBuffer(buffer))
+                var payload = Data(count: CMBlockBufferGetDataLength(block))
+                let status = payload.withUnsafeMutableBytes {
+                    CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!)
+                }
+                #expect(status == noErr)
+                if let rpu = payload.withUnsafeBytes({ DolbyVisionRecordPolicy.firstRPU(in: $0, lengthSize: 4) }) {
+                    stream.rpuProfiles.append(rpu.profile)
+                    stream.fullEnhancementLayerRPUs += rpu.expectsFullEnhancementLayer ? 1 : 0
+                }
+            case .endOfFile, .failed:
+                break reading
+            default:
+                continue
+            }
+        }
+        // Reading the first RPU rewound, so no frame is lost.
+        #expect(timestamps.count == 12)
+        #expect(timestamps.first == 0)
+        stream.rewriteStats = demuxer.dolbyVisionRewriteStats
+        return stream
     }
 }

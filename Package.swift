@@ -49,6 +49,7 @@ let package = Package(
                 .copy("Fixtures/HLSVideoFirst"),
                 .copy("Fixtures/Interlaced"),
                 .copy("Fixtures/LatePGS"),
+                .copy("Fixtures/OutOfSpecDolbyVision"),
                 .copy("Fixtures/PresentationOrder"),
                 .copy("Fixtures/SeekLanding"),
                 .copy("Fixtures/TextSubtitles"),
