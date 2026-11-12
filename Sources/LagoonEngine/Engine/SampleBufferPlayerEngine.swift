@@ -316,6 +316,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// full decoded queue under a stopped clock never dequeues, and audio
     /// can run dry behind it.
     nonisolated private static let demuxWaitTimeout: TimeInterval = 0.25
+    /// A video resume lands on the keyframe before this far past the clock,
+    /// which runs on while the decoder catches up.
+    nonisolated private static let videoResumeLeadSeconds: Double = 0.5
+    /// Pictures a video resume decodes that end within this of the clock
+    /// would reach the renderer late, and it would show them in a rush.
+    nonisolated private static let videoResumeMarginSeconds: Double = 0.1
     #if DEBUG
     @ObservationIgnored nonisolated private let diagnosticFaultGate = PlaybackDiagnosticFaultGate()
     #endif
@@ -349,6 +355,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// Sees each video sample as the renderer takes it, and nil for a flush.
     /// Pump queue.
     @ObservationIgnored nonisolated(unsafe) var rendererVideoObserverForTesting: ((CMSampleBuffer?) -> Void)?
+    /// Every audio buffer queued for the renderer, in order. Set before
+    /// `prepare`.
+    @ObservationIgnored nonisolated(unsafe) var queuedAudioObserverForTesting: ((CMSampleBuffer) -> Void)?
     /// Pump queue only.
     @ObservationIgnored nonisolated(unsafe) private var subtitleCompositor: SubtitleFrameCompositor?
     @ObservationIgnored nonisolated(unsafe) private var burnIn = SubtitleBurnIn()
@@ -1292,6 +1301,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         shared.withLock {
             $0.firstEnqueuedVideoPTS = nil
             $0.lastEnqueuedAudioEndSeconds = nil
+            $0.audioQueuedThroughSeconds = nil
             $0.endOfFilePendingIntake = false
             $0.videoSamplesSinceFlush = 0
             $0.videoStartPointDropsSinceFlush = 0
@@ -1324,6 +1334,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             $0.playbackGeneration += 1
             // The demuxer delivers these again from the new position.
             $0.subtitleBacklog.removeAll()
+            // A seek restarts audio and video together, so a video resume
+            // still waiting is moot and its floors would drop the new audio.
+            $0.videoResumePending = false
+            $0.videoResumeInProgress = false
+            $0.audioReplayFloorSeconds = -.infinity
+            $0.subtitleReadThrough.removeAll()
+            $0.subtitleReplayFloors.removeAll()
         }
         // The first buffer after a flush must not read as a discontinuity.
         audioContinuity.reset()
@@ -1345,8 +1362,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     /// Audio-only playback in the background: video is discarded and not
     /// decoded; audio, the clock, subtitles and the finish boundary carry
-    /// on. Resuming seeks in place so the picture restarts on a keyframe
-    /// with a fresh decoder session.
+    /// on. Resuming restarts only the picture, on a keyframe with a fresh
+    /// decoder session, while audio plays on.
     public func setVideoOutputSuspended(_ suspended: Bool) {
         updateVideoSuspension { $0.videoSuspendedByHost = suspended }
     }
@@ -1362,18 +1379,33 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     /// Applies a change to what suspends video. Suspending flushes the video
-    /// path; resuming seeks in place for a fresh session.
+    /// path. Resuming while playing restarts only the picture: a seek would
+    /// flush the audio too, a second of silence on unlocking an iPhone, and
+    /// over AirPlay the refilled renderer stalled. Paused or buffering, a
+    /// seek costs nothing audible and shows the picture at the clock.
     private func updateVideoSuspension(_ change: (inout SharedState.State) -> Void) {
+        let resumesInPlace = !isPaused && !isBuffering && didNotifyPlaybackStarted && !didFinish
         let (changed, suspended) = shared.withLock { state -> (Bool, Bool) in
             let was = state.videoOutputSuspended
             change(&state)
             state.videoOutputSuspended = state.videoSuspendedByHost
                 || state.videoParkedForForeground
+            // Under the same lock: the demux loop must not read video
+            // between the two.
+            if was, !state.videoOutputSuspended, resumesInPlace {
+                state.videoResumePending = true
+                state.videoResumeInProgress = true
+            } else if state.videoOutputSuspended {
+                state.videoResumePending = false
+                state.videoResumeInProgress = false
+            }
             return (state.videoOutputSuspended != was, state.videoOutputSuspended)
         }
         guard changed, !shutdownRequested else { return }
         if suspended {
             pumpQueue.sync { self.flushVideoPath() }
+        } else if resumesInPlace {
+            return
         } else if !didFinish, duration <= 0 || timePosition < duration - 1 {
             // In the last second `seek` would clamp backwards.
             seek(to: timePosition)
@@ -2147,7 +2179,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     elapsed: ContinuousClock.now - recoveryStarted,
                     videoQueueCount: self.videoQueue.count,
                     videoQueueFinished: self.videoQueue.isFinished
-                        || self.shared.withLock { $0.videoOutputSuspended },
+                        || self.shared.withLock { $0.videoOutputSuspended || $0.videoResumeInProgress },
                     playbackRate: self.effectiveRate,
                     audioRequired: self.buffersOnAudioStarvation
                         && self.hasAudioTrack
@@ -2272,7 +2304,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             duration: duration,
             rate: effectiveRate,
             videoQueueCount: videoQueue.count,
-            videoQueueFinished: videoQueue.isFinished || shared.withLock { $0.videoOutputSuspended },
+            videoQueueFinished: videoQueue.isFinished
+                || shared.withLock { $0.videoOutputSuspended || $0.videoResumeInProgress },
             videoBufferedTo: shared.withLock { $0.videoBufferedTo },
             hasAudio: hasAudioTrack,
             audioQueueFinished: audioQueue.isFinished,
@@ -2511,6 +2544,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             let seek = applyPendingSeek(&progress)
             if seek == .stop { break }
             if seek == .handled { continue }
+            let resume = applyPendingVideoResume()
+            if resume == .stop { break }
+            if resume == .handled { continue }
             if videoQueue.isFinished {
                 // EOF reached; idle until a seek arrives or we shut down.
                 Thread.sleep(forTimeInterval: 0.1)
@@ -2887,6 +2923,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     nonisolated private func applyTrackChanges(_ progress: inout DemuxLoopProgress) {
         let desiredSubtitle = shared.withLock { $0.selectedSubtitleStreamIndex }
         if desiredSubtitle != progress.appliedSubtitleStreamIndex {
+            // The new track's replay is the line on screen, never a repeat.
+            shared.withLock { $0.subtitleReplayFloors.removeAll() }
             let position = CMTimebaseGetTime(synchronizer.timebase).seconds
             let replayed = demuxer.selectSubtitle(
                 streamIndex: desiredSubtitle >= 0 ? desiredSubtitle : nil,
@@ -2985,6 +3023,47 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         applyAudioSelection(ordinal: shared.withLock { $0.selectedAudioOrdinal })
         progress.hasPrimedPlayback = true
         primeAndStart(at: target)
+        return .handled
+    }
+
+    /// Restarts video at the running clock without touching audio. The
+    /// container moves back to the keyframe before the clock, so audio and
+    /// subtitles already queued are read again; their floors drop them. A
+    /// viewer seek clears the request, and one arriving meanwhile is applied
+    /// on the next pass.
+    nonisolated private func applyPendingVideoResume() -> DemuxSeekOutcome {
+        guard shared.withLock({ state -> Bool in
+            guard state.videoResumePending else { return false }
+            state.videoResumePending = false
+            guard state.pendingSeekSeconds == nil else { return false }
+            state.audioReplayFloorSeconds = state.audioQueuedThroughSeconds ?? -.infinity
+            state.subtitleReplayFloors = state.subtitleReadThrough
+            return true
+        }) else { return .noneRequested }
+        let clock = synchronizer.currentTime().seconds
+        do {
+            try demuxer.seek(toSeconds: max(clock + Self.videoResumeLeadSeconds, 0))
+        } catch {
+            // The container cannot reposition on its own; restart both.
+            Task { @MainActor in
+                guard !self.shutdownRequested,
+                      self.shared.withLock({ $0.videoResumeInProgress }) else { return }
+                self.seek(to: self.timePosition)
+            }
+            return .handled
+        }
+        videoFeedLock.lock()
+        videoIntake.removeAll()
+        let decoderReady = prepareVideoDecoderForSeek()
+        videoFeedLock.unlock()
+        guard decoderReady else { return .stop }
+        softwareDecodeStage?.reset()
+        pumpQueue.sync {
+            self.flushVideoPath()
+            // Audio alone may have read to the end; video has not.
+            self.videoQueue.reset()
+        }
+        kickPumps()
         return .handled
     }
 
@@ -3221,7 +3300,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             } else {
                 // The display layer decodes these itself, so it gets them
                 // all, but shows none of them.
-                if endsBeforeStart(buffer) { SampleBufferFactory.markDoNotDisplay(buffer) }
+                if endsBeforeStart(buffer) {
+                    SampleBufferFactory.markDoNotDisplay(buffer)
+                } else {
+                    finishVideoResumeIfNeeded()
+                }
                 videoQueue.enqueue(buffer)
                 kickPumps()
             }
@@ -3293,11 +3376,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             admitVideo(.packet(packet))
         case .audio(let buffers, let streamIndex):
-            let (selected, delay, floor) = shared.withLock {
-                ($0.selectedAudioStreamIndex, $0.audioDelaySeconds, $0.startFloorSeconds)
+            let (selected, delay, floor, replayFloor) = shared.withLock {
+                ($0.selectedAudioStreamIndex, $0.audioDelaySeconds, $0.startFloorSeconds, $0.audioReplayFloorSeconds)
             }
             if streamIndex == selected {
-                for buffer in buffers {
+                var queuedThrough: Double?
+                for read in buffers {
+                    // Queued before a video resume and read again since.
+                    guard let buffer = AudioReplayTrim.remainder(of: read, after: replayFloor) else { continue }
                     // Pre-delay is fine: the delay shifts every stamp alike.
                     audioContinuity.observe(buffer)
                     let output = delay == 0 ? buffer : Self.retimed(buffer, by: delay)
@@ -3306,6 +3392,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     if let end = Self.presentationEnd(of: output), end <= floor { continue }
                     recordMediaEnd(output)
                     audioQueue.enqueue(output)
+                    queuedAudioObserverForTesting?(output)
+                    if let end = Self.presentationEnd(of: buffer) { queuedThrough = max(queuedThrough ?? end, end) }
+                }
+                if let queuedThrough {
+                    shared.withLock { $0.audioQueuedThroughSeconds = max($0.audioQueuedThroughSeconds ?? queuedThrough, queuedThrough) }
                 }
                 kickPumps()
             }
@@ -3317,6 +3408,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 return true
             }
             shared.withLock { state in
+                // Read again after a video resume, and already in the store.
+                // Once past it, the floor has done its work.
+                let events = SubtitleReplay.unread(events, after: state.subtitleReplayFloors[streamIndex])
+                if !events.isEmpty { state.subtitleReplayFloors[streamIndex] = nil }
+                if let latest = events.map(SubtitleReplay.time(of:)).max() {
+                    state.subtitleReadThrough[streamIndex] = max(state.subtitleReadThrough[streamIndex] ?? latest, latest)
+                }
                 if state.textSubtitleStreamIndices.contains(streamIndex) {
                     state.subtitleBacklog.record(events, streamIndex: streamIndex)
                 }
@@ -3373,6 +3471,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// reset); dropping here starved stall re-priming.
     nonisolated private func acceptSoftwareDecodedVideo(_ buffer: CMSampleBuffer) {
         guard !shared.withLock({ $0.cancelled }), !endsBeforeStart(buffer) else { return }
+        finishVideoResumeIfNeeded()
         publishVideoSizeIfChanged(buffer)
         videoQueue.enqueue(buffer)
         kickPumps()
@@ -3408,6 +3507,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             return false
         }
         guard !shouldDrop, !endsBeforeStart(buffer) else { return }
+        finishVideoResumeIfNeeded()
         publishVideoSizeIfChanged(buffer)
         videoQueue.enqueue(buffer)
         kickPumps()
@@ -3418,7 +3518,19 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// on arrival, and the renderer would show them all at once.
     nonisolated private func endsBeforeStart(_ buffer: CMSampleBuffer) -> Bool {
         guard let end = Self.presentationEnd(of: buffer) else { return false }
-        return end <= shared.withLock { $0.startFloorSeconds }
+        let (floor, resuming) = shared.withLock { ($0.startFloorSeconds, $0.videoResumeInProgress) }
+        if end <= floor { return true }
+        // A video resume chases a running clock, so the floor moves with it.
+        guard resuming else { return false }
+        return end <= synchronizer.currentTime().seconds + Self.videoResumeMarginSeconds
+    }
+
+    /// The first picture a video resume hands the renderer ends it: from
+    /// here video is owed again, and later pictures are not late.
+    nonisolated private func finishVideoResumeIfNeeded() {
+        shared.withLock {
+            if $0.videoResumeInProgress, !$0.videoResumePending { $0.videoResumeInProgress = false }
+        }
     }
 
     nonisolated private func recordMediaEnd(_ buffer: CMSampleBuffer) {
@@ -4203,6 +4315,19 @@ nonisolated private final class SharedState: @unchecked Sendable {
         /// played. Queued audio would throttle read-ahead when the renderer
         /// holds least, and queued video would race to catch the clock up.
         var startFloorSeconds: Double = -.infinity
+        /// A video resume the demux loop has yet to take, and one under way
+        /// until its first picture reaches the queue. While under way video
+        /// owes nothing, as while suspended.
+        var videoResumePending = false
+        var videoResumeInProgress = false
+        /// Furthest pre-delay audio end queued since the last flush, and the
+        /// same taken at a video resume: the loop reads that audio again.
+        var audioQueuedThroughSeconds: Double?
+        var audioReplayFloorSeconds: Double = -.infinity
+        /// The latest subtitle event read per stream, and the same taken at
+        /// a video resume.
+        var subtitleReadThrough: [Int32: Double] = [:]
+        var subtitleReplayFloors: [Int32: Double] = [:]
     }
 
     private let lock = NSLock()
