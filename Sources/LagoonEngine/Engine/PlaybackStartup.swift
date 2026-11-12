@@ -2,7 +2,7 @@ import Foundation
 
 /// How far a playback has got towards its first frame. A host can show it,
 /// or give up early on a start that is not moving.
-public enum PlaybackStartupPhase: String, Sendable, CaseIterable {
+public nonisolated enum PlaybackStartupPhase: String, Sendable, CaseIterable {
     /// Not started.
     case idle
     /// Waiting for the source's first byte.
