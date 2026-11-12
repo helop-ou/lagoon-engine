@@ -196,6 +196,12 @@ degrading source). Neither default is settled on hardware.
   re-primes audio, video, renderers and the clock at the current position.
   The `StallRecoveryPolicy` unit test fails if this ever becomes an unbounded
   rate-zero polling loop.
+- A seek ends the recovery it interrupts. The poll used to stop only while
+  the seek was still waiting to be picked up, which takes a few
+  milliseconds. After that it read the seek's own queues: at 12 frames it
+  ended buffering and started the clock while the seek was still priming
+  its audio, and at 5 s since the stall it seeked again and reported a
+  reprime. `StallRecoverySeekTests` pins it.
 - `av_read_frame` separates `AVERROR_EOF` from read failures. Transient errors
   retry briefly; persistent ones surface as an error, never a fake end of file
   (which would move a host's resume point).

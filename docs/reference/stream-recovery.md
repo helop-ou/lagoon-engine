@@ -237,7 +237,10 @@ is ignored: there is nothing to rebuild for, and the resume seek makes a fresh
 session anyway. The same holds for a rebuild claimed just before the
 suspension (`resolveClaimedRebuild`). Locking an iPhone takes the session and
 suspends video in quick succession, and the claimed rebuild's seek cost a
-second of audio, or all of it over AirPlay until unlock.
+second of audio, or all of it over AirPlay until unlock. A rebuild made moot
+that way is not spent. The picture resumes in place, in the same generation,
+and counted as spent the next fault within 48 pictures of the unlock read
+as a rebuilt session dying at once and descended, with no rebuild ever tried.
 
 **In the background, a fault a rebuild cannot fix parks video.** The host
 says it is in the background with `setHostInBackground(_:)`. There the

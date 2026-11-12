@@ -190,7 +190,14 @@ interrupts FFmpeg. Then:
 - renderer stop, flush, queued sample release and renderer removal run on the
   pump queue;
 - `FFmpegDemuxer.close()` releases the codec and decoder wrappers on the
-  demux queue.
+  demux queue. The engine takes its decoders away first, under the feed lock
+  the pump holds while it hands them video: the pump can be mid-drain when
+  the loop sees the cancel, and it loads the decoder afresh for each sample.
+  A drain that was waiting for the lock then stops, or with the decoders
+  gone it would queue compressed samples for the renderer.
+- An open the exit interrupted is not a failure. It reports no `onError`,
+  takes no cache fallback and discards no cache scope: the scope current by
+  then can be a replacement engine's.
 
 So dismissal never pays for hundreds of buffer releases or C decoder
 destruction. The host's stopped-playback report is sent once, after the host
