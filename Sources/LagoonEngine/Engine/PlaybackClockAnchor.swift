@@ -23,7 +23,30 @@ nonisolated enum PlaybackClockStart {
     static func usesHostTime(outputs: [AVAudioSession.Port]) -> Bool {
         !outputs.contains(.airPlay)
     }
+
+    /// Starts `clock` at `time`, at `hostTime` unless the route is AirPlay.
+    static func start(
+        _ clock: some PlaybackClockStarting,
+        rate: Float,
+        time: CMTime,
+        hostTime: CMTime,
+        outputs: [AVAudioSession.Port]
+    ) {
+        if usesHostTime(outputs: outputs) {
+            clock.setRate(rate, time: time, atHostTime: hostTime)
+        } else {
+            clock.setRate(rate, time: time)
+        }
+    }
 }
+
+/// The two ways a start sets the clock, so a test can see which ran.
+nonisolated protocol PlaybackClockStarting {
+    func setRate(_ rate: Float, time: CMTime)
+    func setRate(_ rate: Float, time: CMTime, atHostTime hostTime: CMTime)
+}
+
+extension AVSampleBufferRenderSynchronizer: PlaybackClockStarting {}
 
 /// Resolves EOF from the last sample end. The container duration is only a
 /// fallback: it can be missing, or outlast a truncated input.
