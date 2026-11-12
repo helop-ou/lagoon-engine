@@ -377,4 +377,17 @@ struct DolbyVisionProfileConverterTests {
 
         #expect(DolbyVisionProfileConverter(record: profileSevenRecord()) != nil)
     }
+
+    @Test func aProfile8RecordOverProfile7RPUsGetsTheSameConverter() throws {
+        var record = profileSevenRecord()
+        #expect(DolbyVisionProfileConverter(profile8RecordOverProfile7RPUs: record) == nil)
+
+        record.dv_profile = 8
+        record.el_present_flag = 0
+        record.dv_bl_signal_compatibility_id = 6
+        let converter = try #require(DolbyVisionProfileConverter(profile8RecordOverProfile7RPUs: record))
+        #expect(converter.synthesizedRecord.dv_profile == 8)
+        #expect(converter.synthesizedRecord.dv_bl_signal_compatibility_id == 1)
+        #expect(converter.synthesizedRecord.dv_level == record.dv_level)
+    }
 }

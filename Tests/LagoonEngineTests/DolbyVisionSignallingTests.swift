@@ -6,12 +6,14 @@ import Testing
 @testable import LagoonEngine
 
 /// The Dolby Vision atoms a stream reaches VideoToolbox with. Profile 8.6 is
-/// refused at session creation on an Apple TV, so it is signalled as 8.1, and
+/// refused at session creation on an Apple TV, so it and the other
+/// out-of-spec profile 8 ids are signalled as 8.1, and
 /// `DolbyVisionRecordPolicy` fixes a wrong or missing record.
 @Suite("Dolby Vision signalling")
 struct DolbyVisionSignallingTests {
-    @Test func profile86IsSignalledAsProfile81() throws {
-        let dvvC = try signalledDvvC(compatibilityID: 6)
+    @Test(arguments: [UInt8(0), 3, 5, 6])
+    func anOutOfSpecProfile8IDIsSignalledAsProfile81(_ id: UInt8) throws {
+        let dvvC = try signalledDvvC(compatibilityID: id)
         #expect(dvvC[2] >> 1 == 8, "profile 8")
         #expect(dvvC[4] >> 4 == 1, "bl signal compatibility id 1 (HDR10 base layer)")
     }
