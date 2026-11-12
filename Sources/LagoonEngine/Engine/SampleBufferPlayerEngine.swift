@@ -1470,7 +1470,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             let rate = Float(effectiveRate)
             requestedClockRate = rate
-            clockQueue.sync { synchronizer.setRate(rate, time: time, atHostTime: hostTime) }
+            let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType)
+            if PlaybackClockStart.usesHostTime(outputs: outputs) {
+                clockQueue.sync { synchronizer.setRate(rate, time: time, atHostTime: hostTime) }
+            } else {
+                clockQueue.sync { synchronizer.setRate(rate, time: time) }
+            }
         }
         // Only after anchoring: SyncPlay's Ready carries `clockPosition`,
         // which reads the synchronizer. Before the anchor it holds the old
