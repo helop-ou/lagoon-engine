@@ -38,12 +38,48 @@ nonisolated enum AudioReplayTrim {
     }
 }
 
-/// Subtitle events a video resume reads again, told apart by their time.
+/// Subtitle events a video resume reads again, told apart by their time and,
+/// among events that share one, by how many had been read. A typeset ASS
+/// script starts many events at the same instant, each in its own packet.
 nonisolated enum SubtitleReplay {
-    /// The events after `floor`, the latest one read before the resume.
-    static func unread(_ events: [SubtitleEvent], after floor: Double?) -> [SubtitleEvent] {
-        guard let floor else { return events }
-        return events.filter { time(of: $0) > floor }
+    /// How far a stream has been read: the latest event time, and how many
+    /// events at that time.
+    struct Mark: Equatable {
+        var time: Double
+        var count: Int
+
+        mutating func note(_ events: [SubtitleEvent]) {
+            for event in events {
+                let time = SubtitleReplay.time(of: event)
+                if time > self.time {
+                    self = Mark(time: time, count: 1)
+                } else if time == self.time {
+                    count += 1
+                }
+            }
+        }
+    }
+
+    static func mark(after events: [SubtitleEvent], from mark: Mark?) -> Mark? {
+        var mark = mark ?? Mark(time: -.infinity, count: 0)
+        mark.note(events)
+        return mark.count > 0 ? mark : nil
+    }
+
+    /// The events not read before the resume. `floor` is how far the stream
+    /// had been read, and counts down the events at its time as they pass.
+    static func unread(_ events: [SubtitleEvent], after floor: inout Mark?) -> [SubtitleEvent] {
+        guard var remaining = floor else { return events }
+        let unread = events.filter { event in
+            let time = time(of: event)
+            if time < remaining.time { return false }
+            guard time == remaining.time, remaining.count > 0 else { return true }
+            remaining.count -= 1
+            return false
+        }
+        // Once past it, the floor has done its work.
+        floor = unread.isEmpty ? remaining : nil
+        return unread
     }
 
     static func time(of event: SubtitleEvent) -> Double {
