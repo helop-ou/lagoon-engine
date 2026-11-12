@@ -54,9 +54,15 @@ in the [engine guide](../engine.md).
   target it takes about eight pictures and is ready in 1.5–2.9 s.
 - Playback binds the first presentable media time to a near-future host time
   with `setRate(_:time:atHostTime:)`, so audio and video start on one
-  deadline.
+  deadline, 0.25 s ahead (`PlaybackClockStart.leadSeconds`). On the Apple TV
+  4K (3rd gen) over HDMI, with 1080p H.264 at 24 Hz, a lead of 0.1 s lost
+  about four pictures at each start (twelve runs) and one or two after each
+  seek (six runs). At 0.25 s a start lost about one and a seek none (eleven
+  and five runs). 0.4 s was no better, and 0.1 s plus the route's reported
+  output latency (80 ms) fell between the two. On 4K HEVC at 50 Hz a start
+  lost seven to ten pictures at every lead, so that loss has another cause.
 - Not on an AirPlay route (`PlaybackClockStart`). The receiver buffers about
-  two seconds and cannot meet a deadline 0.1 s ahead. On an iPhone AirPlaying
+  two seconds and cannot meet a deadline that near. On an iPhone AirPlaying
   to an Apple TV, every seek left the audio renderer holding two to four
   seconds it never played while the clock ran on, silent until the next route
   change. `setRate(_:time:)` lets the synchronizer wait until the renderers
