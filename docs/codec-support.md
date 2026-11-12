@@ -15,7 +15,7 @@ is decoded by libavcodec on the CPU.
 | H.264 | VideoToolbox, software fallback | Progressive 8-bit H.264 is decoded ahead by VideoToolbox, and goes to the renderer compressed only if no session can be made. Interlaced H.264 decodes in software, because that is the only path with a deinterlacer, and so does H.264 outside the hardware profiles, 10-bit (High 10), 4:2:2 and 4:4:4, which no Apple hardware decoder accepts. |
 | HEVC | VideoToolbox | Always compressed, interlaced included. There is no software fallback, and a device without HEVC hardware fails the title rather than decoding it on the CPU. |
 | AV1 | VideoToolbox, software fallback | VideoToolbox when the device can make a session for the stream, and libdav1d when it cannot. Which one you get is decided by trying, once, at open. |
-| VP9 | VideoToolbox, software fallback | VideoToolbox where the device decodes VP9 in hardware and the stream is 4:2:0 (profiles 0 and 2), tried once at open. libavcodec everywhere else, and for 4:2:2 and 4:4:4. |
+| VP9 | VideoToolbox, software fallback | VideoToolbox where the device decodes VP9 in hardware and the stream is 4:2:0 (profiles 0 and 2), tried once at open, from iOS 26.2 and tvOS 26.2. libavcodec everywhere else, and for 4:2:2 and 4:4:4. |
 | VC-1 | Software | Always software: Apple ships no VideoToolbox decoder for it. |
 | WMV3 | Software | Always software: Apple ships no VideoToolbox decoder for it. |
 | MPEG-4 Part 2 | Software | Always software. The Xvid and DivX envelope. |
