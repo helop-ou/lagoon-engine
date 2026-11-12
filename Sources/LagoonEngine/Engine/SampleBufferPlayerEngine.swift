@@ -1459,6 +1459,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         let time = PlaybackClockAnchor.mediaTime(targetSeconds: seconds, firstVideoPTS: firstVideoPTS)
         requestedClockRate = 0
         clockQueue.sync { synchronizer.setRate(0, time: time) }
+        // The first frame is up now. The host's hold is not part of the
+        // start's timings.
+        finishStartup()
     }
 
     /// Demux primed after open or seek: start, or reposition if paused.
@@ -2523,10 +2526,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         startupPhase = phase
     }
 
+    /// Once per start: the first picture can go up before the clock starts,
+    /// while a host holds `startGate`.
     private func finishStartup() {
         slowStartTask?.cancel()
         let now = ProcessInfo.processInfo.systemUptime
-        let (timeline, cached) = shared.withLock { state in
+        let (timeline, cached) = shared.withLock { state -> (PlaybackStartupTimeline?, Bool) in
+            guard state.startup?.reached[.firstFrame] == nil else { return (nil, false) }
             state.startup?.mark(.firstFrame, at: now)
             return (state.startup, state.deliveryIsCached)
         }
