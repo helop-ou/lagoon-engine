@@ -73,8 +73,20 @@ nonisolated final class DolbyVisionProfileConverter {
     }
 
     /// nil unless `record.dv_profile == 7`.
-    init?(record: AVDOVIDecoderConfigurationRecord) {
+    convenience init?(record: AVDOVIDecoderConfigurationRecord) {
         guard record.dv_profile == 7 else { return nil }
+        self.init(versionAndLevelOf: record)
+    }
+
+    /// For a profile 8 record over RPUs still written for profile 7
+    /// (`DolbyVisionRecordPolicy.convertsProfile7RPUs`). nil for any other
+    /// profile.
+    convenience init?(profile8RecordOverProfile7RPUs record: AVDOVIDecoderConfigurationRecord) {
+        guard record.dv_profile == 8 else { return nil }
+        self.init(versionAndLevelOf: record)
+    }
+
+    private init(versionAndLevelOf record: AVDOVIDecoderConfigurationRecord) {
         synthesizedRecord = AVDOVIDecoderConfigurationRecord(
             dv_version_major: record.dv_version_major,
             dv_version_minor: record.dv_version_minor,

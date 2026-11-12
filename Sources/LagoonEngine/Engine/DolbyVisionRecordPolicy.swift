@@ -17,7 +17,24 @@ import Libavutil
 ///   checked the same way. When its first RPU reads as profile 5, it gets a
 ///   synthesized profile 5 record, or it shows as raw IPTPQc2, green and
 ///   purple.
+/// - Profile 8 with a base layer compatibility id other than 1, 2 or 4 is
+///   outside Dolby's spec, and VideoToolbox refuses a session for it (-12909
+///   for id 6 on an Apple TV 4K with tvOS 27). It is signalled with the id
+///   its base layer's transfer function names: 1 over PQ, 4 over HLG. Over
+///   anything else the record is dropped, as for 8.2. Such a stream is often
+///   a profile 7 disc without its enhancement layer, so the first RPU is
+///   read too: metadata still written for a full enhancement layer is
+///   converted as profile 7 is (`DolbyVisionProfileConverter`), because its
+///   mapping curves assume a residual that is gone.
 nonisolated enum DolbyVisionRecordPolicy {
+    /// What the first RPU says about the stream.
+    struct FirstRPU: Equatable {
+        /// libdovi's guess at the profile.
+        var profile: UInt8
+        /// Profile 7 metadata written for a full enhancement layer (FEL).
+        var expectsFullEnhancementLayer = false
+    }
+
     /// What the policy reads from the stream, apart from its record.
     struct Stream: Equatable {
         var codecID: AVCodecID = AV_CODEC_ID_HEVC
@@ -65,6 +82,7 @@ nonisolated enum DolbyVisionRecordPolicy {
         guard stream.codecID == AV_CODEC_ID_HEVC else { return false }
         if let container {
             return container.dv_profile == 5 && stream.saysHDR10
+                || isOutOfSpecProfile8(container) && profile8CompatibilityID(for: stream) == 1
         }
         return isMatroska && stream.profile == AV_PROFILE_HEVC_MAIN_10 && stream.hasNoColorimetry
     }
@@ -82,6 +100,11 @@ nonisolated enum DolbyVisionRecordPolicy {
         switch (container.dv_profile, container.dv_bl_signal_compatibility_id) {
         case (8, 2):
             return nil
+        case (8, _) where isOutOfSpecProfile8(container):
+            guard let compatibilityID = profile8CompatibilityID(for: stream) else { return nil }
+            var signalled = container
+            signalled.dv_bl_signal_compatibility_id = compatibilityID
+            return signalled
         case (5, _) where firstRPUProfile == 8:
             return profile81(from: container)
         default:
@@ -89,10 +112,39 @@ nonisolated enum DolbyVisionRecordPolicy {
         }
     }
 
-    /// libdovi's profile for the first RPU in a length-prefixed packet. nil
+    /// Whether an out-of-spec profile 8 stream's RPUs are converted as
+    /// profile 7's are. An unreadable first RPU is no evidence, so the stream
+    /// is only relabelled.
+    static func convertsProfile7RPUs(
+        container: AVDOVIDecoderConfigurationRecord?,
+        stream: Stream,
+        firstRPU: FirstRPU?
+    ) -> Bool {
+        guard let container, let firstRPU,
+              isOutOfSpecProfile8(container),
+              profile8CompatibilityID(for: stream) == 1 else { return false }
+        return firstRPU.profile == 7 && firstRPU.expectsFullEnhancementLayer
+    }
+
+    private static func isOutOfSpecProfile8(_ record: AVDOVIDecoderConfigurationRecord) -> Bool {
+        record.dv_profile == 8 && ![1, 2, 4].contains(record.dv_bl_signal_compatibility_id)
+    }
+
+    /// The compatibility id of the base layer the stream itself declares. An
+    /// undeclared transfer function counts as PQ, the base of the disc
+    /// remuxes these records come from.
+    private static func profile8CompatibilityID(for stream: Stream) -> UInt8? {
+        switch stream.transfer {
+        case AVCOL_TRC_SMPTE2084, AVCOL_TRC_UNSPECIFIED: 1
+        case AVCOL_TRC_ARIB_STD_B67: 4
+        default: nil
+        }
+    }
+
+    /// What libdovi reads from the first RPU in a length-prefixed packet. nil
     /// when there is none, or it fails its CRC32: libdovi can abort on a
     /// corrupt one.
-    static func guessedProfile(ofFirstRPUIn payload: UnsafeRawBufferPointer, lengthSize: Int) -> UInt8? {
+    static func firstRPU(in payload: UnsafeRawBufferPointer, lengthSize: Int) -> FirstRPU? {
         guard let unit = HEVCNALUnitRewriter.firstUnit(ofType: 62, in: payload, lengthSize: lengthSize),
               let base = unit.baseAddress,
               DolbyVisionRPUChecksum.isIntact(unit: unit),
@@ -102,7 +154,10 @@ nonisolated enum DolbyVisionRecordPolicy {
         defer { dovi_rpu_free(rpu) }
         guard dovi_rpu_get_error(rpu) == nil, let header = dovi_rpu_get_header(rpu) else { return nil }
         defer { dovi_rpu_free_header(header) }
-        return header.pointee.guessed_profile
+        return FirstRPU(
+            profile: header.pointee.guessed_profile,
+            expectsFullEnhancementLayer: header.pointee.el_type.map { String(cString: $0) } == "FEL"
+        )
     }
 
     /// The lowest Dolby Vision level whose pixel rate and width hold the

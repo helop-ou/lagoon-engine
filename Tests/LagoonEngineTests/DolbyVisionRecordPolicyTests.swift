@@ -86,12 +86,12 @@ struct DolbyVisionRecordPolicyTests {
     @Test(arguments: [("5", UInt8(5)), ("8.1", UInt8(8))])
     func theFirstRPUInAPacketGivesItsProfile(_ generated: String, _ profile: UInt8) throws {
         let packet = try lengthPrefixed([slice, try generatedRPU(profile: generated)])
-        #expect(packet.withUnsafeBytes { Policy.guessedProfile(ofFirstRPUIn: $0, lengthSize: 4) } == profile)
+        #expect(packet.withUnsafeBytes { Policy.firstRPU(in: $0, lengthSize: 4) }?.profile == profile)
     }
 
     @Test func aPacketWithoutAnIntactRPUGivesNone() throws {
         let none = try lengthPrefixed([slice])
-        #expect(none.withUnsafeBytes { Policy.guessedProfile(ofFirstRPUIn: $0, lengthSize: 4) } == nil)
+        #expect(none.withUnsafeBytes { Policy.firstRPU(in: $0, lengthSize: 4) } == nil)
 
         // The MEL fixture with the bit that aborts libdovi flipped, as the
         // converter's test does. Without the checksum this aborts the process.
@@ -100,7 +100,7 @@ struct DolbyVisionRecordPolicyTests {
         var rpu = Data([0x7C, 0x01]) + shipped.dropFirst(4)
         rpu[177 / 8] ^= UInt8(0x80 >> (177 % 8))
         let corrupt = try lengthPrefixed([slice, rpu])
-        #expect(corrupt.withUnsafeBytes { Policy.guessedProfile(ofFirstRPUIn: $0, lengthSize: 4) } == nil)
+        #expect(corrupt.withUnsafeBytes { Policy.firstRPU(in: $0, lengthSize: 4) } == nil)
     }
 
     // MARK: - Helpers

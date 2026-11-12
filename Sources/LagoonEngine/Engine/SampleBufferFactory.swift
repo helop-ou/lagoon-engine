@@ -138,8 +138,8 @@ nonisolated enum SampleBufferFactory {
         // it becomes dvh1. Profile 8 keeps hvc1 plus dvvC, so other displays
         // fall back to the base layer's tags. Profile 7 is tagged as 8 when
         // converted (`dolbyVisionOverride`); otherwise it and profile 4 get
-        // no atom and play as HDR10. Profile 8.6 is tagged as 8.1. A missing
-        // or wrong record is fixed first (`DolbyVisionRecordPolicy`).
+        // no atom and play as HDR10. A missing, wrong or out-of-spec record
+        // is fixed first (`DolbyVisionRecordPolicy`).
         if let dolbyVisionOverride {
             atoms["dvvC"] = doviConfigurationBox(dolbyVisionOverride)
         } else if codecpar.pointee.codec_id == AV_CODEC_ID_HEVC,
@@ -153,7 +153,7 @@ nonisolated enum SampleBufferFactory {
                 codecType = kCMVideoCodecType_DolbyVisionHEVC
                 atoms["dvcC"] = doviConfigurationBox(dovi)
             case 8:
-                atoms["dvvC"] = doviConfigurationBox(profile8Signalled(dovi))
+                atoms["dvvC"] = doviConfigurationBox(dovi)
             default:
                 break
             }
@@ -836,17 +836,6 @@ nonisolated enum SampleBufferFactory {
         append(UInt16(clamping: rescale(metadata.ambient_light_x, by: 50_000)), to: &payload)
         append(UInt16(clamping: rescale(metadata.ambient_light_y, by: 50_000)), to: &payload)
         return payload
-    }
-
-    /// Compatibility id 6 is a Blu-ray HDR10 base layer, which profile 8
-    /// leaves out of Dolby's spec. VideoToolbox refuses a session for it
-    /// (-12909 on an Apple TV 4K with tvOS 27) but decodes the same stream
-    /// signalled as 8.1, an HDR10 base layer too.
-    static func profile8Signalled(_ record: AVDOVIDecoderConfigurationRecord) -> AVDOVIDecoderConfigurationRecord {
-        guard record.dv_bl_signal_compatibility_id == 6 else { return record }
-        var signalled = record
-        signalled.dv_bl_signal_compatibility_id = 1
-        return signalled
     }
 
     /// The 24-byte dvcC/dvvC payload, as FFmpeg's ff_isom_put_dvcc_dvvc
