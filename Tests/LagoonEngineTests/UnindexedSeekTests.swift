@@ -56,6 +56,64 @@ struct UnindexedSeekTests {
         #expect(throws: DemuxError.self) { try demuxer.seek(toSeconds: 100) }
     }
 
+    /// A cluster's Timestamp is whatever bytes the file holds. One of eight
+    /// bytes made the step back larger than an Int64 and the seek trapped.
+    @Test func aClusterTimestampFromACorruptFileStepsBackNoFurtherThanTheFile() {
+        let length: Int64 = 50_000_000_000
+        func step(_ ticks: Int64) -> Int64 {
+            MatroskaClusterLocator.stepBack(overshootTicks: ticks, ticksPerSecond: 1_000, length: length, durationSeconds: 7_200)
+        }
+        #expect(step(.max) == length)
+        #expect(step(1 << 56) == length)
+        #expect(step(7_200_000) == length)
+        // Ten minutes past the target in a two hour file: a twelfth of it.
+        #expect(abs(step(600_000) - length / 12) < 2)
+        #expect(step(0) == 0)
+        #expect(MatroskaClusterLocator.stepBack(overshootTicks: 5, ticksPerSecond: 0, length: 10, durationSeconds: 1) == 10)
+    }
+
+    /// Clusters can be five times the window. Four windows could all fall
+    /// inside one, and the seek failed with a cluster a little further back.
+    @Test func aClusterFiveWindowsBackIsStillFound() {
+        let file = Self.file(length: 12_000, clusters: [(0, 0), (6_000, 6_000)])
+        let found = MatroskaClusterLocator.lastCluster(
+            atOrBefore: 3_900, estimate: 3_900, window: 1_000, length: 12_000,
+            ticksPerSecond: 1_000, durationSeconds: 12, read: { file.subdata(in: Int($0)..<Int($0) + $1) }
+        )
+        #expect(found == .init(offset: 0, timestamp: 0))
+    }
+
+    /// The locator needs the whole header in one window.
+    @Test func aHeaderAcrossAWindowEdgeIsNotMissed() {
+        let file = Self.file(length: 12_000, clusters: [(2_995, 2_995), (9_000, 9_000)])
+        let found = MatroskaClusterLocator.lastCluster(
+            atOrBefore: 5_000, estimate: 4_000, window: 1_000, length: 12_000,
+            ticksPerSecond: 1_000, durationSeconds: 12, read: { file.subdata(in: Int($0)..<Int($0) + $1) }
+        )
+        #expect(found == .init(offset: 2_995, timestamp: 2_995))
+    }
+
+    @Test func anOvershootDoesNotUseUpTheWindowsAnEmptyStretchNeeds() {
+        // A byte a tick. Estimated far too late, then three empty windows.
+        let file = Self.file(length: 40_000, clusters: [(1_000, 1_000), (20_000, 20_000)])
+        let found = MatroskaClusterLocator.lastCluster(
+            atOrBefore: 4_500, estimate: 19_900, window: 1_000, length: 40_000,
+            ticksPerSecond: 1_000, durationSeconds: 40, read: { file.subdata(in: Int($0)..<Int($0) + $1) }
+        )
+        #expect(found == .init(offset: 1_000, timestamp: 1_000))
+    }
+
+    /// Zeroes with a cluster header (ID, unknown size, Timestamp) at each offset.
+    private static func file(length: Int, clusters: [(offset: Int, timestamp: Int)]) -> Data {
+        var bytes = [UInt8](repeating: 0, count: length)
+        for cluster in clusters {
+            let header: [UInt8] = [0x1F, 0x43, 0xB6, 0x75, 0x84, 0xE7, 0x83,
+                                   UInt8(cluster.timestamp >> 16 & 0xFF), UInt8(cluster.timestamp >> 8 & 0xFF), UInt8(cluster.timestamp & 0xFF)]
+            bytes.replaceSubrange(cluster.offset..<(cluster.offset + header.count), with: header)
+        }
+        return Data(bytes)
+    }
+
     @Test func clustersAreFoundPastACRCAndNotInsideFrames() {
         // ID, size, CRC-32, Timestamp 96000.
         let cluster: [UInt8] = [0x1F, 0x43, 0xB6, 0x75, 0x84, 0xBF, 0x84, 1, 2, 3, 4, 0xE7, 0x83, 0x01, 0x77, 0x00]
