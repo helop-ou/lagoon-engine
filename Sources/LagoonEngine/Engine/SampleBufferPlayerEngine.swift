@@ -409,6 +409,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     @ObservationIgnored private let subtitleDownloader: BoundedDownload
 
     @ObservationIgnored nonisolated(unsafe) private var videoRenderer: AVSampleBufferVideoRenderer?
+    /// Kept until the renderers are gone. A layer that deallocates while the
+    /// pump enqueues deadlocks the two inside AVFoundation: the dealloc holds
+    /// the video queue's layer lock and waits for the renderer's queue, and
+    /// the enqueue on that queue waits for the lock.
+    @ObservationIgnored nonisolated(unsafe) private var attachedDisplayLayer: AVSampleBufferDisplayLayer?
     @ObservationIgnored nonisolated(unsafe) private var audioRenderer: AVSampleBufferAudioRenderer?
     @ObservationIgnored nonisolated private let synchronizer = AVSampleBufferRenderSynchronizer()
     /// Every rate change goes through here in order. Stopping the clock held
@@ -672,6 +677,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
         let video = displayLayer.sampleBufferRenderer
         let audio = Self.makeAudioRenderer()
+        attachedDisplayLayer = displayLayer
         videoRenderer = video
         audioRenderer = audio
         synchronizer.addRenderer(video)
@@ -1255,8 +1261,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // becomes a no-op instead of enqueueing after the flush.
         let video = videoRenderer
         let audio = audioRenderer
+        nonisolated(unsafe) let displayLayer = attachedDisplayLayer
         videoRenderer = nil
         audioRenderer = nil
+        attachedDisplayLayer = nil
 
         video?.stopRequestingMediaData()
         audio?.stopRequestingMediaData()
@@ -1309,6 +1317,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 ))
             }
             PlaybackLifecycleDiagnostics.renderersDetached(lifecycleID)
+            // A layer is let go on the main thread, like any other.
+            DispatchQueue.main.async { withExtendedLifetime(displayLayer) {} }
             os_signpost(
                 .end,
                 log: PlaybackPerformance.log,
