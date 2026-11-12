@@ -113,9 +113,20 @@ the background.
 - Priming, starvation detection and stall recovery treat a suspended picture
   as a finished video queue, so a stall while suspended recovers on audio
   alone.
-- Lifting the suspension seeks to the current position, which restarts video
-  on a keyframe with a fresh VideoToolbox session that replaces any the system
-  invalidated meanwhile.
+- Lifting the suspension while playing restarts only the picture. The demux
+  loop moves the container to the keyframe before the clock plus half a
+  second, builds a fresh VideoToolbox session that replaces any the system
+  invalidated meanwhile, and leaves audio, the clock and the buffering state
+  alone. Pictures that would end within 0.1 s of the running clock are
+  dropped until one makes it, which ends the resume. Audio and subtitles read
+  again from the keyframe are dropped up to what was already queued, and a
+  decoded audio buffer that straddles that point is cut. Until the first
+  picture, video counts as suspended for stall detection.
+- Paused, buffering, or after the end, lifting it seeks to the current
+  position instead, which costs nothing audible. A seek also cancels a resume
+  still in progress. A seek used to be the only way: it flushed the audio
+  renderer, a second of silence when an iPhone unlocked, and over AirPlay the
+  refilled renderer then stalled.
 - A successor engine started while the previous one was suspended inherits
   the suspension.
 - `setHostInBackground(_:)` says the app is in the background, whether or not
