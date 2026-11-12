@@ -156,6 +156,9 @@ remote control surface, anything that decides when playback starts.
   computed from it.
 - `onSeekReady` fires from `beginPlayback` on every open and every seek,
   unlike the one-shot `onPlaybackStarted`.
+- `startGate` is awaited before a prepared title first starts, with its
+  first picture up and the clock stopped. A host waits there for a display
+  mode switch to end. See [display mode matching](reference/system-integration.md#display-mode-matching-tvos).
 - `startupPhase` says how far a start has got: connecting, opening the
   container once the first byte is back, probing streams, priming the queues,
   started. It only moves forward, and stays `started` through later seeks.

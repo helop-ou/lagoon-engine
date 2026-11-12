@@ -153,6 +153,26 @@ same codec, range and bitrate played clean. With matching, the original 4K
 HDR10 failure and Snowden's 610 s stress scene both measured zero loss on
 hardware.
 
+The rate in the request is a standard one. A container's rate is often a
+little off (23.98, 29.97003), so within half a percent of a rate displays have
+a mode for it becomes that rate, with 24000/1001 told from 24
+(`DisplayMatchRequest.standardFrameRate`). A rate further from all of them is
+asked for as it is.
+
+A switch blanks the panel. On the Apple TV 4K (3rd gen) it began 3 to 35 ms
+after the criteria were set and ended 2.9 to 3.0 s later, for a frame rate
+change alone and for one with a dynamic range change. A title started 0.4 to
+0.55 s after the criteria, so about 2.4 s of it played unseen, and the
+renderer dropped 1 to 5 pictures at the start at 24 Hz and 7 to 10 at 50 Hz.
+
+So a host can hold the first start. The engine awaits `startGate` once per
+prepared title, with the first picture up and the clock stopped at the start
+position, then checks that no seek or shutdown came meanwhile: a seek primes
+and starts itself, through the gate again. A pause during the hold stays
+paused. The host bounds its own wait, because the end of a switch is not
+always announced. Held until the switch ended, the same starts lost no
+picture in six of seven runs and one in the seventh.
+
 ## Debug playback HUD
 
 The engine emits the raw material for a host's diagnostic overlay; it draws
