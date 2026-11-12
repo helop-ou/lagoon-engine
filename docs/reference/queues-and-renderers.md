@@ -30,6 +30,15 @@ in the [engine guide](../engine.md).
   seek is published, the flush runs ahead of the demux loop's own, which is
   the barrier, and a seek costs 35–52 ms, almost all of it
   `synchronizer.rate = 0`.
+- The flush empties the queues and intake before it flushes the renderers.
+  Emptying them wakes a demux loop waiting for room, which then starts its
+  seek during the audio renderer's flush instead of after it. Nothing
+  enqueues in between: the flush runs on the pump queue.
+- While a seek is pending the pump hands no parked video to the decoders
+  (`drainsVideoIntake`). What is parked is from before the seek, and
+  decoding it kept the demux loop in its wait for room. Together the two cut
+  the time from a seek request to the loop picking it up from 30–130 ms to
+  about 10 ms on the Apple TV. `SeekPickupTests` pins both.
 - Every rate change runs on one serial clock queue. A stop (pause, seek,
   stall) is not waited for: seek and pause cost 0.1–0.3 ms on the main
   thread, and the clock still stops within 2 ms of the call. A start is
