@@ -3507,12 +3507,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             shared.withLock { state in
                 // Read again after a video resume, and already in the store.
-                // Once past it, the floor has done its work.
-                let events = SubtitleReplay.unread(events, after: state.subtitleReplayFloors[streamIndex])
-                if !events.isEmpty { state.subtitleReplayFloors[streamIndex] = nil }
-                if let latest = events.map(SubtitleReplay.time(of:)).max() {
-                    state.subtitleReadThrough[streamIndex] = max(state.subtitleReadThrough[streamIndex] ?? latest, latest)
-                }
+                let events = SubtitleReplay.unread(events, after: &state.subtitleReplayFloors[streamIndex])
+                state.subtitleReadThrough[streamIndex] = SubtitleReplay.mark(
+                    after: events,
+                    from: state.subtitleReadThrough[streamIndex]
+                )
                 if state.textSubtitleStreamIndices.contains(streamIndex) {
                     state.subtitleBacklog.record(events, streamIndex: streamIndex)
                 }
@@ -4446,8 +4445,8 @@ nonisolated private final class SharedState: @unchecked Sendable {
         var audioReplayFloorSeconds: Double = -.infinity
         /// The latest subtitle event read per stream, and the same taken at
         /// a video resume.
-        var subtitleReadThrough: [Int32: Double] = [:]
-        var subtitleReplayFloors: [Int32: Double] = [:]
+        var subtitleReadThrough: [Int32: SubtitleReplay.Mark] = [:]
+        var subtitleReplayFloors: [Int32: SubtitleReplay.Mark] = [:]
     }
 
     private let lock = NSLock()
