@@ -296,6 +296,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// up and the clock stopped. A host waits here for something the viewer
     /// cannot see through, such as a display mode switch, and bounds its own
     /// wait: playback does not start until this returns.
+    ///
+    /// Called again for a seek made during the hold, possibly while the
+    /// earlier call is still waiting, so each call must return on its own.
+    /// Capture the engine weakly: the engine holds this closure.
     @ObservationIgnored public var startGate: (@MainActor () async -> Void)?
     // MARK: Cross-thread state
 
@@ -1451,6 +1455,22 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             $0.videoSamplesSinceFlush = 0
             $0.videoStartPointDropsSinceFlush = 0
         }
+    }
+
+    private func isCurrentStart(_ generation: Int) -> Bool {
+        shared.withLock {
+            !$0.cancelled
+                && $0.pendingSeekSeconds == nil
+                && $0.playbackGeneration == generation
+        }
+    }
+
+    /// The host's gate, with the first picture put up, when this is the
+    /// title's first start.
+    private func heldStartGate(at seconds: Double, firstVideoPTS: CMTime?) -> (@MainActor () async -> Void)? {
+        guard let startGate, !didNotifyPlaybackStarted else { return nil }
+        showFirstPicture(at: seconds, firstVideoPTS: firstVideoPTS)
+        return startGate
     }
 
     /// The clock stopped at the start, which shows the first picture while
@@ -3883,25 +3903,16 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             self.pumpVideo()
             self.pumpAudio()
             let firstVideoPTS = self.shared.withLock { $0.firstEnqueuedVideoPTS }
-            Task { @MainActor in
-                let isStillCurrent = self.shared.withLock {
-                    !$0.cancelled
-                        && $0.pendingSeekSeconds == nil
-                        && $0.playbackGeneration == generation
-                }
-                guard isStillCurrent else { return }
-                if let startGate = self.startGate, !self.didNotifyPlaybackStarted {
-                    self.showFirstPicture(at: target, firstVideoPTS: firstVideoPTS)
+            // Weak across the gate: a host's wait must not keep a dismissed
+            // engine alive.
+            Task { @MainActor [weak self] in
+                guard self?.isCurrentStart(generation) == true else { return }
+                if let startGate = self?.heldStartGate(at: target, firstVideoPTS: firstVideoPTS) {
                     await startGate()
                     // A seek asked for meanwhile primes and starts itself.
-                    let isCurrentAfterGate = self.shared.withLock {
-                        !$0.cancelled
-                            && $0.pendingSeekSeconds == nil
-                            && $0.playbackGeneration == generation
-                    }
-                    guard isCurrentAfterGate else { return }
+                    guard self?.isCurrentStart(generation) == true else { return }
                 }
-                self.beginPlayback(at: target, firstVideoPTS: firstVideoPTS)
+                self?.beginPlayback(at: target, firstVideoPTS: firstVideoPTS)
             }
         }
     }
