@@ -98,16 +98,33 @@ Without these tags the display renders BT.2020 PQ as washed-out SDR.
   supplementary `dvvC`, so non-DoVi displays fall back to the base layer's
   HDR10/HLG tags. Profile 4 gets no atom and plays as HDR10 from the base
   layer.
-- Profile 8.6 (compatibility id 6, a Blu-ray HDR10 base layer) is outside
-  Dolby's spec, and VideoToolbox refuses a session for it (`-12909` on an
-  Apple TV 4K with tvOS 27). Its `dvvC` says 8.1 instead, the same HDR10 base
-  layer, and the stream then decodes. On an HDR10 display it plays as HDR10.
-  Whether a Dolby Vision display engages from its RPUs is untested.
+- Profile 8 with a base layer compatibility id other than 1, 2 or 4 is
+  outside Dolby's spec. Real files carry id 6 (the Blu-ray HDR10 base layer,
+  "profile 8.6") on disc remuxes and id 0 on some web releases, and
+  VideoToolbox refuses a session for id 6 (`-12909` on an Apple TV 4K with
+  tvOS 27). Whether it refuses 0, 3 and 5 as well has not been checked on a
+  device. The `dvvC` of any of them names the base layer the stream itself
+  declares instead: id 1 over a PQ or undeclared transfer function, which
+  then decodes as 8.1, and id 4 over HLG. Over any other transfer function
+  the record is dropped and the base plays, as for 8.2. On an HDR10 display
+  the result plays as HDR10. Whether a Dolby Vision display engages from its
+  RPUs is untested.
+- Such a stream is usually a profile 7 disc whose enhancement layer was
+  dropped, and its RPUs may never have been converted. So over a PQ base the
+  demuxer reads the first RPU at open. When libdovi reads it as profile 7
+  with a full enhancement layer (FEL), every RPU goes through the profile 7
+  conversion below, because its mapping curves assume a residual that is
+  gone. An RPU that already reads as profile 8, one written for a minimal
+  enhancement layer (MEL), and one that cannot be read all leave the stream
+  relabelled only, with its RPUs untouched. A start-code stream (MPEG-TS) is
+  never read this way, so it is relabelled only. The profile 7 strip flag
+  does not apply to these streams.
 - `DolbyVisionRecordPolicy` fixes a record before it is signalled. Profile
   8.2 has an SDR base layer, so its record is dropped and the base plays.
-  Profile 10 is never signalled, so 10.2 already plays its base. Two cases
-  need the first RPU, which the demuxer reads at open and then rewinds, as it
-  does for missing parameter sets. A profile 5 record over a stream whose VUI
+  Profile 10 is never signalled, so 10.2 already plays its base. The
+  out-of-spec profile 8 ids above and two more cases need the first RPU,
+  which the demuxer reads at open and then rewinds, as it does for missing
+  parameter sets. A profile 5 record over a stream whose VUI
   says BT.2020 PQ is signalled as 8.1 when libdovi reads that RPU as profile
   8, or its YCbCr would show as IPTPQc2. A 10-bit Matroska HEVC stream with no
   record and no colorimetry gets a synthesized profile 5 record when its RPU
@@ -144,6 +161,10 @@ track. `DolbyVisionProfileConverter` converts it to profile 8.1 in flight:
 - Only a single-track profile 7 with a DoVi configuration record in the
   container is converted, which means MKV remuxes. Disc images (MPEG-TS, no
   record) play as HDR10.
+- An out-of-spec profile 8 stream whose first RPU still expects a full
+  enhancement layer takes the same path (see the tagging rules above). It
+  has no type-63 units to drop, and the HUD and bench report it as a
+  profile 7 conversion.
 - libdovi is vendored, not built here, and its tvOS simulator slice is arm64
   only, so a host sets `EXCLUDED_ARCHS[sdk=appletvsimulator*] = x86_64`.
   Provenance and hashes: [`Libdovi.README.md`](../../Artifacts/Libdovi.README.md).
