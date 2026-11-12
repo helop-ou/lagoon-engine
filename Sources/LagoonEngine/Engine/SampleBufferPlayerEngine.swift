@@ -352,6 +352,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// Pump queue only.
     @ObservationIgnored nonisolated(unsafe) private var subtitleCompositor: SubtitleFrameCompositor?
     @ObservationIgnored nonisolated(unsafe) private var burnIn = SubtitleBurnIn()
+    /// Pump queue only. Released when Picture in Picture subtitles stop.
+    @ObservationIgnored nonisolated(unsafe) private var frameCopier: UncompressedFrameCopier?
+    /// Draws through a full-range copy even into a plain frame, since the
+    /// simulator never decodes to a compressed one, and the format tells the
+    /// copy apart. Set before `prepare`.
+    @ObservationIgnored nonisolated(unsafe) var copiesBurnedInFramesForTesting = false
     /// Frames that left with subtitles drawn in. Atomic because tests read it.
     @ObservationIgnored nonisolated private let burnedInFrameCounter = Atomic<Int>(0)
     nonisolated var burnedInSubtitleFrames: Int { burnedInFrameCounter.load(ordering: .relaxed) }
@@ -3916,10 +3922,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 }
                 state.videoSamplesSinceFlush += 1
             }
-            burnInSubtitles(buffer)
-            rendererVideoObserverForTesting?(buffer)
+            let shown = burnInSubtitles(buffer)
+            rendererVideoObserverForTesting?(shown)
             let enqueueStarted = ProcessInfo.processInfo.systemUptime
-            renderer.enqueue(buffer)
+            renderer.enqueue(shown)
             av1PipelineTimings.recordEnqueue(
                 from: enqueueStarted,
                 to: ProcessInfo.processInfo.systemUptime
@@ -3929,12 +3935,18 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     }
 
     /// Draws the subtitles showing at a decoded frame's time into it, while
-    /// Picture in Picture asks for them. Pump queue only.
-    nonisolated private func burnInSubtitles(_ buffer: CMSampleBuffer) {
+    /// Picture in Picture asks for them, and returns the buffer to enqueue:
+    /// a copy when the frame's own format cannot be drawn into. Pump queue
+    /// only.
+    nonisolated private func burnInSubtitles(_ buffer: CMSampleBuffer) -> CMSampleBuffer {
         let (style, styled) = shared.withLock { ($0.pictureInPictureSubtitleStyle, $0.styledSubtitleRenderer) }
-        guard let style, let pixelBuffer = CMSampleBufferGetImageBuffer(buffer) else { return }
+        guard let style else {
+            frameCopier = nil
+            return buffer
+        }
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(buffer) else { return buffer }
         let time = CMSampleBufferGetPresentationTimeStamp(buffer)
-        guard time.isNumeric else { return }
+        guard time.isNumeric else { return buffer }
         let showing: (textCues: [SubtitleTextCue], images: [SubtitleImage])
         if let styled {
             // libass draws text and all; its own offset applies. A small
@@ -3968,13 +3980,21 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             )
             burnIn.key = key
         }
-        guard !burnIn.overlay.pieces.isEmpty else { return }
+        guard !burnIn.overlay.pieces.isEmpty else { return buffer }
         if subtitleCompositor == nil {
             subtitleCompositor = SubtitleFrameCompositor()
         }
-        if subtitleCompositor?.composite(burnIn.overlay, into: pixelBuffer) == true {
-            burnedInFrameCounter.wrappingAdd(1, ordering: .relaxed)
+        if frameCopier == nil {
+            frameCopier = UncompressedFrameCopier()
         }
+        let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let copyFormat = UncompressedFrameCopier.uncompressedFormat(for: format)
+            ?? (copiesBurnedInFramesForTesting ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange : nil)
+        guard let compositor = subtitleCompositor, let copier = frameCopier,
+              let burned = compositor.burn(burnIn.overlay, into: buffer, copyingTo: copyFormat, with: copier)
+        else { return buffer }
+        burnedInFrameCounter.wrappingAdd(1, ordering: .relaxed)
+        return burned
     }
 
     nonisolated private func sampleAV1Pipeline() {

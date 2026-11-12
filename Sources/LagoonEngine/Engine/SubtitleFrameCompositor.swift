@@ -1,3 +1,4 @@
+import CoreMedia
 import CoreVideo
 import Foundation
 import Metal
@@ -102,6 +103,24 @@ nonisolated final class SubtitleFrameCompositor: @unchecked Sendable {
         if matrix == kCVImageBufferYCbCrMatrix_ITU_R_601_4 as String
             || matrix == kCVImageBufferYCbCrMatrix_SMPTE_240M_1995 as String { return 2 }
         return 0
+    }
+
+    /// Draws into the frame `buffer` carries, or into a copy in `copyFormat`
+    /// when the frame's own format has no planes to draw into. The buffer to
+    /// enqueue, or nil when nothing was drawn.
+    func burn(
+        _ overlay: SubtitleOverlay,
+        into buffer: CMSampleBuffer,
+        copyingTo copyFormat: OSType?,
+        with copier: UncompressedFrameCopier
+    ) -> CMSampleBuffer? {
+        var target = buffer
+        if let copyFormat {
+            guard let copied = copier.copy(buffer, to: copyFormat) else { return nil }
+            target = copied
+        }
+        guard let frame = CMSampleBufferGetImageBuffer(target), composite(overlay, into: frame) else { return nil }
+        return target
     }
 
     /// Blends and waits, so the frame is whole before the renderer sees it.
