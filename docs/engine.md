@@ -77,6 +77,15 @@ Each of these has regressed at least once.
   interrupt FFmpeg. Then renderer stop, flush and release run on the pump
   queue, and decoder destruction on the demux queue. Reporting never blocks
   dismissal.
+- **The engine keeps the display layer until its renderers are gone.** A
+  layer that deallocated while the pump enqueued deadlocked inside
+  AVFoundation: the dealloc ran in a Core Animation commit that held the
+  video queue's layer lock and waited for the renderer's queue, and the
+  enqueue on that queue waited for the lock. The title then sat priming
+  forever, or its pump never retired. It showed as about one start in eight
+  full test runs never beginning, with a layer only the test had held, and a
+  host that drops its view before `shutdown()` could meet it too. The layer
+  is let go on the main thread once both renderers are removed.
 - **A host holds the engine weakly from anything SwiftUI retains.** View
   builders and gesture closures must not capture an engine strongly: SwiftUI
   can keep old view values after a handoff, and a captured engine outlives its
