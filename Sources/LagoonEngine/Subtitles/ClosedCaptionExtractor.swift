@@ -98,6 +98,24 @@ nonisolated enum ClosedCaptionExtractor {
         return out
     }
 
+    /// `declared` when the packet is length-prefixed units from end to end,
+    /// nil when it holds start codes (MPEG-TS, or Annex B extradata that read
+    /// as a length size). Its first bytes alone do not say: a first unit of
+    /// 256 to 511 bytes has the length 00 00 01 xx.
+    static func framedLengthSize(of payload: UnsafeRawBufferPointer, declared: Int?) -> Int? {
+        guard let declared, (1...4).contains(declared) else { return nil }
+        var offset = 0
+        while offset + declared <= payload.count {
+            var length = 0
+            for index in 0..<declared {
+                length = length << 8 | Int(payload[offset + index])
+            }
+            guard length > 0, length <= payload.count - offset - declared else { return nil }
+            offset += declared + length
+        }
+        return offset == payload.count && offset > 0 ? declared : nil
+    }
+
     private static func walkLengthPrefixedUnits(
         _ payload: UnsafeRawBufferPointer,
         lengthSize: Int,
