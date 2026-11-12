@@ -22,11 +22,15 @@ struct StartGateTests {
         #expect(engine.synchronizerSecondsForTesting < 0.05, "the clock waits: \(engine.synchronizerSecondsForTesting)")
         #expect(engine.isBuffering)
         #expect(started == 0)
+        // The first frame is up: the hold is the host's, not the start's.
+        #expect(engine.startupPhase == .started)
+        let firstFrame = try #require(engine.startupTimeline?.reached[.firstFrame])
 
         gate.open()
         try await Self.wait { !engine.isBuffering && engine.clockPosition > 0.3 }
         #expect(started == 1)
         #expect(engine.clockPosition > 0.3, "playback started once released")
+        #expect(engine.startupTimeline?.reached[.firstFrame] == firstFrame, "timed once, before the hold")
 
         // Only the first start is held.
         engine.seek(to: 2)
@@ -81,6 +85,24 @@ struct StartGateTests {
         #expect(abs(paused - 2) < 0.05, "a paused title does not run: \(paused)")
         engine.shutdown()
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+    }
+
+    /// A host's wait must not keep a dismissed engine, with its demuxer and
+    /// renderers, alive until the wait is over.
+    @MainActor
+    @Test func aDismissedEngineIsReleasedWhileItsGateStillWaits() async throws {
+        let gate = Gate()
+        var engine: SampleBufferPlayerEngine? = try Self.engine(gate: gate, pictures: PictureCount())
+        weak var released = engine
+        engine?.play()
+        try await Self.wait { gate.entered == 1 }
+
+        engine?.shutdown()
+        #expect(await engine?.waitForMediaResourcesToRetire(timeout: .seconds(10)) == true)
+        engine = nil
+        try await Self.wait { released == nil }
+        #expect(released == nil, "the waiting gate holds the engine")
+        gate.open()
     }
 
     @Test func aContainerRateSnapsToTheStandardRateItMeans() {

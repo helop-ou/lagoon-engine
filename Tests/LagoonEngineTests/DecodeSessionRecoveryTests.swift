@@ -30,6 +30,24 @@ struct DecodeSessionRecoveryTests {
         #expect(seeks.count == 0)
     }
 
+    /// Locking an iPhone claims a rebuild that suspension then makes moot.
+    /// Counted as spent, the next fault after the unlock read as a rebuilt
+    /// session dying at once, and a title that decodes went to a transcode.
+    @Test func aRebuildThatSuspensionMadeMootIsStillOwed() async throws {
+        let (engine, seeks) = try await Self.playingEngine()
+        defer { engine.shutdown() }
+        engine.absorbVideoSessionFaultForTesting(kVTInvalidSessionErr)
+        engine.setVideoOutputSuspended(true)
+        try await Task.sleep(for: .milliseconds(300))
+        // Playing, so the picture resumes in place, with no seek.
+        engine.setVideoOutputSuspended(false)
+        #expect(seeks.count == 0)
+
+        engine.absorbVideoSessionFaultForTesting(kVTInvalidSessionErr)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(seeks.count == 1, "the fault after the unlock is rebuilt, not judged")
+    }
+
     private final class SeekCount {
         var count = 0
     }
