@@ -92,6 +92,8 @@ nonisolated final class FieldRateDeinterlacer: @unchecked Sendable {
     /// `frame`. A progressive frame in the stream is shown twice, so the
     /// rate never changes mid-stream.
     func push(_ frame: UnsafePointer<AVFrame>, timing: CMSampleTimingInfo) throws -> [Field] {
+        // The copy below goes by this size, whatever the frame's own is.
+        guard takes(frame) else { throw MetalFrameConverter.ConverterError.buffer }
         let held = try upload(frame, timing: timing)
         defer {
             previous = current
@@ -99,6 +101,13 @@ nonisolated final class FieldRateDeinterlacer: @unchecked Sendable {
         }
         guard let current else { return [] }
         return try fields(of: current, previous: previous ?? current, next: held)
+    }
+
+    /// Whether the frame has the size and format this was built for. A
+    /// broadcast stream can change both at a programme boundary.
+    func takes(_ frame: UnsafePointer<AVFrame>) -> Bool {
+        Int(frame.pointee.width) == width && Int(frame.pointee.height) == height
+            && frame.pointee.format == format.rawValue
     }
 
     /// End of stream: the last frame's fields, with no next frame to look at.
@@ -117,31 +126,45 @@ nonisolated final class FieldRateDeinterlacer: @unchecked Sendable {
     // MARK: - Fields
 
     private func fields(of frame: Held, previous: Held, next: Held) throws -> [Field] {
-        let (first, second) = Self.fieldTimings(frame.timing)
+        let (first, second) = Self.fieldTimings(frame.timing, nextStart: next.timing.presentationTimeStamp)
         guard frame.interlaced else {
-            return [try wrap(frame.buffer, timing: first), try wrap(frame.buffer, timing: second)]
+            var shown = [try wrap(frame.buffer, timing: first)]
+            if let second { shown.append(try wrap(frame.buffer, timing: second)) }
+            return shown
         }
         let firstParity: UInt32 = frame.topFieldFirst ? 0 : 1
         let shownFirst = try render(frame, previous: previous, next: next, keptParity: firstParity, secondField: false)
-        let shownSecond = try render(frame, previous: previous, next: next, keptParity: 1 - firstParity, secondField: true)
-        return [try wrap(shownFirst, timing: first), try wrap(shownSecond, timing: second)]
+        var shown = [try wrap(shownFirst, timing: first)]
+        if let second {
+            let shownSecond = try render(
+                frame, previous: previous, next: next, keptParity: 1 - firstParity, secondField: true
+            )
+            shown.append(try wrap(shownSecond, timing: second))
+        }
+        return shown
     }
 
-    /// The frame's interval split in two, the first field at its start.
-    static func fieldTimings(_ timing: CMSampleTimingInfo) -> (CMSampleTimingInfo, CMSampleTimingInfo) {
-        let half = timing.duration.isNumeric
-            ? CMTimeMultiplyByRatio(timing.duration, multiplier: 1, divisor: 2)
-            : CMTime.invalid
-        let first = CMSampleTimingInfo(
-            duration: half,
-            presentationTimeStamp: timing.presentationTimeStamp,
-            decodeTimeStamp: .invalid
+    /// The frame's interval split in two, the first field at its start. A
+    /// frame with no duration of its own is taken to last until `nextStart`.
+    /// With neither there is no time for a second field, so there is none: a
+    /// picture without a time has no place on the timeline.
+    static func fieldTimings(
+        _ timing: CMSampleTimingInfo,
+        nextStart: CMTime = .invalid
+    ) -> (CMSampleTimingInfo, CMSampleTimingInfo?) {
+        let start = timing.presentationTimeStamp
+        var duration = timing.duration
+        if !duration.isNumeric || duration <= .zero {
+            duration = start.isNumeric && nextStart.isNumeric && nextStart > start ? nextStart - start : .invalid
+        }
+        guard duration.isNumeric, start.isNumeric else {
+            return (CMSampleTimingInfo(duration: timing.duration, presentationTimeStamp: start, decodeTimeStamp: .invalid), nil)
+        }
+        let half = CMTimeMultiplyByRatio(duration, multiplier: 1, divisor: 2)
+        return (
+            CMSampleTimingInfo(duration: half, presentationTimeStamp: start, decodeTimeStamp: .invalid),
+            CMSampleTimingInfo(duration: half, presentationTimeStamp: start + half, decodeTimeStamp: .invalid)
         )
-        let secondStart = timing.presentationTimeStamp.isNumeric && half.isNumeric
-            ? timing.presentationTimeStamp + half
-            : CMTime.invalid
-        let second = CMSampleTimingInfo(duration: half, presentationTimeStamp: secondStart, decodeTimeStamp: .invalid)
-        return (first, second)
     }
 
     private func render(_ frame: Held, previous: Held, next: Held, keptParity: UInt32, secondField: Bool) throws -> MTLBuffer {

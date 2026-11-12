@@ -137,7 +137,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
     private var gpuOutputPool: CVPixelBufferPool?
     /// Set for an interlaced stream: each frame leaves as two pictures, one
     /// per field. Nil leaves interlaced frames to the CPU `Deinterlacer`.
-    private let fieldDeinterlacer: FieldRateDeinterlacer?
+    private var fieldDeinterlacer: FieldRateDeinterlacer?
     var outputsFieldRate: Bool { fieldDeinterlacer != nil }
     /// What a rebuild keeps from open: the mode resolved then, so a new size
     /// never changes how frames are coloured, and the inputs to build it.
@@ -679,6 +679,7 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             guard status >= 0 else { break }
             defer { av_frame_unref(frame) }
             corruptPacketLock.withLock { corruptPackets.recordDecoded() }
+            try rebuildFieldDeinterlacerIfTheFrameChanged(deliver: deliver)
             if let fieldDeinterlacer {
                 let fields = try fieldDeinterlacer.push(frame, timing: resolvedTiming())
                 av_frame_unref(frame)
@@ -696,6 +697,31 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                 deliver(buffer)
             }
         }
+    }
+
+    /// A broadcast stream can change size or depth at a programme boundary.
+    /// The deinterlacer copies by the size it was built for, so it shows what
+    /// it holds and is rebuilt for the new one. Where it cannot be, frames go
+    /// out as decoded.
+    private func rebuildFieldDeinterlacerIfTheFrameChanged(deliver: @escaping Delivery) throws {
+        guard let deinterlacer = fieldDeinterlacer, !deinterlacer.takes(frame) else { return }
+        guard let decoded = av_frame_alloc() else { throw DecoderError.codecSetup("no frame") }
+        defer {
+            var pointer: UnsafeMutablePointer<AVFrame>? = decoded
+            av_frame_free(&pointer)
+        }
+        // `deliverFields` works in `frame`.
+        av_frame_move_ref(decoded, frame)
+        let held = try deinterlacer.drain()
+        fieldDeinterlacer = nil
+        try deliverFields(held, deliver: deliver)
+        av_frame_unref(frame)
+        av_frame_move_ref(frame, decoded)
+        fieldDeinterlacer = FieldRateDeinterlacer(
+            width: Int(frame.pointee.width),
+            height: Int(frame.pointee.height),
+            format: AVPixelFormat(rawValue: frame.pointee.format)
+        )
     }
 
     /// Each field's picture through the same output as a decoded frame, in
