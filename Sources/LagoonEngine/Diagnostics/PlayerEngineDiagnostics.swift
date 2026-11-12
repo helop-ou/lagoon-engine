@@ -77,3 +77,8 @@ public protocol PlayerEngineDiagnostics: AnyObject {
     /// queue.
     nonisolated func measurePumpQueueLatency(_ completion: @escaping @Sendable (Duration) -> Void)
 }
+
+public extension PlayerEngineDiagnostics {
+    var demuxReadAheadSeconds: Double { 0 }
+    var demuxReadAheadLimit: DemuxReadAheadLimit? { nil }
+}

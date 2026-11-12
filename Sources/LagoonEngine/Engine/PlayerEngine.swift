@@ -148,6 +148,8 @@ public extension PlayerEngine {
     func retrySubtitleLoad() {}
     var audioShaping: AudioShaping { .off }
     func setAudioShaping(_ shaping: AudioShaping) {}
+    var subtitleOffset: Double { 0 }
+    func setSubtitleOffset(_ seconds: Double) {}
     func setVideoOutputSuspended(_ suspended: Bool) {}
     func setPictureInPictureSubtitles(_ style: BurnedInSubtitleStyle?) {}
     func setHostInBackground(_ background: Bool) {}
@@ -263,7 +265,13 @@ public nonisolated struct PlayerTrack: Identifiable, Equatable {
     }
 
     /// Pass back to select the track. Unique per kind, this playback only.
+    /// Opaque: not an index into the list, which can grow while a title
+    /// plays.
     public let engineID: Int
+    /// The `engineID` of the closed captions carried in the video stream.
+    /// That track joins `subtitleTracks` only once the first caption is
+    /// read, which can be well after playback starts.
+    public static let closedCaptionsEngineID = 1_000_000
     /// Whether this is audio or subtitles.
     public let kind: Kind
     /// What to show a viewer; already disambiguated.
