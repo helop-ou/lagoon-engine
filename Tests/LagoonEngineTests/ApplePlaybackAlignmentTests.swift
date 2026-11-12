@@ -65,6 +65,16 @@ struct ApplePlaybackAlignmentTests {
         #expect(invalid.seconds == 10)
     }
 
+    /// On an iPhone AirPlaying to an Apple TV, every seek left the receiver
+    /// silent until the next route change.
+    @Test func onlyAnAirPlayRouteStartsWithoutAHostTime() {
+        #expect(!PlaybackClockStart.usesHostTime(outputs: [.airPlay]))
+        #expect(PlaybackClockStart.usesHostTime(outputs: [.builtInSpeaker]))
+        #expect(PlaybackClockStart.usesHostTime(outputs: [.HDMI]))
+        #expect(PlaybackClockStart.usesHostTime(outputs: [.bluetoothA2DP]))
+        #expect(PlaybackClockStart.usesHostTime(outputs: []))
+    }
+
     @Test func missingReferenceIsARecoverableFrameError() {
         #expect(VideoToolboxDecoder.isRecoverableFrameError(kVTVideoDecoderReferenceMissingErr))
         #expect(!VideoToolboxDecoder.isRecoverableFrameError(kVTVideoDecoderMalfunctionErr))
