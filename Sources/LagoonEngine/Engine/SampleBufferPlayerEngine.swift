@@ -1456,18 +1456,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             let now = CMClockGetTime(CMClockGetHostTimeClock())
             // Apple's recommended start: anchor to a near-future host time so
             // the renderers meet the first deadline together.
-            let defaultHostTime = CMTimeAdd(
-                now,
-                CMTime(seconds: 0.1, preferredTimescale: 1_000_000_000)
-            )
-            // Honour a group start only while it is still ahead; a missed
-            // one is the server's to reissue.
-            let hostTime: CMTime
-            if let scheduledStart, CMTimeCompare(scheduledStart, now) > 0 {
-                hostTime = scheduledStart
-            } else {
-                hostTime = defaultHostTime
-            }
+            let hostTime = PlaybackClockStart.hostTime(now: now, scheduledStart: scheduledStart)
             let rate = Float(effectiveRate)
             requestedClockRate = rate
             let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType)

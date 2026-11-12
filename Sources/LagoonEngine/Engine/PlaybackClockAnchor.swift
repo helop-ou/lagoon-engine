@@ -15,13 +15,26 @@ nonisolated enum PlaybackClockAnchor {
 }
 
 /// Whether a start anchors the clock to a near-future host time. An AirPlay
-/// receiver buffers about two seconds and cannot meet a start 0.1 s ahead:
+/// receiver buffers about two seconds and cannot meet a start that near:
 /// after a seek it took a few seconds of audio and never played them. There
 /// the synchronizer starts once the renderers have enough, a group start
 /// included, since silence costs more than the receiver's own delay.
 nonisolated enum PlaybackClockStart {
     static func usesHostTime(outputs: [AVAudioSession.Port]) -> Bool {
         !outputs.contains(.airPlay)
+    }
+
+    /// How far ahead of now a start is anchored. At 0.1 s the first pictures
+    /// after a start or seek missed their deadline on an Apple TV over HDMI.
+    static let leadSeconds = 0.25
+
+    /// The host time a start is anchored to. A group start is honoured only
+    /// while it is still ahead: a missed one is the server's to reissue.
+    static func hostTime(now: CMTime, scheduledStart: CMTime?) -> CMTime {
+        if let scheduledStart, CMTimeCompare(scheduledStart, now) > 0 {
+            return scheduledStart
+        }
+        return CMTimeAdd(now, CMTime(seconds: leadSeconds, preferredTimescale: 1_000_000_000))
     }
 
     /// Starts `clock` at `time`, at `hostTime` unless the route is AirPlay.
