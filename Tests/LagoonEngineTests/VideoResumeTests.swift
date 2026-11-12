@@ -64,6 +64,36 @@ struct VideoResumeTests {
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
     }
 
+    /// The demux loop reads what is suspended and what seek is pending one
+    /// after the other. A resume and a seek that both landed in between left
+    /// the container still discarding video while the seek, which had
+    /// cancelled the resume, primed: it read audio to the end, and the
+    /// picture never came back.
+    @MainActor
+    @Test func aSeekTheLoopSeesBeforeTheResumeBringsThePictureBack() async throws {
+        let (engine, _, pictures) = try await Self.playingFixture()
+        engine.setVideoOutputSuspended(true)
+        try await Self.wait { engine.clockPosition > 2.5 }
+
+        let between = OnceFlag()
+        engine.afterTrackChangesForTesting = { [weak engine] in
+            guard between.take() else { return }
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    engine?.setVideoOutputSuspended(false)
+                    engine?.seek(to: 1)
+                }
+            }
+        }
+        try await Self.wait { between.taken && !engine.isBuffering && !pictures.visibleStarts.isEmpty }
+        engine.afterTrackChangesForTesting = nil
+
+        let first = try #require(pictures.visibleStarts.min(), "no picture after the seek")
+        #expect(first >= 1 - 0.001 && first < 1 + 0.05, "the first picture after the seek starts at \(first)")
+        engine.shutdown()
+        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+    }
+
     @Test func audioReadAgainIsDroppedOrCutAtTheFloor() throws {
         // 1024 frames at 48 kHz from 1 s: ends at 1.021333 s.
         let pcm = try Self.lpcm(start: 1, frames: 1_024)
@@ -255,6 +285,22 @@ private final class AudioLog: @unchecked Sendable {
 
 /// Starts of the pictures the renderer may show since its last flush, or
 /// since `forget()`.
+private final class OnceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isTaken = false
+
+    var taken: Bool { lock.withLock { isTaken } }
+
+    /// True for the first caller only.
+    func take() -> Bool {
+        lock.withLock {
+            guard !isTaken else { return false }
+            isTaken = true
+            return true
+        }
+    }
+}
+
 private final class PictureLog: @unchecked Sendable {
     private let lock = NSLock()
     private var starts: [Double] = []
