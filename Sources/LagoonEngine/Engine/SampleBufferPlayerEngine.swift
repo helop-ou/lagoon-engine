@@ -386,6 +386,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// The rate last asked of the synchronizer, which may still be applying it.
     @ObservationIgnored private var requestedClockRate: Float = 0
     nonisolated var synchronizerTimeForTesting: Double { synchronizer.currentTime().seconds }
+    /// Samples held on the engine's side, readable from the pump queue.
+    nonisolated var queuedSamplesForTesting: (intake: Int, video: Int, audio: Int) {
+        (videoIntake.count, videoQueue.count, audioQueue.count)
+    }
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var finishObserver: Any?
     @ObservationIgnored private var didFinish = false
@@ -1279,9 +1283,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// blocked during the first call returns an old-position packet whose
     /// PTS `PlaybackClockAnchor` would otherwise anchor a backward scrub on.
     nonisolated private func flushRenderersAndQueues() {
-        videoRenderer?.flush()
-        rendererVideoObserverForTesting?(nil)
-        audioRenderer?.flush()
+        // Queues first: emptying them wakes a demux loop waiting for room,
+        // which starts its seek while the audio renderer's flush (~40 ms on
+        // the Apple TV) runs. Nothing enqueues in between: this is the pump.
         videoIntake.removeAll()
         videoQueue.reset()
         audioQueue.reset()
@@ -1292,6 +1296,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             $0.videoSamplesSinceFlush = 0
             $0.videoStartPointDropsSinceFlush = 0
         }
+        videoRenderer?.flush()
+        rendererVideoObserverForTesting?(nil)
+        audioRenderer?.flush()
     }
 
     public func seek(to target: Double) {
@@ -3231,9 +3238,22 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         videoFeedLock.lock()
         defer { videoFeedLock.unlock() }
         let hardLimit = currentVideoHardLimit()
-        while decodedVideoBacklog() < hardLimit, let item = videoIntake.popFirst() {
+        while Self.drainsVideoIntake(
+                  backlog: decodedVideoBacklog(),
+                  hardLimit: hardLimit,
+                  seekPending: shared.withLock { $0.pendingSeekSeconds != nil }
+              ),
+              let item = videoIntake.popFirst() {
             deliverVideo(item)
         }
+    }
+
+    /// Whether the pump may hand parked video to the decoders. Not while a
+    /// seek waits: what is parked is from before it, and decoding it held the
+    /// demux loop in its wait for room for 30–130 ms on the Apple TV before
+    /// it picked the seek up.
+    nonisolated static func drainsVideoIntake(backlog: Int, hardLimit: Int, seekPending: Bool) -> Bool {
+        !seekPending && backlog < hardLimit
     }
 
     /// Decoded frames plus packets the software stage still owes; every
