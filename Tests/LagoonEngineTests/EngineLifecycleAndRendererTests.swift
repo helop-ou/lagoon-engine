@@ -23,7 +23,6 @@ struct EngineLifecycleAndRendererTests {
         // SwiftUI re-mounts the player surface after a failure and the host
         // attaches unconditionally. A shut-down engine must ignore it, or it
         // registers renderers that never detach and reopens the stream.
-        let before = PlaybackLifecycleDiagnostics.snapshot()
         let engine = SampleBufferPlayerEngine()
         engine.prepare(
             url: URL(string: "https://media.test/never-opened.mkv")!,
@@ -34,10 +33,9 @@ struct EngineLifecycleAndRendererTests {
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
 
         // Nothing registered, so nothing waits on an AVFoundation completion.
-        let after = PlaybackLifecycleDiagnostics.snapshot()
-        #expect(after.attachedRendererSets == before.attachedRendererSets)
-        #expect(after.activeDemuxLoops == before.activeDemuxLoops)
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(5)))
+        // Asked of this engine: the process-wide counts move with every
+        // other suite's engines.
+        #expect(await engine.waitForMediaResourcesToRetire(timeout: .zero))
     }
 
     @Test func onlyAMediaServicesResetLeavesThePlayerPaused() {
