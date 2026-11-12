@@ -301,6 +301,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// earlier call is still waiting, so each call must return on its own.
     /// Capture the engine weakly: the engine holds this closure.
     @ObservationIgnored public var startGate: (@MainActor () async -> Void)?
+    /// A layer attached before `prepare` named what to open.
+    @ObservationIgnored private var layerAwaitingPrepare: AVSampleBufferDisplayLayer?
     // MARK: Cross-thread state
 
     @ObservationIgnored nonisolated private let demuxer = FFmpegDemuxer()
@@ -573,6 +575,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             $0.embeddedSubtitleMetadata = embeddedSubtitleMetadata
             $0.externalSubtitles = externalSubtitles
         }
+        if let layer = layerAwaitingPrepare {
+            layerAwaitingPrepare = nil
+            attach(displayLayer: layer)
+        }
     }
 
     /// Warms a cache scope for media the host expects to play next.
@@ -643,12 +649,20 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         startBufferFill()
     }
 
+    /// Gives the engine the layer it draws into and starts the open. Either
+    /// order with `prepare` works: the open starts once the engine has both.
+    /// One layer per engine. A second call, or one after `shutdown`, does
+    /// nothing.
     public func attach(displayLayer: AVSampleBufferDisplayLayer) {
         // Never revive a shut-down engine. `finishRendererShutdown` nils
         // `videoRenderer`, so the nil check alone would let one pass when
         // SwiftUI re-mounts the surface after a failure, starting a second
         // demux loop whose renderers can never detach.
-        guard !shutdownRequested, videoRenderer == nil, let url = pendingURL else { return }
+        guard !shutdownRequested, videoRenderer == nil else { return }
+        guard let url = pendingURL else {
+            layerAwaitingPrepare = displayLayer
+            return
+        }
 
         // Read once per playback so a switch cannot change mid-A/B. The
         // bench arms in beginPlayback.
@@ -1031,7 +1045,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         refreshSubtitles(at: timePosition)
     }
 
-    /// Fetches and parses a Jellyfin external subtitle (vtt/srt delivery).
+    /// Fetches and parses an external subtitle (vtt/srt delivery).
     private func loadExternalSubtitle(ordinal: Int) {
         let index = ordinal - embeddedSubtitleCount - 1
         guard externalSubtitles.indices.contains(index) else { return }
@@ -1087,6 +1101,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     public func shutdown() {
         guard !shutdownRequested else { return }
         shutdownRequested = true
+        layerAwaitingPrepare = nil
         cancelExternalSubtitleLoad()
         suspendBufferFillInternal()
         slowStartTask?.cancel()
@@ -2924,7 +2939,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
 
     /// The engine id of the closed captions in the video, outside the
     /// ordinals so no other track moves when they turn up.
-    static let closedCaptionTrackID = 1_000_000
+    static let closedCaptionTrackID = PlayerTrack.closedCaptionsEngineID
 
     nonisolated private static func subtitleStreamIndex(ordinal: Int, embedded: [Int32]) -> Int32 {
         if ordinal == closedCaptionTrackID { return ClosedCaptionTrack.streamIndex }
