@@ -99,6 +99,10 @@ expired. The demuxer then estimates the target's byte offset from size and
 duration, finds the next cluster there with `MatroskaClusterLocator` (its
 first child must be its Timestamp, after an optional CRC-32), steps back when
 the cluster is past the target, adds that one index entry and seeks again.
+A window is 1 MiB and a cluster can be 5 MiB, so up to six windows without a
+cluster are tried, overlapping by a header, counted apart from the steps
+back. A cluster's Timestamp is whatever the file holds, so a step back is
+never more than the file.
 The demuxer then reads only from that cluster. Every
 later seek in the session starts from a cluster without waiting out the
 deadline. A seek that still runs out of time fails as `.delivery` instead of

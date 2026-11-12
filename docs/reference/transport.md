@@ -97,7 +97,10 @@ every failed segment fetch.
 - The playback cache (`URLSessionPlaybackRangeLoader`/`PlaybackRangeRequest`
   in `Sources/LagoonEngine/Transport/PlaybackCache.swift`) applies the same
   authorization to every ranged request, including HLS child URLs the server
-  generated.
+  generated, and its session drops the headers on a cross-origin redirect
+  the same way. It makes each task under the lock `cancelAll` takes before
+  it invalidates the session: a task made on an invalidated session raises
+  an exception that ends the process.
 
 ## Trust and logging
 
