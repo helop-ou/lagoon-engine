@@ -115,6 +115,28 @@ struct AudioShapingTests {
 
     // MARK: - Limiter
 
+    /// One bad sample in a float PCM track silenced the rest of playback:
+    /// it stayed in the speech filter and the compressor's envelope.
+    @Test func aSampleThatIsNotANumberDoesNotOutliveItsBuffer() {
+        for bad in [Float.nan, .infinity, -.infinity] {
+            var shaper = AudioShaper(
+                shaping: AudioShaping(nightMode: true, dialogueBoost: true), sampleRate: 48_000, channels: 2
+            )
+            shaper.liftsSpeechBand = true
+            var first = [Float](repeating: 0.1, count: 2 * 480)
+            first[200] = bad
+            first.withUnsafeMutableBufferPointer { shaper.process($0.baseAddress!, frames: 480) }
+            let firstIsFinite = first.allSatisfy { $0.isFinite }
+            #expect(firstIsFinite, "\(bad): its own buffer")
+            var later = (0..<(2 * 4_800)).map { Float(sin(Double($0 / 2) * 2 * .pi * 1_000 / 48_000)) * 0.1 }
+            later.withUnsafeMutableBufferPointer { shaper.process($0.baseAddress!, frames: 4_800) }
+            let laterIsFinite = later.allSatisfy { $0.isFinite }
+            #expect(laterIsFinite, "\(bad): what follows")
+            let loudest = later.map(abs).max() ?? 0
+            #expect(loudest > 0.01, "\(bad): still sound")
+        }
+    }
+
     @Test func theLimiterHoldsEverySampleUnderTheCeiling() {
         var shaper = AudioShaper(shaping: AudioShaping(channelLimit: .stereo), sampleRate: 48_000, channels: 2)
         var samples = Self.interleaved(channels: 2, seconds: 0.5) { _, sample in Self.sine(440, sample) * 2 }
