@@ -25,7 +25,7 @@ nonisolated enum SubtitleOverlayRasterizer {
     ) -> SubtitleOverlay {
         guard frameWidth > 1, frameHeight > 1 else { return SubtitleOverlay(revision: revision, pieces: []) }
         var pieces = images.compactMap { piece(for: $0, frameWidth: frameWidth, frameHeight: frameHeight) }
-        let fontSize = CGFloat(Double(frameHeight) * style.relativeSize / 1.2)
+        let fontSize = CGFloat(Double(frameHeight) * style.drawnRelativeSize / 1.2)
         // Stacked from the bottom up, so the last cue sits lowest.
         var bottom = Int(Double(frameHeight) * (1 - edgeMargin))
         for cue in textCues.filter(\.usesDefaultPlacement).reversed() {
@@ -63,7 +63,15 @@ nonisolated enum SubtitleOverlayRasterizer {
             ?? [height * (1 - edgeMargin), height / 2, height * edgeMargin][row]
         let x = anchorX - Double(block.width) * [0, 0.5, 1][column]
         let y = anchorY - Double(block.height) * [1, 0.5, 0][row]
-        return (Int(x.rounded()), Int(y.rounded()))
+        return (pixel(x, limit: frameWidth), pixel(y, limit: frameHeight))
+    }
+
+    /// A coordinate as a pixel. A cue's position is whatever number the
+    /// subtitle file holds, and one past the frame converts to no `Int`.
+    /// `placed` moves the block inside the frame either way.
+    private static func pixel(_ value: Double, limit: Int) -> Int {
+        guard value.isFinite else { return 0 }
+        return Int(min(max(value, -Double(limit)), 2 * Double(limit)).rounded())
     }
 
     /// Moved inside the frame and onto even pixels.
@@ -82,6 +90,9 @@ nonisolated enum SubtitleOverlayRasterizer {
     // MARK: - Drawing
 
     private static func piece(for image: SubtitleImage, frameWidth: Int, frameHeight: Int) -> SubtitleOverlayPiece? {
+        let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
+        guard [image.rect.minX, image.rect.minY, image.rect.maxX, image.rect.maxY].allSatisfy(\.isFinite),
+              unit.insetBy(dx: -1, dy: -1).contains(image.rect) else { return nil }
         let x = Int((image.rect.minX * CGFloat(frameWidth)).rounded(.down)) & ~1
         let y = Int((image.rect.minY * CGFloat(frameHeight)).rounded(.down)) & ~1
         let width = evenCeiling(image.rect.maxX * CGFloat(frameWidth)) - x

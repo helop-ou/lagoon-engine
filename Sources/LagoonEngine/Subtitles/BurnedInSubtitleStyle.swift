@@ -13,7 +13,8 @@ public nonisolated struct BurnedInSubtitleStyle: Sendable, Equatable {
     public var edge: Edge
     /// Drawn behind each cue; its alpha is the box's opacity.
     public var backgroundColor: SubtitleTextColor
-    /// Line height as a fraction of the picture's height.
+    /// Line height as a fraction of the picture's height, drawn within
+    /// 0.01 to 0.25. A value that is not finite draws at the default.
     public var relativeSize: Double
     /// A PostScript or family name. Nil uses the system font.
     public var fontName: String?
@@ -35,4 +36,14 @@ public nonisolated struct BurnedInSubtitleStyle: Sendable, Equatable {
     }
 
     public static let standard = BurnedInSubtitleStyle()
+
+    static let relativeSizeRange = 0.01...0.25
+
+    /// A host working the fraction out from a view not yet laid out passes
+    /// infinity or NaN, and points passed as a fraction ask for a block of
+    /// gigabytes.
+    var drawnRelativeSize: Double {
+        guard relativeSize.isFinite else { return Self.standard.relativeSize }
+        return min(max(relativeSize, Self.relativeSizeRange.lowerBound), Self.relativeSizeRange.upperBound)
+    }
 }
