@@ -31,7 +31,8 @@ including interlaced H.264 and MPEG-2 through the software decoder. HDR10, HLG
 and Dolby Vision, including dual-layer profile 7 converted to 8.1 in flight.
 Dolby Atmos passed through; TrueHD, DTS, FLAC and ALAC decoded to lossless
 PCM. Embedded, PGS, VobSub, DVB and external subtitles, with styled ASS/SSA
-drawn by libass in the fonts the file carries.
+drawn by libass in the fonts the file carries, and the closed captions a
+broadcast carries in its video.
 
 VideoToolbox decodes where the hardware takes the bitstream; libavcodec
 decodes the rest.
@@ -40,7 +41,9 @@ The [codec table](docs/codec-support.md) has every codec and the path it takes.
 
 ## Requirements
 
-iOS 26 and tvOS 26, Xcode 26.6. Apple silicon to build the native libraries.
+iOS 26 and tvOS 26, Xcode 26.6 or newer. Apple silicon to build the native
+libraries. VP9 decodes in hardware from iOS 26.2 and tvOS 26.2, on devices
+that have the decoder, and in software before that.
 
 ## Adding it
 
@@ -54,12 +57,13 @@ iOS 26 and tvOS 26, Xcode 26.6. Apple silicon to build the native libraries.
 ])
 ```
 
-The package carries its own FFmpeg build; there is nothing else to fetch or
-configure.
+The package carries its own FFmpeg build, so there is nothing else to fetch.
+What your app sets up itself, the audio session first, is in the
+[usage guide](docs/usage.md#what-your-app-sets-up).
 
 ## Using it
 
-Make an engine, give it somewhere to draw, tell it what to open, and play.
+Make an engine, tell it what to open, give it somewhere to draw, and play.
 
 ```swift
 import AVFoundation
@@ -69,14 +73,13 @@ let engine = SampleBufferPlayerEngine()
 
 // The engine draws into a layer you own and place in your view hierarchy.
 let displayLayer = AVSampleBufferDisplayLayer()
-engine.attach(displayLayer: displayLayer)
 
 // Called once the first frame is on screen.
 engine.onPlaybackStarted = { print("playing") }
 
-// Called when the engine gives up. `cause` is either .undecodable — this
-// device cannot decode these samples, only a re-encode would help — or
-// .delivery, meaning the same media might play if fetched another way.
+// Called when the engine gives up. `cause` is either .undecodable, meaning
+// this device cannot decode these samples and only a re-encode would help,
+// or .delivery, meaning the same media might play if fetched another way.
 engine.onError = { failure in
     print(failure.cause, failure.message)
 }
@@ -86,17 +89,24 @@ engine.prepare(
     startSeconds: 0,
     initialAudioOrdinal: nil   // nil lets the container decide
 )
+// The open starts once the engine has both the media and the layer.
+engine.attach(displayLayer: displayLayer)
 engine.play()
 ```
 
-Buffering ahead, credentials, the `PlayerEngine` protocol and diagnostics are
-in the [usage guide](docs/usage.md).
+One engine plays one title. Call `shutdown()` when it is done and make a new
+engine for the next.
+
+The audio session, tracks, buffering ahead, credentials, failures, sound and
+subtitle controls, diagnostics and the move from 1.x are in the
+[usage guide](docs/usage.md).
 
 ## Licence
 
 [MPL-2.0](LICENSE). The Lagoon name is not part of that grant, and the native
-libraries carry their own licences: [TRADEMARKS.md](TRADEMARKS.md) covers
-both.
+libraries carry their own licences, two of them LGPL:
+[TRADEMARKS.md](TRADEMARKS.md) covers both, and says what an app that ships
+them owes.
 
 ## Documentation
 

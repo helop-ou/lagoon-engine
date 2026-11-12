@@ -41,9 +41,12 @@ PlayerEngine (protocol)
 | `Subtitles/` | Parsing, decoding, cue lifetime |
 | `Diagnostics/` | Traces, counters, benchmarks |
 
-A host talks to `PlayerEngine`, never to `SampleBufferPlayerEngine` directly.
-The protocol keeps FFmpeg's types out of a host's build and leaves room for a
-second implementation.
+A host's player UI talks to `PlayerEngine`, never to
+`SampleBufferPlayerEngine` directly. The protocol keeps FFmpeg's types out of
+a host's build and leaves room for a second implementation. Only the code
+that owns the playback names the class: `prepare`, `attach`, `shutdown`, the
+callbacks and the cache calls live there. [Using the engine](usage.md) is the
+host's side of this.
 
 ## Network transport
 
