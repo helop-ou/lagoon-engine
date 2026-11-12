@@ -16,6 +16,67 @@ nonisolated enum MatroskaClusterLocator {
         let timestamp: Int64
     }
 
+    /// ID, size, CRC-32 and Timestamp at their longest.
+    static let longestHeader = 4 + 8 + 6 + 1 + 1 + 8
+    /// Windows without a cluster before giving up. Muxers start a cluster at
+    /// least every 5 MiB and a window is 1 MiB, so four of them could all
+    /// fall inside one cluster.
+    static let emptyWindowLimit = 6
+    static let overshootLimit = 4
+
+    /// Bytes to step back from a cluster `overshootTicks` past the target:
+    /// the overshoot's share of the file. The timestamp is whatever eight
+    /// bytes the file holds, so the step is never more than the file.
+    static func stepBack(
+        overshootTicks: Int64,
+        ticksPerSecond: Double,
+        length: Int64,
+        durationSeconds: Double
+    ) -> Int64 {
+        let share = Double(length) * (Double(overshootTicks) / ticksPerSecond) / durationSeconds
+        guard share.isFinite, share < Double(length) else { return length }
+        return Int64(max(share, 0))
+    }
+
+    /// A cluster at or before `timestamp`, looking a window at a time from
+    /// `estimate` and stepping back when a window holds none or the one it
+    /// holds is past the target. nil when none is found.
+    static func lastCluster(
+        atOrBefore timestamp: Int64,
+        estimate: Int64,
+        window: Int64,
+        length: Int64,
+        ticksPerSecond: Double,
+        durationSeconds: Double,
+        read: (_ offset: Int64, _ count: Int) -> Data
+    ) -> Cluster? {
+        var estimate = estimate
+        // Counted apart: stepping back over a cluster longer than the window
+        // must not use up the tries an overshoot needs, nor the reverse.
+        var emptyWindows = 0
+        var overshoots = 0
+        while emptyWindows < emptyWindowLimit, overshoots < overshootLimit {
+            estimate = min(max(estimate, 0), length - 1)
+            let bytes = read(estimate, Int(min(window, length - estimate)))
+            guard let cluster = firstCluster(in: bytes, baseOffset: estimate) else {
+                guard estimate > 0 else { return nil }
+                emptyWindows += 1
+                // Overlapping, so a header across the edge is in one of them.
+                estimate -= max(window - Int64(longestHeader), 1)
+                continue
+            }
+            if cluster.timestamp <= timestamp { return cluster }
+            overshoots += 1
+            estimate -= stepBack(
+                overshootTicks: cluster.timestamp - timestamp,
+                ticksPerSecond: ticksPerSecond,
+                length: length,
+                durationSeconds: durationSeconds
+            ) + window
+        }
+        return nil
+    }
+
     private static let clusterID: [UInt8] = [0x1F, 0x43, 0xB6, 0x75]
     private static let timestampID: UInt8 = 0xE7
     private static let crc32ID: UInt8 = 0xBF

@@ -1488,24 +1488,19 @@ nonisolated final class FFmpegDemuxer {
         guard let cachedIO, let length = cachedIO.contentLength, length > 0,
               durationSeconds > 0, videoStreamIndex >= 0 else { return false }
         let window = Int64(clusterSearchWindow)
-        var estimate = Int64(Double(length) * max(seconds - Self.clusterSearchLead, 0) / durationSeconds)
-        for _ in 0..<4 {
-            estimate = min(max(estimate, 0), length - 1)
-            let bytes = cachedIO.bytes(at: estimate, count: Int(min(window, length - estimate)))
-            guard let cluster = MatroskaClusterLocator.firstCluster(in: bytes, baseOffset: estimate) else {
-                estimate -= window
-                continue
-            }
-            if cluster.timestamp <= timestamp {
-                av_add_index_entry(ctx.pointee.streams[Int(videoStreamIndex)], cluster.offset, cluster.timestamp, 0, 0, indexKeyframeFlag)
-                return true
-            }
-            // Overshot: step back by the overshoot's share of the file, and a window.
-            let ticksPerSecond = Double(videoTimeBase.den) / Double(max(videoTimeBase.num, 1))
-            let overshoot = Double(cluster.timestamp - timestamp) / ticksPerSecond
-            estimate -= Int64(Double(length) * overshoot / durationSeconds) + window
-        }
-        return false
+        let estimate = Int64(Double(length) * max(seconds - Self.clusterSearchLead, 0) / durationSeconds)
+        let ticksPerSecond = Double(videoTimeBase.den) / Double(max(videoTimeBase.num, 1))
+        guard let cluster = MatroskaClusterLocator.lastCluster(
+            atOrBefore: timestamp,
+            estimate: estimate,
+            window: window,
+            length: length,
+            ticksPerSecond: ticksPerSecond,
+            durationSeconds: durationSeconds,
+            read: { cachedIO.bytes(at: $0, count: $1) }
+        ) else { return false }
+        av_add_index_entry(ctx.pointee.streams[Int(videoStreamIndex)], cluster.offset, cluster.timestamp, 0, 0, indexKeyframeFlag)
+        return true
     }
 
     /// `avformat_seek_file`, falling back to `av_seek_frame` for demuxers
