@@ -120,10 +120,18 @@ the background.
   alone. Pictures that would end within 0.1 s of the running clock are
   dropped until one makes it, which ends the resume. Audio and subtitles read
   again from the keyframe are dropped up to what was already queued, and a
-  decoded audio buffer that straddles that point is cut. Until the first
-  picture, video counts as suspended for stall detection.
+  decoded audio buffer that straddles that point is cut. Subtitle events are
+  told apart by their time and, among events that share one, by how many had
+  been read (`SubtitleReplay.Mark`): a typeset ASS script starts several at
+  the same instant, each in its own packet, and a resume taken between two
+  of them lost the rest. Until the first picture, video counts as suspended
+  for stall detection.
 - Paused, buffering, or after the end, lifting it seeks to the current
-  position instead, which costs nothing audible. A seek also cancels a resume
+  position instead, which costs nothing audible. Before the first start the
+  current position is the start position: `attach` sets `timePosition` to
+  it, because every in-place seek (this one, a rebuilt decode session, an
+  audio track change) seeks to `timePosition`, and at 0 a resumed title
+  started from the beginning. A seek also cancels a resume
   still in progress. A seek used to be the only way: it flushed the audio
   renderer, a second of silence when an iPhone unlocked, and over AirPlay the
   refilled renderer then stalled.
@@ -172,6 +180,14 @@ and starts itself, through the gate again. A pause during the hold stays
 paused. The host bounds its own wait, because the end of a switch is not
 always announced. Held until the switch ended, the same starts lost no
 picture in six of seven runs and one in the seventh.
+
+A seek during the hold calls the gate again while the first call may still
+be waiting, so each call returns on its own. The engine is held weakly
+across the wait, so a title dismissed during it is released at once, and the
+gate closure must not capture the engine strongly, since the engine holds
+it. The first frame is up when the hold begins: `startupPhase` reads
+`started` and `playbackStartup` records `firstFrameMs` there, so the host's
+hold is not counted as a slow start.
 
 ## Debug playback HUD
 
