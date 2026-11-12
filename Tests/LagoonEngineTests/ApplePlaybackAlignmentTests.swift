@@ -75,6 +75,24 @@ struct ApplePlaybackAlignmentTests {
         #expect(PlaybackClockStart.usesHostTime(outputs: []))
     }
 
+    /// On an Apple TV over HDMI a start 0.1 s ahead dropped the first
+    /// pictures after every start and seek, and 0.25 s did not.
+    @Test func aStartIsAnchoredAQuarterSecondAhead() {
+        let now = CMTime(seconds: 100, preferredTimescale: 1_000_000_000)
+        let hostTime = PlaybackClockStart.hostTime(now: now, scheduledStart: nil)
+        #expect(abs(CMTimeSubtract(hostTime, now).seconds - 0.25) < 0.000_001)
+    }
+
+    @Test func aGroupStartIsHonouredOnlyWhileItIsStillAhead() {
+        let now = CMTime(seconds: 100, preferredTimescale: 1_000_000_000)
+        let ahead = CMTime(seconds: 103, preferredTimescale: 1_000_000_000)
+        let missed = CMTime(seconds: 99, preferredTimescale: 1_000_000_000)
+        #expect(PlaybackClockStart.hostTime(now: now, scheduledStart: ahead) == ahead)
+        let fallback = PlaybackClockStart.hostTime(now: now, scheduledStart: missed)
+        #expect(abs(CMTimeSubtract(fallback, now).seconds - 0.25) < 0.000_001)
+        #expect(PlaybackClockStart.hostTime(now: now, scheduledStart: now) == fallback)
+    }
+
     /// The start itself: AirPlay leaves the synchronizer to wait for the
     /// receiver, any other route anchors to the host time.
     @Test func aStartOnAirPlaySetsTheClockWithoutAHostTime() {
