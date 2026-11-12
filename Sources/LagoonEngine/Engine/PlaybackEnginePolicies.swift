@@ -197,4 +197,13 @@ nonisolated enum PlaybackDecodeSessionPolicy {
         guard immediateRepeat else { return .rebuild }
         return hostInBackground ? .park : .descend
     }
+
+    /// A claimed rebuild runs later, on the main actor. Locking the phone
+    /// both takes the session and suspends video, often in that order, and
+    /// the rebuild's seek would then only interrupt the audio.
+    static func resolveClaimedRebuild(cancelled: Bool, videoOutputSuspended: Bool) -> Resolution {
+        if cancelled { return .tooLate }
+        if videoOutputSuspended { return .ignore }
+        return .rebuild
+    }
 }
