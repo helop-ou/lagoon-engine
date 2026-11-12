@@ -212,6 +212,10 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
     /// What the link delivered while busy, over about the last ten seconds of
     /// transfers. Nil before the first completes.
     public let networkBytesPerSecond: Double?
+    /// Time foreground reads spent waiting for the cache lock, and the longest
+    /// single wait. Counted only while the decode trace is on.
+    public let foregroundLockWaitSeconds: Double
+    public let longestForegroundLockWaitSeconds: Double
 
     public init(
         cachedBytes: Int64,
@@ -231,7 +235,9 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
         cachedBytesAheadOfPlayhead: Int64 = 0,
         duplicateNetworkBytes: Int64 = 0,
         sharedFetchCount: Int = 0,
-        networkBytesPerSecond: Double? = nil
+        networkBytesPerSecond: Double? = nil,
+        foregroundLockWaitSeconds: Double = 0,
+        longestForegroundLockWaitSeconds: Double = 0
     ) {
         self.cachedBytes = cachedBytes
         self.networkBytes = networkBytes
@@ -251,6 +257,8 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
         self.duplicateNetworkBytes = duplicateNetworkBytes
         self.sharedFetchCount = sharedFetchCount
         self.networkBytesPerSecond = networkBytesPerSecond
+        self.foregroundLockWaitSeconds = foregroundLockWaitSeconds
+        self.longestForegroundLockWaitSeconds = longestForegroundLockWaitSeconds
     }
 
     public var bufferedFraction: Double? {
@@ -328,7 +336,11 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
             isWindowed: isWindowed || other.isWindowed,
             // An HLS item's scopes share one monitor, so either reading is
             // the item's.
-            networkBytesPerSecond: other.networkBytesPerSecond ?? networkBytesPerSecond
+            networkBytesPerSecond: other.networkBytesPerSecond ?? networkBytesPerSecond,
+            foregroundLockWaitSeconds: foregroundLockWaitSeconds + other.foregroundLockWaitSeconds,
+            longestForegroundLockWaitSeconds: max(
+                longestForegroundLockWaitSeconds, other.longestForegroundLockWaitSeconds
+            )
         )
     }
 
@@ -348,7 +360,9 @@ public nonisolated struct PlaybackCacheMetrics: Equatable, Sendable {
             playheadPrefetchCount: playheadPrefetchCount,
             timelineAnchor: timelineAnchor,
             isWindowed: isWindowed,
-            networkBytesPerSecond: networkBytesPerSecond
+            networkBytesPerSecond: networkBytesPerSecond,
+            foregroundLockWaitSeconds: foregroundLockWaitSeconds,
+            longestForegroundLockWaitSeconds: longestForegroundLockWaitSeconds
         )
     }
 }
@@ -921,6 +935,9 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
     private var playheadPrefetchCount = 0
     private var duplicateNetworkBytes: Int64 = 0
     private var sharedFetchCount = 0
+    private var foregroundLockWaitSeconds: Double = 0
+    private var longestForegroundLockWaitSeconds: Double = 0
+    private let measuresLockWait: Bool
     private var timelineAnchor: PlaybackTimelineAnchor?
     /// Sparse-file granularity. Eviction punches only the block-aligned
     /// interior of a range and leaves the ragged edges cached.
@@ -942,9 +959,11 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         storageBudget: PlaybackCacheStorageBudget? = nil,
         cancelsLoaderOnRemoval: Bool = true,
         throughput: PlaybackThroughputMonitor? = nil,
-        authorization: MediaRequestAuthorization? = nil
+        authorization: MediaRequestAuthorization? = nil,
+        measuresLockWait: Bool = ProcessCPUTrace.enabled
     ) throws {
         self.itemID = itemID
+        self.measuresLockWait = measuresLockWait
         self.sourceURL = sourceURL
         self.throughput = throughput ?? PlaybackThroughputMonitor()
         self.knownLength = expectedLength.flatMap { $0 > 0 ? $0 : nil }
@@ -1014,7 +1033,9 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
             ),
             duplicateNetworkBytes: duplicateNetworkBytes,
             sharedFetchCount: sharedFetchCount,
-            networkBytesPerSecond: throughput.bytesPerSecond
+            networkBytesPerSecond: throughput.bytesPerSecond,
+            foregroundLockWaitSeconds: foregroundLockWaitSeconds,
+            longestForegroundLockWaitSeconds: longestForegroundLockWaitSeconds
         )
     }
 
@@ -1045,6 +1066,26 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         return fileURL
     }
 
+    /// Takes the lock, timing the wait for a foreground read: a fill writing
+    /// to disk holds it.
+    private func lockTimingForegroundWait(priority: Float) {
+        guard measuresLockWait, priority >= URLSessionTask.defaultPriority else {
+            lock.lock()
+            return
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        let waited = ProcessInfo.processInfo.systemUptime - started
+        foregroundLockWaitSeconds += waited
+        longestForegroundLockWaitSeconds = max(longestForegroundLockWaitSeconds, waited)
+    }
+
+    func holdLockForTesting(_ body: () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        body()
+    }
+
     func read(offset: Int64, length: Int, priority: Float = URLSessionTask.highPriority) throws -> Data {
         try read(offset: offset, length: length, priority: priority, readAhead: true)
     }
@@ -1059,7 +1100,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         guard offset >= 0, length > 0 else { return Data() }
         guard Int64(length) <= Int64.max - offset else { throw PlaybackCacheError.invalidResponse }
         try checkCancellation()
-        lock.lock()
+        lockTimingForegroundWait(priority: priority)
         if file == nil, !storageDisabled {
             file = try? FileHandle(forUpdating: fileURL)
             if file == nil {
@@ -1168,7 +1209,7 @@ nonisolated final class PlaybackCacheScope: @unchecked Sendable {
         if firstByte.mark() { throughput.requestStarted() }
         throughput.requestFinished(bytes: response.transferredBytes)
 
-        lock.lock()
+        lockTimingForegroundWait(priority: priority)
         do {
             try checkCancellation()
         } catch {
