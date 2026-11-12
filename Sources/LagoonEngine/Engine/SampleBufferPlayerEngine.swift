@@ -3225,10 +3225,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             name: "Demux Close",
             signpostID: performanceSignpostID
         )
+        // The pump feeds the decoders under this lock, and may be mid-drain.
+        videoFeedLock.lock()
         videoDecoder?.invalidate()
         videoDecoder = nil
         softwareDecodeStage?.invalidate()
         softwareDecodeStage = nil
+        videoFeedLock.unlock()
         demuxer.close()
         os_signpost(
             .end,
@@ -3384,9 +3387,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// pump calls this too: the loop can sit in a network read for seconds,
     /// and the decoded queue must not run dry behind a full intake.
     nonisolated private func drainVideoIntake() {
-        guard !shared.withLock({ $0.cancelled }) else { return }
         videoFeedLock.lock()
         defer { videoFeedLock.unlock() }
+        // Under the lock: the close that follows a cancel takes the decoders
+        // away, and compressed samples would go to the renderer instead.
+        guard !isCancelled else { return }
         let hardLimit = currentVideoHardLimit()
         while Self.drainsVideoIntake(
                   backlog: decodedVideoBacklog(),
