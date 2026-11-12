@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreMedia
 
 /// Media time for the clock anchor. A seek may enqueue pre-target reference
@@ -10,6 +11,17 @@ nonisolated enum PlaybackClockAnchor {
               firstVideoPTS.seconds.isFinite,
               CMTimeCompare(firstVideoPTS, target) >= 0 else { return target }
         return firstVideoPTS
+    }
+}
+
+/// Whether a start anchors the clock to a near-future host time. An AirPlay
+/// receiver buffers about two seconds and cannot meet a start 0.1 s ahead:
+/// after a seek it took a few seconds of audio and never played them. There
+/// the synchronizer starts once the renderers have enough, a group start
+/// included, since silence costs more than the receiver's own delay.
+nonisolated enum PlaybackClockStart {
+    static func usesHostTime(outputs: [AVAudioSession.Port]) -> Bool {
+        !outputs.contains(.airPlay)
     }
 }
 
