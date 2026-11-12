@@ -43,6 +43,12 @@ nonisolated struct AudioShaper {
     }
 
     mutating func process(_ samples: UnsafeMutablePointer<Float>, frames: Int) {
+        // Float PCM carries whatever the file holds. One sample that is not
+        // a number would stay in the filter and the envelope, and silence
+        // everything after it until the next seek.
+        for index in 0..<(frames * channels) where !samples[index].isFinite {
+            samples[index] = 0
+        }
         if dialogueBoost, liftsSpeechBand, channels == 2 {
             liftSpeechBand(samples, frames: frames)
         }
