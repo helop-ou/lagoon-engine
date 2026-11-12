@@ -418,6 +418,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     nonisolated func absorbVideoSessionFaultForTesting(_ status: OSStatus) {
         _ = absorbVideoSessionFault(VideoToolboxDecoder.DecoderError.decode(status))
     }
+    /// A confirmed video stall, without a link that starves the queues.
+    func beginStallRecoveryForTesting() { beginStallRecovery(cause: .video) }
+    var isRecoveringFromStallForTesting: Bool { stallRecoveryTask != nil }
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var finishObserver: Any?
     @ObservationIgnored private var didFinish = false
@@ -1344,6 +1347,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         setBuffering(true)
         // A pending group start is now stale; a new one follows Ready.
         scheduledStartHostTime = nil
+        abandonStallRecovery()
         stopClock(at: clamped)
         // Enqueue and flush share the pump queue (Apple's post-flush keyframe
         // rule). Not waited for: the audio flush held the main thread ~40 ms.
@@ -2194,7 +2198,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         stallRecoveryTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
-                guard let self else { return }
+                guard let self, !Task.isCancelled else { return }
                 // A seek or shutdown owns the restart from here.
                 if self.shared.withLock({ $0.cancelled || $0.pendingSeekSeconds != nil }) { return }
                 let decision = StallRecoveryPolicy.decision(
@@ -2231,6 +2235,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     if !self.isPaused {
                         self.setClockRate(Float(self.effectiveRate))
                     }
+                    self.stallRecoveryTask = nil
                     return
                 case .reprime:
                     self.stallReprimeCount += 1
@@ -2258,11 +2263,30 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                     )
                     // A seek rebuilds queues and anchor, so a lost read
                     // cannot leave rate 0 polling forever.
+                    self.stallRecoveryTask = nil
                     self.seek(to: recoveryPosition)
                     return
                 }
             }
         }
+    }
+
+    /// A seek owns the restart from here. Left polling, the stall's task
+    /// read the seek's own queues: it started the clock while the seek was
+    /// still priming, or seeked again and reported a reprime.
+    private func abandonStallRecovery() {
+        guard stallRecoveryTask != nil else { return }
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
+        guard stallSignpostActive else { return }
+        stallSignpostActive = false
+        os_signpost(
+            .end,
+            log: PlaybackPerformance.log,
+            name: "Playback Stall",
+            signpostID: performanceSignpostID,
+            "outcome=seek"
+        )
     }
 
     /// A stall is reported when it reprimed or lasted this long.
