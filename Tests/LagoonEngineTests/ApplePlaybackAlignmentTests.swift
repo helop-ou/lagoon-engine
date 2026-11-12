@@ -75,6 +75,19 @@ struct ApplePlaybackAlignmentTests {
         #expect(PlaybackClockStart.usesHostTime(outputs: []))
     }
 
+    /// The start itself: AirPlay leaves the synchronizer to wait for the
+    /// receiver, any other route anchors to the host time.
+    @Test func aStartOnAirPlaySetsTheClockWithoutAHostTime() {
+        let time = CMTime(seconds: 12, preferredTimescale: 600)
+        let hostTime = CMTime(seconds: 100, preferredTimescale: 1_000_000_000)
+        let airPlay = RecordingClock()
+        PlaybackClockStart.start(airPlay, rate: 1, time: time, hostTime: hostTime, outputs: [.airPlay])
+        #expect(airPlay.calls == [.withoutHostTime(rate: 1, time: time)])
+        let speaker = RecordingClock()
+        PlaybackClockStart.start(speaker, rate: 1, time: time, hostTime: hostTime, outputs: [.builtInSpeaker])
+        #expect(speaker.calls == [.atHostTime(rate: 1, time: time, hostTime: hostTime)])
+    }
+
     @Test func missingReferenceIsARecoverableFrameError() {
         #expect(VideoToolboxDecoder.isRecoverableFrameError(kVTVideoDecoderReferenceMissingErr))
         #expect(!VideoToolboxDecoder.isRecoverableFrameError(kVTVideoDecoderMalfunctionErr))
@@ -1253,4 +1266,21 @@ struct ApplePlaybackAlignmentTests {
         )
     }
 
+}
+
+private final class RecordingClock: PlaybackClockStarting {
+    enum Call: Equatable {
+        case withoutHostTime(rate: Float, time: CMTime)
+        case atHostTime(rate: Float, time: CMTime, hostTime: CMTime)
+    }
+
+    private(set) var calls: [Call] = []
+
+    func setRate(_ rate: Float, time: CMTime) {
+        calls.append(.withoutHostTime(rate: rate, time: time))
+    }
+
+    func setRate(_ rate: Float, time: CMTime, atHostTime hostTime: CMTime) {
+        calls.append(.atHostTime(rate: rate, time: time, hostTime: hostTime))
+    }
 }
