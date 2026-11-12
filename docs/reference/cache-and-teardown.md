@@ -78,6 +78,18 @@ itself, so a seek never waits behind a stalled prefetch. `sharedFetchCount` and
 decode trace's `cacheMB`/`aheadMB`/`dupMB` show them. The host repository's
 `scripts/fill-bench.sh` compares two builds' fill rates on one title.
 
+A fill writes to disk while holding the scope's lock, and the demux read needs
+that lock. While the decode trace is on, `foregroundLockWaitSeconds` and
+`longestForegroundLockWaitSeconds` count how long foreground reads waited
+for it. A prefetch's own wait is left out.
+
+On the Apple TV 4K (3rd gen), while a fill wrote 0.8 to 0.9 GB in 70 s, reads
+of a 4K HEVC title waited 0.1 to 21 ms in all and at most 12 ms at once (four
+runs), and reads of a 1080p H.264 title did not wait (two runs). The demuxer
+reads about four seconds ahead of the clock, so the writes stay under the
+lock. Nothing else in a tvOS host writes to the disk meanwhile. An iPhone
+with a download running has not been measured.
+
 ## Size cap and the travelling window
 
 The coordinator leaves 256 MiB of volume space free and gives the current
