@@ -3756,11 +3756,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
               duration <= 0 || timePosition < duration - 1 else {
             recordVideoSessionFault(status, recovery: "decodeSessionIgnored")
             shared.withLock {
-                // Mark spent anyway, or every remaining sample asks for
-                // another rebuild.
+                $0.videoSessionRecoveryInFlight = false
+                // Suspended video asks for nothing more, and its resume in
+                // place keeps the generation: marked spent, the next fault
+                // would descend without a rebuild ever tried.
+                guard resolution != .ignore else { return }
+                // Otherwise mark spent anyway, or every remaining sample
+                // asks for another rebuild.
                 $0.videoSessionRebuiltGeneration = $0.playbackGeneration
                 $0.videoFramesSinceSessionRebuild = 0
-                $0.videoSessionRecoveryInFlight = false
             }
             return
         }
