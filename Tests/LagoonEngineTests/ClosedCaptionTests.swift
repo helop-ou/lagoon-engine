@@ -145,6 +145,43 @@ struct ClosedCaptionTests {
         #expect(captions == Data([0xFC, 0x94, 0x2F]))
     }
 
+    /// With four-byte lengths, a first unit of 256 to 511 bytes starts
+    /// 00 00 01, which was taken for a start code: that picture's captions
+    /// were lost.
+    @Test func aFirstUnitWhoseLengthLooksLikeAStartCodeIsStillReadByItsLength() throws {
+        let filler = Data([0x05, 250]) + Data(repeating: 0x55, count: 250)
+        let caption = Self.seiBody(Self.ccData([0xFC, 0x94, 0x2F]))
+        let sei = Data([0x06]) + filler + caption
+        #expect((256...511).contains(sei.count))
+        let payload = Self.lengthPrefixed([sei, Data([0x65, 0x88])])
+        #expect(payload.prefix(3) == Data([0, 0, 1]))
+        let captions = payload.withUnsafeBytes { bytes in
+            ClosedCaptionExtractor.captions(
+                in: bytes, codec: .h264,
+                nalLengthSize: ClosedCaptionExtractor.framedLengthSize(of: bytes, declared: 4)
+            )
+        }
+        #expect(captions == Data([0xFC, 0x94, 0x2F]))
+    }
+
+    @Test func startCodesAreToldFromLengthsByWalkingThePacket() {
+        let sei = Data([0x06]) + Self.seiBody(Self.ccData([0xFC, 0x94, 0x2F]))
+        let annexB = Data([0, 0, 0, 1]) + sei + Data([0, 0, 1, 0x65, 0x88])
+        let prefixed = Self.lengthPrefixed([sei, Data([0x65, 0x88])])
+        #expect(annexB.withUnsafeBytes { ClosedCaptionExtractor.framedLengthSize(of: $0, declared: 4) } == nil)
+        #expect(prefixed.withUnsafeBytes { ClosedCaptionExtractor.framedLengthSize(of: $0, declared: 4) } == 4)
+        #expect(prefixed.withUnsafeBytes { ClosedCaptionExtractor.framedLengthSize(of: $0, declared: nil) } == nil)
+        // Cut short: not units from end to end.
+        #expect(prefixed.dropLast(1).withUnsafeBytes { ClosedCaptionExtractor.framedLengthSize(of: $0, declared: 4) } == nil)
+        let found = annexB.withUnsafeBytes { bytes in
+            ClosedCaptionExtractor.captions(
+                in: bytes, codec: .h264,
+                nalLengthSize: ClosedCaptionExtractor.framedLengthSize(of: bytes, declared: 4)
+            )
+        }
+        #expect(found == Data([0xFC, 0x94, 0x2F]))
+    }
+
     @Test func mpeg2CaptionsComeFromPictureUserData() {
         let payload = Data([0, 0, 1, 0x00, 0x11, 0x22]) // picture header
             + Data([0, 0, 1, 0xB2]) + Self.ccData([0xFC, 0x94, 0x2F])
