@@ -112,6 +112,14 @@ struct PlaybackEnginePolicyTests {
         #expect(session(suspended: true, background: true, rebuiltGeneration: 7) == .ignore)
     }
 
+    /// Locking an iPhone took the session and then suspended video, and the
+    /// rebuild claimed in between seeked anyway: a second of silence.
+    @Test func aRebuildClaimedBeforeVideoWasSuspendedIsDropped() {
+        #expect(PlaybackDecodeSessionPolicy.resolveClaimedRebuild(cancelled: false, videoOutputSuspended: true) == .ignore)
+        #expect(PlaybackDecodeSessionPolicy.resolveClaimedRebuild(cancelled: false, videoOutputSuspended: false) == .rebuild)
+        #expect(PlaybackDecodeSessionPolicy.resolveClaimedRebuild(cancelled: true, videoOutputSuspended: false) == .tooLate)
+    }
+
     @Test func everySampleInADeadDecoderIsTheSameOneFault() {
         // Each buffer in the decoder reports the lost session on its way out;
         // without this each would queue a rebuild seek.
