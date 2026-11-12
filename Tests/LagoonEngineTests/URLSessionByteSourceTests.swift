@@ -421,6 +421,78 @@ struct URLSessionByteSourceTests {
         #expect(second.headers["Authorization"] == nil)
     }
 
+    /// Direct play's bytes go through the cache's own session, which had no
+    /// redirect guard: a credential under another name and a proxy's service
+    /// token followed a redirect to any host.
+    @Test func aCacheRangeRequestLeavingTheOriginDropsEveryCredentialHeader() throws {
+        let loader = Self.rangeLoader()
+        let target = URL(string: "https://\(TransportStub.redirectHost)/cache-elsewhere")!
+        TransportStub.set("/cache-redirecting", .init(redirectTo: target))
+        TransportStub.set("/cache-elsewhere", .init(body: Self.body(count: 4_096)))
+        _ = try? loader.load(
+            url: URL(string: Self.testURL("/cache-redirecting"))!,
+            range: PlaybackByteRange(0, 1_024),
+            priority: URLSessionTask.highPriority
+        )
+        let first = try #require(TransportStub.requests(path: "/cache-redirecting").first)
+        let second = try #require(TransportStub.requests(path: "/cache-elsewhere").first)
+        #expect(first.headers["X-Emby-Token"] == "secret")
+        #expect(first.headers["CF-Access-Client-Secret"] == "proxy-secret")
+        #expect(second.headers["X-Emby-Token"] == nil)
+        #expect(second.headers["CF-Access-Client-Id"] == nil)
+        #expect(second.headers["CF-Access-Client-Secret"] == nil)
+        #expect(second.headers["Range"] == "bytes=0-1023")
+    }
+
+    @Test func aCacheRangeRequestRedirectedWithinTheOriginKeepsItsCredential() throws {
+        let loader = Self.rangeLoader()
+        let target = URL(string: Self.testURL("/cache-moved"))!
+        TransportStub.set("/cache-moving", .init(redirectTo: target))
+        TransportStub.set("/cache-moved", .init(body: Self.body(count: 4_096)))
+        _ = try? loader.load(
+            url: URL(string: Self.testURL("/cache-moving"))!,
+            range: PlaybackByteRange(0, 1_024),
+            priority: URLSessionTask.highPriority
+        )
+        let second = try #require(TransportStub.requests(path: "/cache-moved").first)
+        #expect(second.headers["X-Emby-Token"] == "secret")
+        #expect(second.headers["CF-Access-Client-Secret"] == "proxy-secret")
+    }
+
+    /// Dismissing the player invalidates the session while a fill may be
+    /// about to ask for its next range. A task made on an invalidated
+    /// session raises an exception that ends the process.
+    @Test func aLoadAfterCancellationMakesNoTaskOnTheInvalidatedSession() {
+        let loader = Self.rangeLoader()
+        TransportStub.set("/cache-cancelled", .init(body: Self.body(count: 4_096)))
+        loader.cancelAll()
+        #expect(throws: PlaybackCacheError.cancelled) {
+            _ = try loader.load(
+                url: URL(string: Self.testURL("/cache-cancelled"))!,
+                range: PlaybackByteRange(0, 1_024),
+                priority: URLSessionTask.highPriority
+            )
+        }
+        #expect(TransportStub.requests(path: "/cache-cancelled").isEmpty)
+    }
+
+    private static func rangeLoader() -> URLSessionPlaybackRangeLoader {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TransportStub.self]
+        return URLSessionPlaybackRangeLoader(
+            configuration: configuration,
+            authorization: MediaRequestAuthorization(
+                origin: URL(string: "https://\(TransportStub.host)")!,
+                headerName: "X-Emby-Token",
+                headerValue: "secret",
+                additionalHeaders: [
+                    "CF-Access-Client-Id": "id.access",
+                    "CF-Access-Client-Secret": "proxy-secret",
+                ]
+            )
+        )
+    }
+
     @Test func aBoundedDownloadLeavingTheHostDropsEveryCredentialHeader() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [TransportStub.self]
