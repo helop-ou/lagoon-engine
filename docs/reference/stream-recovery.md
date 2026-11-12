@@ -234,7 +234,10 @@ an immediate repeat, a rebuilt session that dies before it proves itself, is
 reported as `.undecodable`, so a session that actually cannot be made still
 reaches the ladder one seek later. While video output is suspended, the fault
 is ignored: there is nothing to rebuild for, and the resume seek makes a fresh
-session anyway.
+session anyway. The same holds for a rebuild claimed just before the
+suspension (`resolveClaimedRebuild`). Locking an iPhone takes the session and
+suspends video in quick succession, and the claimed rebuild's seek cost a
+second of audio, or all of it over AirPlay until unlock.
 
 **In the background, a fault a rebuild cannot fix parks video.** The host
 says it is in the background with `setHostInBackground(_:)`. There the
