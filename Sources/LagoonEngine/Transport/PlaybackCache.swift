@@ -707,6 +707,34 @@ nonisolated final class FirstByteMark: @unchecked Sendable {
 nonisolated private final class PlaybackRangeSessionDelegate: NSObject,
     URLSessionDataDelegate, @unchecked Sendable {
     weak var owner: URLSessionPlaybackRangeLoader?
+    private let authorization: MediaRequestAuthorization?
+
+    init(authorization: MediaRequestAuthorization?) {
+        self.authorization = authorization
+    }
+
+    /// As `FFmpegTransportSessionDelegate` does: URLSession copies every
+    /// header but `Authorization` onto a redirect, so a credential under
+    /// another name or a proxy's service token would follow it anywhere.
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let authorization else {
+            completionHandler(newRequest)
+            return
+        }
+        var request = newRequest
+        if let url = request.url, authorization.applies(to: url) {
+            authorization.apply(to: &request)
+        } else {
+            authorization.remove(from: &request)
+        }
+        completionHandler(request)
+    }
 
     func urlSession(
         _ session: URLSession,
@@ -753,7 +781,7 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
     var stallTimeout: TimeInterval = 15
 
     public init(configuration: URLSessionConfiguration = .ephemeral, authorization: MediaRequestAuthorization? = nil) {
-        delegateProxy = PlaybackRangeSessionDelegate()
+        delegateProxy = PlaybackRangeSessionDelegate(authorization: authorization)
         self.authorization = authorization
         super.init()
         delegateProxy.owner = self
@@ -792,15 +820,17 @@ nonisolated final class URLSessionPlaybackRangeLoader: NSObject, PlaybackRangeLo
                 authorization: authorization,
                 firstByte: { if reported.mark() { firstByte() } }
             )
-            let task = session.dataTask(with: request.urlRequest)
-            let identifier = task.taskIdentifier
-            request.attach(task)
+            // Under the lock `cancelAll` takes before it invalidates the
+            // session: a task made on an invalidated one raises an exception
+            // nothing here can catch.
             lock.lock()
             guard !cancelled else {
                 lock.unlock()
-                task.cancel()
                 throw PlaybackCacheError.cancelled
             }
+            let task = session.dataTask(with: request.urlRequest)
+            let identifier = task.taskIdentifier
+            request.attach(task)
             active[identifier] = request
             lock.unlock()
             task.resume()
