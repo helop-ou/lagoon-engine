@@ -367,6 +367,28 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
                 throw DecoderError.codecSetup("libdav1d max frame delay is unavailable")
             }
         }
+        // The transfer function is what switches tvOS to HDR. Primaries and
+        // matrix stay; static metadata goes with the transfer.
+        let properties = ColorProperties(
+            primaries: SampleBufferFactory.colorPrimaries(codecpar.pointee.color_primaries),
+            transfer: SampleBufferFactory.transferFunction(codecpar.pointee.color_trc),
+            matrix: SampleBufferFactory.yCbCrMatrix(codecpar.pointee.color_space),
+            chromaLocation: SampleBufferFactory.chromaLocation(codecpar.pointee.chroma_location),
+            masteringDisplay: SampleBufferFactory.masteringDisplayColorVolume(codecpar),
+            contentLightLevel: SampleBufferFactory.contentLightLevel(codecpar),
+            ambientViewingEnvironment: SampleBufferFactory.ambientViewingEnvironment(codecpar)
+        )
+        let aspect = SampleBufferFactory.pixelAspectRatio(codecpar.pointee.sample_aspect_ratio)
+
+        // tvOS tone-maps HDR by default (measured); iOS keeps source colour.
+        #if os(tvOS)
+        let toneMapHDRByDefault = properties.isHDR
+        #else
+        let toneMapHDRByDefault = false
+        #endif
+
+        // The mode the output will be asked for, not a guess at it: grain
+        // handed over for a GPU stage that then is not built is lost.
         let tuningForExport = EngineTuning.current
         let exportsFilmGrain = Self.exportsFilmGrainToGPU(
             codecID: codecID,
@@ -374,8 +396,10 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
             outputMode: Self.outputMode(
                 requestedValue: tuningForExport.softwareDecodeOutputMode,
                 legacyCompressedOutput: tuningForExport.softwareDecodeCompressedOutput,
-                toneMapHDRByDefault: false
+                toneMapHDRByDefault: toneMapHDRByDefault
             ),
+            transfer: properties.transfer,
+            matrix: properties.matrix,
             metalAvailable: MTLCreateSystemDefaultDevice() != nil
         )
         if exportsFilmGrain {
@@ -426,25 +450,6 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         let baseAttributes = VideoToolboxDecoder.resolvedPixelBufferAttributes(
             recommended: recommendedPixelBufferAttributes
         ).rawAttributes
-        // The transfer function is what switches tvOS to HDR. Primaries and
-        // matrix stay; static metadata goes with the transfer.
-        let properties = ColorProperties(
-            primaries: SampleBufferFactory.colorPrimaries(codecpar.pointee.color_primaries),
-            transfer: SampleBufferFactory.transferFunction(codecpar.pointee.color_trc),
-            matrix: SampleBufferFactory.yCbCrMatrix(codecpar.pointee.color_space),
-            chromaLocation: SampleBufferFactory.chromaLocation(codecpar.pointee.chroma_location),
-            masteringDisplay: SampleBufferFactory.masteringDisplayColorVolume(codecpar),
-            contentLightLevel: SampleBufferFactory.contentLightLevel(codecpar),
-            ambientViewingEnvironment: SampleBufferFactory.ambientViewingEnvironment(codecpar)
-        )
-        let aspect = SampleBufferFactory.pixelAspectRatio(codecpar.pointee.sample_aspect_ratio)
-
-        // tvOS tone-maps HDR by default (measured); iOS keeps source colour.
-        #if os(tvOS)
-        let toneMapHDRByDefault = properties.isHDR
-        #else
-        let toneMapHDRByDefault = false
-        #endif
 
         let tuning = EngineTuning.current
         let requestedOutputMode = Self.outputMode(
@@ -1349,10 +1354,21 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         codecID: AVCodecID,
         pixelFormat: AVPixelFormat,
         outputMode: OutputMode,
+        transfer: CFString?,
+        matrix: CFString?,
         metalAvailable: Bool
     ) -> Bool {
         codecID == AV_CODEC_ID_AV1 && outputMode.usesGPU && metalAvailable
             && gpuSourceLayout(pixelFormat) != nil
+            && gpuStageTakes(mode: outputMode, transfer: transfer, matrix: matrix)
+    }
+
+    /// The GPU stage tone-maps PQ in BT.2020 and nothing else. Any other
+    /// stream asked for as SDR falls back to the transfer path.
+    static func gpuStageTakes(mode: OutputMode, transfer: CFString?, matrix: CFString?) -> Bool {
+        guard mode.convertsToSDR else { return true }
+        return transfer == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
+            && matrix == kCVImageBufferYCbCrMatrix_ITU_R_2020
     }
 
     static func gpuSourceLayout(_ format: AVPixelFormat) -> MetalFrameConverter.SourceLayout? {
@@ -1378,11 +1394,8 @@ nonisolated final class SoftwareVideoDecoder: @unchecked Sendable {
         fullRange: Bool,
         properties: ColorProperties
     ) -> (MetalFrameConverter, CVPixelBufferPool, CVPixelBuffer, lossless: Bool)? {
-        guard let layout = gpuSourceLayout(sourcePixelFormat) else { return nil }
-        if mode.convertsToSDR {
-            guard properties.transfer == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
-                  properties.matrix == kCVImageBufferYCbCrMatrix_ITU_R_2020 else { return nil }
-        }
+        guard let layout = gpuSourceLayout(sourcePixelFormat),
+              gpuStageTakes(mode: mode, transfer: properties.transfer, matrix: properties.matrix) else { return nil }
         let targetNits = SoftwareDecodeThreadPolicy.commandLineInteger(
             forKey: "debug.softwareDecodeTargetNits"
         ) ?? 203
