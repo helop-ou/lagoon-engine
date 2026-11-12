@@ -23,7 +23,7 @@ struct CodecSupportDocTests {
     @Test func theTableAgreesWithTheCompressedPath() {
         // Every codec the table calls VideoToolbox must be routed there, and
         // nothing called software-only may be.
-        let capabilities = PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: true)
+        let capabilities = PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: true, hardwareVP9: true)
         for entry in EngineCodecSupport.video {
             let compressed = FFmpegDemuxer.usesCompressedVideoPath(
                 codecID: entry.id, capabilities: capabilities, interlaced: false
@@ -61,7 +61,7 @@ struct CodecSupportDocTests {
             AV_CODEC_ID_VC1, AV_CODEC_ID_WMV3, AV_CODEC_ID_MPEG4, AV_CODEC_ID_MPEG2VIDEO,
             AV_CODEC_ID_MJPEG, AV_CODEC_ID_THEORA, AV_CODEC_ID_PRORES, AV_CODEC_ID_FLV1,
         ]
-        let capabilities = PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: true)
+        let capabilities = PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: true, hardwareVP9: true)
         for codec in everyCodec {
             let routed = FFmpegDemuxer.usesCompressedVideoPath(
                 codecID: codec, capabilities: capabilities, interlaced: false
