@@ -56,11 +56,11 @@ in the [engine guide](../engine.md).
   with `setRate(_:time:atHostTime:)`, so audio and video start on one
   deadline, 0.25 s ahead (`PlaybackClockStart.leadSeconds`). On the Apple TV
   4K (3rd gen) over HDMI, with 1080p H.264 at 24 Hz, a lead of 0.1 s lost
-  about four pictures at each start (twelve runs) and one or two after each
-  seek (six runs). At 0.25 s a start lost about one and a seek none (eleven
-  and five runs). 0.4 s was no better, and 0.1 s plus the route's reported
-  output latency (80 ms) fell between the two. On 4K HEVC at 50 Hz a start
-  lost seven to ten pictures at every lead, so that loss has another cause.
+  one or two pictures after a seek in eight of nine runs, and 0.25 s lost
+  none in eight. 0.4 s was no better. The pictures lost at a start were the
+  display's mode switch, not the lead: once the start waits for the switch
+  ([display mode matching](system-integration.md#display-mode-matching-tvos)),
+  a start loses none at either lead.
 - Not on an AirPlay route (`PlaybackClockStart`). The receiver buffers about
   two seconds and cannot meet a deadline that near. On an iPhone AirPlaying
   to an Apple TV, every seek left the audio renderer holding two to four
