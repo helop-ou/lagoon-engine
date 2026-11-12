@@ -3653,9 +3653,15 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// Rebuilds by seeking in place: the seek resets the decoder, so the new
     /// session starts on a keyframe.
     private func rebuildVideoDecodeSession(after status: OSStatus) {
+        let resolution = shared.withLock {
+            PlaybackDecodeSessionPolicy.resolveClaimedRebuild(
+                cancelled: $0.cancelled,
+                videoOutputSuspended: $0.videoOutputSuspended
+            )
+        }
         // In the last second `seek` clamps backwards; losing the final
         // frames costs less than replaying the last second.
-        guard !shutdownRequested, !didFinish,
+        guard resolution == .rebuild, !shutdownRequested, !didFinish,
               duration <= 0 || timePosition < duration - 1 else {
             recordVideoSessionFault(status, recovery: "decodeSessionIgnored")
             shared.withLock {
