@@ -36,23 +36,32 @@ permission.
 
 ## The native libraries are separate
 
-The FFmpeg, dav1d, uavs3d, lcms2 and libdovi binaries the engine links carry
-their own licences, which this file and LICENSE do not alter. Their texts
-travel with the vendored artifacts in this repository.
+The FFmpeg, dav1d, uavs3d, lcms2, libdovi and libass binaries the engine
+links carry their own licences, which this file and LICENSE do not alter.
+The libass binary also holds FreeType, HarfBuzz and FriBidi. Their texts
+travel with the vendored artifacts in this repository, beside each
+`.xcframework` in `Artifacts/`.
 
 - FFmpeg's four libraries: LGPL-2.1-or-later, built here without their network
-  stack. Every release attaches their complete corresponding source
-  (`lagoon-engine-<version>-ffmpeg-8.1.3-source.tar.gz`), and libavcodec's
-  Independent JPEG Group code asks an app to credit the IJG.
+  stack. Every release attaches their complete corresponding source, and
+  libavcodec's Independent JPEG Group code asks an app to credit the IJG.
+- FriBidi: LGPL-2.1-or-later. Every release attaches its complete
+  corresponding source too.
+- FreeType: the FreeType Licence, chosen over its GPL-2.0 alternative. It
+  asks that the documentation of a product using FreeType credit it.
+- libass: ISC. HarfBuzz: MIT.
 - dav1d and uavs3d: BSD. lcms2 and libdovi: MIT. libdovi's licence file also
   lists the Rust crates and standard library it links.
 
 An app that statically links these libraries takes on the LGPL's relinking
-terms for FFmpeg. Lagoon meets them by publishing its own source.
+terms for FFmpeg and FriBidi, and owes the credits above in its
+acknowledgements. Lagoon meets the relinking terms by publishing its own
+source.
 
 Everything but libdovi is built here from checksum-pinned upstream source, and
 nothing is downloaded when the package resolves. Provenance and rebuild steps
 are in [`FFmpeg.README.md`](Artifacts/FFmpeg.README.md),
+[`Libass.README.md`](Artifacts/Libass.README.md),
 [`Libdovi.README.md`](Artifacts/Libdovi.README.md), and the header of each
 `scripts/build-*` script.
 

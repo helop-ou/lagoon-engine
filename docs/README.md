@@ -7,7 +7,7 @@ guide](engine.md) before changing anything in `Sources/LagoonEngine`.
 | --- | --- |
 | [Coding standards](standards.md) | Folder structure, the package boundary, concurrency, the hot path, verification |
 | [The engine](engine.md) | What the package guarantees: pipeline, transport, lifecycle, memory, failure verdicts, diagnostics |
-| [Using the engine](usage.md) | Host-side setup: buffering, credentials, the protocol, diagnostics |
+| [Using the engine](usage.md) | Host-side setup: the audio session, tracks, buffering, credentials, failures, sound and subtitles, diagnostics, and moving from 1.x |
 | [Codec support](codec-support.md) | What decodes, and by which path. Generated: edit `EngineCodecSupport` |
 
 ## Supporting material

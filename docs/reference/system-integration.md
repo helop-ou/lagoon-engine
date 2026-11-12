@@ -7,15 +7,22 @@ player. The contract is in the [engine guide](../engine.md).
 
 ### Audio session
 
-`PlaybackAudioSession` activates `.playback` / `.moviePlayback`, enables
-multichannel content, uses `.longFormVideo` on iOS, and deactivates with
-`notifyOthersOnDeactivation` when playback ends.
+The audio session is the host's. The engine never sets a category or
+activates a session, and it observes no interruption, route change or
+media-services reset. It only reads the current route when it starts the
+clock. What a host sets up is in [Using the
+engine](../usage.md#what-your-app-sets-up).
 
-- Interruption callbacks are idempotent: they resume only if the item was
+What Lagoon does, as one working arrangement: it activates `.playback` /
+`.moviePlayback`, enables multichannel content, uses `.longFormVideo` on iOS,
+and deactivates with `notifyOthersOnDeactivation` when playback ends.
+
+- Its interruption callbacks are idempotent: they resume only if the item was
   playing and the system sets `shouldResume`.
 - Route changes pause when a personal output (wired, Bluetooth, AirPlay)
   disappears, but not on tvOS HDMI mode changes.
-- A media-services reset re-establishes the category and the active session.
+- A media-services reset re-establishes the category and the active session,
+  then calls `recoverAfterMediaServicesReset()`.
 
 ### Audio spatialization
 
