@@ -697,6 +697,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         }
 
         bufferingTargetSeconds = max(pendingStartSeconds, 0)
+        // Every in-place seek before the first start (a resume from
+        // suspension, a rebuilt session, an audio track change) seeks here.
+        timePosition = max(pendingStartSeconds, 0)
         shared.withLock {
             let start = max(pendingStartSeconds, 0)
             $0.pendingSeekSeconds = start
