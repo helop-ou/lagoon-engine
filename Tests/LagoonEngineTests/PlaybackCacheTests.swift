@@ -252,6 +252,63 @@ struct PlaybackCacheTests {
         #expect(scope.completeFileURL == scope.fileURL)
     }
 
+    @Test func aForegroundReadCountsTheTimeItWaitedForTheCacheLock() throws {
+        func scope(measuring: Bool) throws -> PlaybackCacheScope {
+            try PlaybackCacheScope(
+                itemID: "lock-wait", sourceURL: URL(string: "https://media.test/film.mkv")!,
+                expectedLength: nil,
+                directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                byteLimit: 1_024 * 1_024, requestSize: 64 * 1_024,
+                loader: PlaybackCacheLoaderStub(payload: Data(repeating: 0, count: 64 * 1_024)),
+                measuresLockWait: measuring
+            )
+        }
+        // Holds the lock on its own thread, as a fill writing to disk does.
+        func read(_ scope: PlaybackCacheScope, priority: Float, offset: Int64) throws {
+            let held = DispatchSemaphore(value: 0)
+            Thread {
+                scope.holdLockForTesting {
+                    held.signal()
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+            }.start()
+            held.wait()
+            _ = try scope.read(offset: offset, length: 1_024, priority: priority)
+        }
+
+        let measured = try scope(measuring: true)
+        defer { measured.cancelAndRemove() }
+        try read(measured, priority: URLSessionTask.highPriority, offset: 0)
+        let waited = measured.metrics.foregroundLockWaitSeconds
+        #expect(waited >= 0.03)
+        #expect(measured.metrics.longestForegroundLockWaitSeconds >= 0.03)
+        // A fill's own wait is not the demux read's.
+        try read(measured, priority: URLSessionTask.lowPriority, offset: 128 * 1_024)
+        #expect(measured.metrics.foregroundLockWaitSeconds == waited)
+
+        let unmeasured = try scope(measuring: false)
+        defer { unmeasured.cancelAndRemove() }
+        try read(unmeasured, priority: URLSessionTask.highPriority, offset: 0)
+        #expect(unmeasured.metrics.foregroundLockWaitSeconds == 0)
+    }
+
+    @Test func lockWaitSurvivesAddingAndReportingMetrics() {
+        let one = PlaybackCacheMetrics(
+            cachedBytes: 0, networkBytes: 0, cacheHitBytes: 0, requestCount: 0, networkRequestSeconds: 0,
+            foregroundLockWaitSeconds: 0.25, longestForegroundLockWaitSeconds: 0.2
+        )
+        let two = PlaybackCacheMetrics(
+            cachedBytes: 0, networkBytes: 0, cacheHitBytes: 0, requestCount: 0, networkRequestSeconds: 0,
+            foregroundLockWaitSeconds: 0.5, longestForegroundLockWaitSeconds: 0.4
+        )
+        let sum = one.adding(two)
+        #expect(sum.foregroundLockWaitSeconds == 0.75)
+        #expect(sum.longestForegroundLockWaitSeconds == 0.4)
+        let reported = sum.reporting(evictionCount: 1, resourceCount: 2, capacityBytes: 3)
+        #expect(reported.foregroundLockWaitSeconds == 0.75)
+        #expect(reported.longestForegroundLockWaitSeconds == 0.4)
+    }
+
     @Test func timelineAnchorMapsSparseByteRangesThroughTheActualPlayhead() {
         let metrics = PlaybackCacheMetrics(
             cachedBytes: 30,
