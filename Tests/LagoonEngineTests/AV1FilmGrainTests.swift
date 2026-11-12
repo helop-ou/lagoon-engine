@@ -68,24 +68,75 @@ struct AV1FilmGrainTests {
     @Test func onlyAV1BoundForTheGPUHandsItsGrainOver() {
         let gpu = SoftwareVideoDecoder.OutputMode.gpuSource
         #expect(SoftwareVideoDecoder.exportsFilmGrainToGPU(
-            codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_YUV420P10LE, outputMode: gpu, metalAvailable: true
+            codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_YUV420P10LE, outputMode: gpu, transfer: nil, matrix: nil, metalAvailable: true
         ))
         // 8-bit 4:2:0 is copied on the CPU, where nothing would add it.
         #expect(!SoftwareVideoDecoder.exportsFilmGrainToGPU(
-            codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_YUV420P, outputMode: gpu, metalAvailable: true
+            codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_YUV420P, outputMode: gpu, transfer: nil, matrix: nil, metalAvailable: true
         ))
         #expect(!SoftwareVideoDecoder.exportsFilmGrainToGPU(
-            codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_NONE, outputMode: gpu, metalAvailable: true
+            codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_NONE, outputMode: gpu, transfer: nil, matrix: nil, metalAvailable: true
         ))
         #expect(!SoftwareVideoDecoder.exportsFilmGrainToGPU(
-            codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_YUV420P10LE, outputMode: .directSource, metalAvailable: true
+            codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_YUV420P10LE, outputMode: .directSource, transfer: nil, matrix: nil, metalAvailable: true
         ))
         #expect(!SoftwareVideoDecoder.exportsFilmGrainToGPU(
-            codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_YUV420P10LE, outputMode: gpu, metalAvailable: false
+            codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_YUV420P10LE, outputMode: gpu, transfer: nil, matrix: nil, metalAvailable: false
         ))
         #expect(!SoftwareVideoDecoder.exportsFilmGrainToGPU(
-            codecID: AV_CODEC_ID_VP9, pixelFormat: AV_PIX_FMT_YUV420P10LE, outputMode: gpu, metalAvailable: true
+            codecID: AV_CODEC_ID_VP9, pixelFormat: AV_PIX_FMT_YUV420P10LE, outputMode: gpu, transfer: nil, matrix: nil, metalAvailable: true
         ))
+    }
+
+    /// The GPU stage tone-maps PQ only. Grain handed over for a stream it
+    /// then refuses went down the transfer path and was never added.
+    @Test func grainIsHandedOverOnlyWhereTheGPUStageWillTakeTheStream() {
+        func exports(_ mode: SoftwareVideoDecoder.OutputMode, _ transfer: CFString?, _ matrix: CFString?) -> Bool {
+            SoftwareVideoDecoder.exportsFilmGrainToGPU(
+                codecID: AV_CODEC_ID_AV1, pixelFormat: AV_PIX_FMT_YUV420P10LE, outputMode: mode,
+                transfer: transfer, matrix: matrix, metalAvailable: true
+            )
+        }
+        let pq = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
+        let hlg = kCVImageBufferTransferFunction_ITU_R_2100_HLG
+        let bt2020 = kCVImageBufferYCbCrMatrix_ITU_R_2020
+        #expect(exports(.gpuSDR, pq, bt2020))
+        #expect(!exports(.gpuSDR, hlg, bt2020))
+        #expect(!exports(.gpuSDR, pq, kCVImageBufferYCbCrMatrix_ITU_R_709_2))
+        #expect(!exports(.gpuSDR, pq, nil))
+        #expect(exports(.gpuSource, hlg, bt2020))
+        #expect(exports(.gpuSource, nil, nil))
+    }
+
+    /// An HLG title on an Apple TV is asked for as SDR, which the GPU stage
+    /// does not do for HLG: dav1d keeps adding the grain.
+    @Test func anHLGTitleKeepsItsGrainWhereItIsToneMapped() throws {
+        let url = try #require(Bundle.module.url(forResource: "grain10-hlg", withExtension: "mkv", subdirectory: "FilmGrain"))
+        let demuxer = FFmpegDemuxer(capabilities: PlaybackCapabilities(hardwareHEVC: true, hardwareAV1: false))
+        defer { demuxer.close() }
+        demuxer.disableVideoToolboxAV1()
+        try demuxer.open(url: url.path(percentEncoded: false), recommendedPixelBufferAttributes: CVPixelBufferAttributes())
+        let decoder = try #require(demuxer.takeSoftwareVideoDecoder())
+        #if os(tvOS)
+        #expect(!decoder.exportsFilmGrain)
+        #else
+        // Kept as HLG, through the GPU stage.
+        #expect(decoder.exportsFilmGrain)
+        #endif
+        var frames = 0
+        reading: for _ in 0..<500 {
+            switch demuxer.readNext() {
+            case .videoPacket(let packet):
+                frames += try decoder.decode(packet: packet.packet).count
+            case .endOfFile, .failed:
+                break reading
+            default:
+                continue
+            }
+        }
+        frames += try decoder.drain().count
+        #expect(frames >= 6)
+        #expect((decoder.gpuGrainedFrames > 0) == decoder.exportsFilmGrain)
     }
 
     /// The specification's register: taps 0, 1, 3 and 12, shifted in at the
