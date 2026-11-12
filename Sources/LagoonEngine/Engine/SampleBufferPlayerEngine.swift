@@ -364,6 +364,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// Sees each video sample as the renderer takes it, and nil for a flush.
     /// Pump queue.
     @ObservationIgnored nonisolated(unsafe) var rendererVideoObserverForTesting: ((CMSampleBuffer?) -> Void)?
+    /// Runs on the demux queue in every pass, between applying what the
+    /// main actor switched and taking a pending seek.
+    @ObservationIgnored nonisolated(unsafe) var afterTrackChangesForTesting: (() -> Void)?
     /// The synchronizer's own time. `clockPosition` answers with the target
     /// while buffering.
     var synchronizerSecondsForTesting: Double { synchronizer.currentTime().seconds }
@@ -2613,6 +2616,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         var progress = DemuxLoopProgress()
         while !shared.withLock({ $0.cancelled }) {
             applyTrackChanges(&progress)
+            afterTrackChangesForTesting?()
             let seek = applyPendingSeek(&progress)
             if seek == .stop { break }
             if seek == .handled { continue }
@@ -3034,17 +3038,22 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             progress.appliedSubtitleStreamIndex = desiredSubtitle
         }
+        applyVideoSuspension(&progress)
+    }
+
+    /// Has the container discard video while it is suspended, and read it
+    /// again once it is not.
+    nonisolated private func applyVideoSuspension(_ progress: inout DemuxLoopProgress) {
         let desiredVideoSuspended = shared.withLock { $0.videoOutputSuspended }
-        if desiredVideoSuspended != progress.appliedVideoOutputSuspended {
-            demuxer.setVideoDiscarded(desiredVideoSuspended)
-            if desiredVideoSuspended {
-                // Leave a VideoToolbox session alone: creating one in the
-                // background can be refused.
-                softwareDecodeStage?.reset()
-                pumpQueue.sync { self.flushVideoPath() }
-            }
-            progress.appliedVideoOutputSuspended = desiredVideoSuspended
+        guard desiredVideoSuspended != progress.appliedVideoOutputSuspended else { return }
+        demuxer.setVideoDiscarded(desiredVideoSuspended)
+        if desiredVideoSuspended {
+            // Leave a VideoToolbox session alone: creating one in the
+            // background can be refused.
+            softwareDecodeStage?.reset()
+            pumpQueue.sync { self.flushVideoPath() }
         }
+        progress.appliedVideoOutputSuspended = desiredVideoSuspended
     }
 
     nonisolated private func applyPendingSeek(_ progress: inout DemuxLoopProgress) -> DemuxSeekOutcome {
@@ -3059,6 +3068,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             }
             return state.pendingSeekSeconds
         }) else { return .noneRequested }
+        // Again, now that the seek is claimed. A resume and this seek can
+        // both land after the pass read what was suspended, and the seek
+        // cancels the resume: priming with video still discarded read audio
+        // to the end and the picture never came back.
+        applyVideoSuspension(&progress)
         if progress.hasPrimedPlayback || target > 0 {
             var seekError: Error?
             do { try demuxer.seek(toSeconds: target) } catch { seekError = error }
