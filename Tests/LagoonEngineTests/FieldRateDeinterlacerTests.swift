@@ -106,12 +106,85 @@ struct FieldRateDeinterlacerTests {
         }
     }
 
-    @Test func fieldsSplitTheFramesInterval() {
-        let (first, second) = FieldRateDeinterlacer.fieldTimings(Self.timing(3))
+    @Test func fieldsSplitTheFramesInterval() throws {
+        let (first, later) = FieldRateDeinterlacer.fieldTimings(Self.timing(3))
+        let second = try #require(later)
         #expect(first.presentationTimeStamp == CMTime(value: 120, timescale: 1000))
         #expect(second.presentationTimeStamp == CMTime(value: 140, timescale: 1000))
         #expect(first.duration == CMTime(value: 20, timescale: 1000))
         #expect(second.duration == CMTime(value: 20, timescale: 1000))
+    }
+
+    /// A stream with no frame rate and no frame durations still gave every
+    /// second picture no time at all.
+    @Test func aFrameWithoutADurationLastsUntilTheNext() throws {
+        var timing = Self.timing(3)
+        timing.duration = .invalid
+        let (first, later) = FieldRateDeinterlacer.fieldTimings(timing, nextStart: CMTime(value: 160, timescale: 1000))
+        let second = try #require(later)
+        #expect(first.presentationTimeStamp == CMTime(value: 120, timescale: 1000))
+        #expect(second.presentationTimeStamp == CMTime(value: 140, timescale: 1000))
+        #expect(second.duration == CMTime(value: 20, timescale: 1000))
+    }
+
+    @Test func aFieldWithNoTimeToShowAtIsNotMade() {
+        var timing = Self.timing(3)
+        timing.duration = .invalid
+        #expect(FieldRateDeinterlacer.fieldTimings(timing).1 == nil)
+        // The last frame at a drain is its own next.
+        #expect(FieldRateDeinterlacer.fieldTimings(timing, nextStart: timing.presentationTimeStamp).1 == nil)
+        #expect(FieldRateDeinterlacer.fieldTimings(timing).0.presentationTimeStamp == timing.presentationTimeStamp)
+    }
+
+    /// The copy goes by the size the deinterlacer was built for, so a
+    /// smaller frame was read far past its end.
+    @Test func aFrameOfAnotherSizeIsRefused() throws {
+        let deinterlacer = try #require(
+            FieldRateDeinterlacer(width: Self.width * 4, height: Self.height * 4, format: AV_PIX_FMT_YUV420P)
+        )
+        let picture = Self.picture { _, _ in 100 }
+        let small = try Self.frame(top: picture, bottom: picture, interlaced: true, topFirst: true)
+        defer { Self.free(small) }
+        #expect(throws: (any Error).self) { _ = try deinterlacer.push(small, timing: Self.timing(0)) }
+        let tenBit = try #require(
+            FieldRateDeinterlacer(width: Self.width, height: Self.height, format: AV_PIX_FMT_YUV420P10LE)
+        )
+        #expect(throws: (any Error).self) { _ = try tenBit.push(small, timing: Self.timing(0)) }
+    }
+
+    /// A broadcast recording changes size at a programme boundary. The
+    /// decoder shows what it held and carries on at the new size.
+    @Test func aStreamThatChangesSizeKeepsPlayingAtFieldRate() throws {
+        let url = try #require(Bundle.module.url(forResource: "size-change", withExtension: "ts", subdirectory: "Interlaced"))
+        let demuxer = FFmpegDemuxer()
+        defer { demuxer.close() }
+        try demuxer.open(url: url.path(percentEncoded: false), recommendedPixelBufferAttributes: CVPixelBufferAttributes())
+        let decoder = try #require(demuxer.takeSoftwareVideoDecoder())
+        #expect(decoder.outputsFieldRate)
+        var sizes: [CGSize] = []
+        func note(_ buffers: [CMSampleBuffer]) {
+            sizes += buffers.compactMap { CMSampleBufferGetImageBuffer($0).map(CVImageBufferGetEncodedSize) }
+        }
+        reading: for _ in 0..<2_000 {
+            switch demuxer.readNext() {
+            case .videoPacket(let packet):
+                note(try decoder.decode(packet: packet.packet))
+            case .endOfFile:
+                break reading
+            case .failed(let message):
+                Issue.record("read failed: \(message)")
+                break reading
+            default:
+                continue
+            }
+        }
+        note(try decoder.drain())
+        let large = sizes.filter { $0 == CGSize(width: 352, height: 288) }.count
+        let small = sizes.filter { $0 == CGSize(width: 176, height: 144) }.count
+        #expect(large >= 8 && large.isMultiple(of: 2), "\(large) pictures at the first size")
+        #expect(small >= 8 && small.isMultiple(of: 2), "\(small) pictures at the second size")
+        #expect(large + small == sizes.count, "nothing at any other size: \(Set(sizes.map { "\($0)" }))")
+        #expect(decoder.outputsFieldRate)
     }
 
     /// A progressive frame in an interlaced stream is shown twice, so the
