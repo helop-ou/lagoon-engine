@@ -2614,6 +2614,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         authorization: MediaRequestAuthorization?
     ) -> Bool? {
         var deliveryIsCached = cacheSession != nil
+        // Shut down before the open began. An interrupted open is not a
+        // failed one: no report, and no fallback that would discard the
+        // scope a replacement engine has just made current.
+        guard !isCancelled else { return nil }
         demuxer.setAudioShaping(shared.withLock { $0.audioShaping })
         do {
             do {
@@ -2626,12 +2630,13 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                 )
             // No uncached retry for a disc: only the cache can read its
             // filesystem.
-            } catch where cacheSession != nil && disc == nil {
+            } catch where cacheSession != nil && disc == nil && !isCancelled {
                 demuxer.close()
                 deliveryIsCached = false
                 EngineDiagnostics.record(.playbackCacheFallback, ["recovery": .string("cacheFallback")])
                 // Retire the unusable scope, keeping any staged successor.
                 Task { @MainActor in
+                    guard !self.shutdownRequested else { return }
                     self.discardPlaybackCache(preservingStagedSuccessor: true)
                 }
                 try demuxer.open(
@@ -2685,7 +2690,12 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         return true
     }
 
+    nonisolated private var isCancelled: Bool {
+        shared.withLock { $0.cancelled }
+    }
+
     nonisolated private func reportOpenFailure(_ error: Error) {
+        guard !isCancelled else { return }
         let demuxError = error as? DemuxError
         let failure = PlaybackEngineFailure(
             cause: demuxError?.cause ?? .delivery,
@@ -2693,7 +2703,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             detail: demuxError?.diagnosticDetail ?? PlaybackFailureDetail(stage: .open, error: error),
             transport: demuxer.lastTransportFailure
         )
-        Task { @MainActor in self.onError?(failure) }
+        Task { @MainActor in
+            guard !self.shutdownRequested else { return }
+            self.onError?(failure)
+        }
     }
 
     /// The demuxer builds the software decoder but a separate stage
