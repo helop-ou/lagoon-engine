@@ -233,6 +233,22 @@ public nonisolated struct DisplayMatchRequest: Equatable {
     public let formatDescription: CMFormatDescription
     public let frameRate: Float
 
+    /// The rates displays have modes for. The film and NTSC rates are exact
+    /// fractions, so 24000/1001 is told from 24.
+    static let standardFrameRates: [Double] = [
+        24_000.0 / 1_001, 24, 25, 30_000.0 / 1_001, 30, 48_000.0 / 1_001, 48, 50, 60_000.0 / 1_001, 60,
+    ]
+
+    /// A container's rate is often a little off (23.98, 29.97003, 25.0001).
+    /// Within half a percent of a standard rate it is that rate. Anything
+    /// further away is asked for as it is.
+    static func standardFrameRate(nearest rate: Double) -> Double {
+        guard rate.isFinite, rate > 0,
+              let nearest = standardFrameRates.min(by: { abs($0 - rate) < abs($1 - rate) }),
+              abs(nearest - rate) <= rate * 0.005 else { return rate }
+        return nearest
+    }
+
     static public func == (lhs: Self, rhs: Self) -> Bool {
         lhs.frameRate == rhs.frameRate
             && CMFormatDescriptionEqual(lhs.formatDescription, otherFormatDescription: rhs.formatDescription)

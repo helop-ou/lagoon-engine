@@ -292,6 +292,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// only on a change. A SyncPlay group waits for its slowest member, so
     /// it must hear about stalls the engine recovers from on its own.
     @ObservationIgnored public var onBufferingChanged: ((Bool) -> Void)?
+    /// Awaited before a prepared title first starts, with its first picture
+    /// up and the clock stopped. A host waits here for something the viewer
+    /// cannot see through, such as a display mode switch, and bounds its own
+    /// wait: playback does not start until this returns.
+    @ObservationIgnored public var startGate: (@MainActor () async -> Void)?
     // MARK: Cross-thread state
 
     @ObservationIgnored nonisolated private let demuxer = FFmpegDemuxer()
@@ -355,6 +360,9 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     /// Sees each video sample as the renderer takes it, and nil for a flush.
     /// Pump queue.
     @ObservationIgnored nonisolated(unsafe) var rendererVideoObserverForTesting: ((CMSampleBuffer?) -> Void)?
+    /// The synchronizer's own time. `clockPosition` answers with the target
+    /// while buffering.
+    var synchronizerSecondsForTesting: Double { synchronizer.currentTime().seconds }
     /// Every audio buffer queued for the renderer, in order. Set before
     /// `prepare`.
     @ObservationIgnored nonisolated(unsafe) var queuedAudioObserverForTesting: ((CMSampleBuffer) -> Void)?
@@ -1436,6 +1444,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             $0.videoSamplesSinceFlush = 0
             $0.videoStartPointDropsSinceFlush = 0
         }
+    }
+
+    /// The clock stopped at the start, which shows the first picture while
+    /// the host holds `startGate`.
+    private func showFirstPicture(at seconds: Double, firstVideoPTS: CMTime?) {
+        let time = PlaybackClockAnchor.mediaTime(targetSeconds: seconds, firstVideoPTS: firstVideoPTS)
+        requestedClockRate = 0
+        clockQueue.sync { synchronizer.setRate(0, time: time) }
     }
 
     /// Demux primed after open or seek: start, or reposition if paused.
@@ -2754,7 +2770,10 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         // Field-rate output asks the display for the field rate: 50 for 50i.
         let displayMatch: DisplayMatchRequest? = if demuxer.outputFrameRate > 0,
             let description = demuxer.videoStream?.formatDescription {
-            DisplayMatchRequest(formatDescription: description, frameRate: Float(demuxer.outputFrameRate))
+            DisplayMatchRequest(
+                formatDescription: description,
+                frameRate: Float(DisplayMatchRequest.standardFrameRate(nearest: demuxer.outputFrameRate))
+            )
         } else {
             nil
         }
@@ -3815,6 +3834,17 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
                         && $0.playbackGeneration == generation
                 }
                 guard isStillCurrent else { return }
+                if let startGate = self.startGate, !self.didNotifyPlaybackStarted {
+                    self.showFirstPicture(at: target, firstVideoPTS: firstVideoPTS)
+                    await startGate()
+                    // A seek asked for meanwhile primes and starts itself.
+                    let isCurrentAfterGate = self.shared.withLock {
+                        !$0.cancelled
+                            && $0.pendingSeekSeconds == nil
+                            && $0.playbackGeneration == generation
+                    }
+                    guard isCurrentAfterGate else { return }
+                }
                 self.beginPlayback(at: target, firstVideoPTS: firstVideoPTS)
             }
         }
