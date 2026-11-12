@@ -22,7 +22,9 @@ public nonisolated struct PlaybackCapabilities: Equatable, Sendable {
     /// stream; where it fails (-12906), the engine reopens on software.
     public var decodesAV1WithVideoToolbox: Bool { true }
     /// Whether the device decodes VP9 in hardware. VP9 is offered to
-    /// VideoToolbox only then: its software route is libavcodec.
+    /// VideoToolbox only then: its software route is libavcodec. Always
+    /// false before iOS 26.2 and tvOS 26.2, where the decoder cannot be
+    /// asked for.
     public let hardwareVP9: Bool
 
     public init(hardwareHEVC: Bool, hardwareAV1: Bool = false, hardwareVP9: Bool = false) {
