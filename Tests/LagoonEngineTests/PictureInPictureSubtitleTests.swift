@@ -69,6 +69,62 @@ struct PictureInPictureSubtitleTests {
         #expect(!compositor.composite(Self.overlay(Self.piece(red: 255, green: 255, blue: 255, alpha: 255)), into: frame))
     }
 
+    // MARK: - Compressed frames
+
+    @Test func compressedFramesCopyToThePlainFormatOfTheirDepthAndRange() {
+        let expected: [(OSType, OSType)] = [
+            (kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            (kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            (kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarFullRange, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
+            (kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarFullRange, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
+            (kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange),
+            (kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange),
+            (kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange, kCVPixelFormatType_420YpCbCr10BiPlanarFullRange),
+        ]
+        for (compressed, plain) in expected {
+            #expect(UncompressedFrameCopier.uncompressedFormat(for: compressed) == plain)
+            #expect(SubtitleFrameCompositor.planeFormat(of: plain) != nil, "the compositor writes the copy")
+        }
+        for plain in [
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            kCVPixelFormatType_32BGRA,
+            kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarVideoRange,
+        ] {
+            #expect(UncompressedFrameCopier.uncompressedFormat(for: plain) == nil)
+        }
+    }
+
+    @Test func aCopyKeepsTheTimingTheDisplayMarkAndTheColour() throws {
+        let sample = try Self.sample(Self.frame(format: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, transfer: .pq))
+        let copier = UncompressedFrameCopier()
+        let copied = try #require(copier.copy(sample, to: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange))
+        let frame = try #require(CMSampleBufferGetImageBuffer(copied))
+        #expect(frame !== CMSampleBufferGetImageBuffer(sample))
+        #expect(CMSampleBufferGetPresentationTimeStamp(copied) == CMSampleBufferGetPresentationTimeStamp(sample))
+        #expect(CMSampleBufferGetDuration(copied) == CMSampleBufferGetDuration(sample))
+        let marks = (CMSampleBufferGetSampleAttachmentsArray(copied, createIfNecessary: false) as? [NSDictionary])?.first
+        #expect(marks?[kCMSampleAttachmentKey_DoNotDisplay] as? Bool == true)
+        #expect(SubtitleFrameCompositor.transfer(of: frame) == .pq)
+        #expect(Self.luma(frame, x: 12, y: 12) == 16)
+    }
+
+    @Test func drawingThroughACopyLeavesTheDecodedFrameAlone() throws {
+        let decoded = try Self.frame(format: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+        let sample = try Self.sample(decoded)
+        let compositor = try #require(SubtitleFrameCompositor())
+        let shown = try #require(compositor.burn(
+            Self.overlay(Self.piece(red: 255, green: 255, blue: 255, alpha: 255)),
+            into: sample,
+            copyingTo: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            with: UncompressedFrameCopier()
+        ))
+        let frame = try #require(CMSampleBufferGetImageBuffer(shown))
+        #expect(Self.luma(frame, x: 12, y: 12) == 235)
+        #expect(Self.luma(frame, x: 4, y: 4) == 16, "outside the piece")
+        #expect(Self.luma(decoded, x: 12, y: 12) == 16, "the decoded frame is untouched")
+    }
+
     // MARK: - Layout
 
     @Test func anUnplacedCueSitsCentredAboveTheBottomEdge() throws {
@@ -149,6 +205,24 @@ struct PictureInPictureSubtitleTests {
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
     }
 
+    /// A frame the compositor cannot write goes to the renderer as a drawn
+    /// copy. The simulator decodes only to plain formats, so the test hook
+    /// forces the copy, in full range so the renderer's frames show it.
+    @MainActor
+    @Test func aFrameThatCannotBeDrawnIntoReachesTheRendererAsADrawnCopy() async throws {
+        let copies = FullRangeFrames()
+        let engine = try await Self.openFixture(subtitleOrdinal: 1, pictureInPicture: .standard) { engine in
+            engine.copiesBurnedInFramesForTesting = true
+            engine.rendererVideoObserverForTesting = { copies.record($0) }
+        }
+        engine.play()
+        try await Self.wait { engine.burnedInSubtitleFrames > 0 }
+        #expect(engine.burnedInSubtitleFrames > 0)
+        #expect(copies.count > 0)
+        engine.shutdown()
+        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+    }
+
     /// With no subtitle chosen there is nothing to draw.
     @MainActor
     @Test func withoutSubtitlesPictureInPictureDrawsNothing() async throws {
@@ -217,6 +291,28 @@ struct PictureInPictureSubtitleTests {
         return frame
     }
 
+    /// One frame at 5 s for 1/24 s, marked not to be displayed.
+    private static func sample(_ frame: CVPixelBuffer) throws -> CMSampleBuffer {
+        var description: CMVideoFormatDescription?
+        CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault, imageBuffer: frame, formatDescriptionOut: &description
+        )
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 24),
+            presentationTimeStamp: CMTime(value: 5, timescale: 1),
+            decodeTimeStamp: .invalid
+        )
+        var sample: CMSampleBuffer?
+        CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault, imageBuffer: frame, formatDescription: try #require(description),
+            sampleTiming: &timing, sampleBufferOut: &sample
+        )
+        let made = try #require(sample)
+        let marks = try #require((CMSampleBufferGetSampleAttachmentsArray(made, createIfNecessary: true) as? [NSMutableDictionary])?.first)
+        marks[kCMSampleAttachmentKey_DoNotDisplay] = true
+        return made
+    }
+
     private static func luma(_ frame: CVPixelBuffer, x: Int, y: Int) -> UInt8 {
         CVPixelBufferLockBaseAddress(frame, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(frame, .readOnly) }
@@ -267,11 +363,13 @@ struct PictureInPictureSubtitleTests {
     @MainActor
     private static func openFixture(
         subtitleOrdinal: Int,
-        pictureInPicture: BurnedInSubtitleStyle? = nil
+        pictureInPicture: BurnedInSubtitleStyle? = nil,
+        configure: (SampleBufferPlayerEngine) -> Void = { _ in }
     ) async throws -> SampleBufferPlayerEngine {
         let url = try #require(Bundle.module.url(forResource: "two-subrip", withExtension: "mkv", subdirectory: "TextSubtitles"))
         SampleBufferPlayerEngine.mutesAudioForTesting = true
         let engine = SampleBufferPlayerEngine()
+        configure(engine)
         engine.setPictureInPictureSubtitles(pictureInPicture)
         engine.prepare(url: url, startSeconds: 0.4, initialAudioOrdinal: nil, initialSubtitleOrdinal: subtitleOrdinal)
         engine.pause()
@@ -287,5 +385,19 @@ struct PictureInPictureSubtitleTests {
         while !condition(), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
+    }
+}
+
+/// Counts the renderer's frames in full range, which only the test copy uses.
+private final class FullRangeFrames: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen = 0
+
+    var count: Int { lock.withLock { seen } }
+
+    func record(_ buffer: CMSampleBuffer?) {
+        guard let frame = buffer.flatMap(CMSampleBufferGetImageBuffer),
+              CVPixelBufferGetPixelFormatType(frame) == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange else { return }
+        lock.withLock { seen += 1 }
     }
 }
