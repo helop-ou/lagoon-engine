@@ -798,9 +798,9 @@ nonisolated final class FFmpegDemuxer {
                     )
                     : nil
             }
-        let firstRPUProfile = videoUsesStartCodes
+        let firstRPU = videoUsesStartCodes
             ? nil
-            : firstDolbyVisionRPUProfile(
+            : firstDolbyVisionRPU(
                 ctx: ctx,
                 streamIndex: bestVideo,
                 codecpar: videoPar,
@@ -809,7 +809,7 @@ nonisolated final class FFmpegDemuxer {
         let dolbyVisionOverride = configureDolbyVisionRewrite(
             videoPar: videoPar,
             filterNALLengthSize: filterNALLengthSize,
-            firstRPUProfile: firstRPUProfile
+            firstRPU: firstRPU
         )
         var videoDescription: CMFormatDescription? = if usesCompressedVideo {
             SampleBufferFactory.videoFormatDescription(
@@ -830,7 +830,7 @@ nonisolated final class FFmpegDemuxer {
                     )
                 },
                 dolbyVisionOverride: dolbyVisionOverride,
-                firstRPUProfile: firstRPUProfile,
+                firstRPUProfile: firstRPU?.profile,
                 frameRate: videoFrameRate
             )
         } else {
@@ -890,7 +890,7 @@ nonisolated final class FFmpegDemuxer {
     private func configureDolbyVisionRewrite(
         videoPar: UnsafeMutablePointer<AVCodecParameters>,
         filterNALLengthSize: Int?,
-        firstRPUProfile: UInt8?
+        firstRPU: DolbyVisionRecordPolicy.FirstRPU?
     ) -> AVDOVIDecoderConfigurationRecord? {
         // Dolby Vision profile 7: convert to 8.1 or strip to HDR10 (see
         // `DolbyVisionProfileConverter`). Needs a known NAL length size.
@@ -910,9 +910,22 @@ nonisolated final class FFmpegDemuxer {
                 stripStatsLock.unlock()
             }
         } else if videoPar.pointee.codec_id == AV_CODEC_ID_HEVC,
+                  dolbyVisionProfile7Mode == .convert,
+                  let dovi = SampleBufferFactory.doviConfiguration(codecpar: videoPar),
+                  DolbyVisionRecordPolicy.convertsProfile7RPUs(
+                      container: dovi,
+                      stream: DolbyVisionRecordPolicy.Stream(codecpar: videoPar, frameRate: videoFrameRate),
+                      firstRPU: firstRPU
+                  ),
+                  let lengthSize = filterNALLengthSize,
+                  let converter = DolbyVisionProfileConverter(profile8RecordOverProfile7RPUs: dovi) {
+            videoNALLengthSize = lengthSize
+            profile7Converter = converter
+            dolbyVisionOverride = converter.synthesizedRecord
+        } else if videoPar.pointee.codec_id == AV_CODEC_ID_HEVC,
                   let dovi = SampleBufferFactory.signalledDolbyVision(
                       codecpar: videoPar,
-                      firstRPUProfile: firstRPUProfile,
+                      firstRPUProfile: firstRPU?.profile,
                       frameRate: videoFrameRate
                   ),
                   DolbyVisionRPURepeater.applies(toProfile: dovi.dv_profile),
@@ -1287,16 +1300,16 @@ nonisolated final class FFmpegDemuxer {
         return ordered.count == 3 ? ordered : nil
     }
 
-    /// libdovi's profile for the stream's first RPU, when
+    /// What libdovi reads from the stream's first RPU, when
     /// `DolbyVisionRecordPolicy` cannot trust the record without it. Rewinds
     /// afterwards, as `harvestedHEVCParameterSets` does. nil (no reads)
     /// otherwise.
-    private func firstDolbyVisionRPUProfile(
+    private func firstDolbyVisionRPU(
         ctx: UnsafeMutablePointer<AVFormatContext>,
         streamIndex: Int32,
         codecpar: UnsafeMutablePointer<AVCodecParameters>,
         lengthSize: Int?
-    ) -> UInt8? {
+    ) -> DolbyVisionRecordPolicy.FirstRPU? {
         guard let lengthSize,
               DolbyVisionRecordPolicy.needsFirstRPU(
                   container: SampleBufferFactory.doviConfiguration(codecpar: codecpar),
@@ -1307,15 +1320,15 @@ nonisolated final class FFmpegDemuxer {
         var owned: UnsafeMutablePointer<AVPacket>? = probe
         defer { av_packet_free(&owned) }
 
-        var profile: UInt8?
+        var firstRPU: DolbyVisionRecordPolicy.FirstRPU?
         var packetsRead = 0
         while packetsRead < Self.parameterSetProbeLimit {
             guard av_read_frame(ctx, probe) >= 0 else { break }
             packetsRead += 1
             defer { av_packet_unref(probe) }
             guard probe.pointee.stream_index == streamIndex, let data = probe.pointee.data else { continue }
-            profile = DolbyVisionRecordPolicy.guessedProfile(
-                ofFirstRPUIn: UnsafeRawBufferPointer(start: data, count: Int(probe.pointee.size)),
+            firstRPU = DolbyVisionRecordPolicy.firstRPU(
+                in: UnsafeRawBufferPointer(start: data, count: Int(probe.pointee.size)),
                 lengthSize: lengthSize
             )
             break
@@ -1324,7 +1337,7 @@ nonisolated final class FFmpegDemuxer {
         if avformat_seek_file(ctx, streamIndex, Int64.min, 0, 0, 0) < 0 {
             _ = av_seek_frame(ctx, streamIndex, 0, seekBackwardFlag)
         }
-        return profile
+        return firstRPU
     }
 
     /// Walks one length-prefixed packet, keeping the first of each
