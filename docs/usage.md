@@ -178,6 +178,16 @@ engine.onError = { failure in
 - `message` is for the viewer. `detail` is the same failure in codes, for a
   report, and never carries a URL or a file name.
 
+`PlaybackFailureDetail.Stage` names only the stages the engine reports. To
+report a failure of your own in the same shape, such as a server refusing
+the request before there is anything to open, add a stage in an extension:
+
+```swift
+extension PlaybackFailureDetail.Stage {
+    static let negotiate = Self(rawValue: "negotiate")
+}
+```
+
 ## The start
 
 `startupPhase` moves through `idle`, `connecting`, `openingContainer`,
@@ -313,6 +323,11 @@ What stops compiling:
   `PlayerItemInfo` and `NextUpEpisode` are gone.** They described a player's
   screen and one server's segment types, and the engine never read them.
   Declare the ones your app uses in your app.
+- **`PlaybackFailureDetail.Stage` is a struct, not an enum, and names only
+  what the engine reports.** `negotiate`, `start`, `cache`, `handoff` and
+  `unknown` are gone: add the ones your app uses [in an
+  extension](#when-playback-fails). Add a `default` to a `switch` over it,
+  and drop the `if let` or `??` around its `init(rawValue:)`.
 
 What compiles but behaves differently:
 
