@@ -352,6 +352,15 @@ Learned on hardware:
   Decoded pictures that end at or before the floor are dropped, and on the
   compressed path, where the display layer decodes, they are marked
   `DoNotDisplay`. `SeekLandingTests` pins both, on H.264 and on VP9.
+- **So priming drains the intake itself.** A dropped picture never reaches
+  the decoded queue, and a queued picture was what started the pump that
+  moves parked video into the decoder. Once one packet was parked on the way
+  to a target far from its keyframe, the software decoder ran dry behind the
+  intake and the title never started: after about 40 pictures at 1080p, and
+  about 9 at 4K, where the byte budget holds fewer. `primeAndStart` now drains
+  before each read, as `readOrWait` does.
+  `aTargetFarFromItsKeyframeStillStarts` pins it on a clip with one keyframe.
+  The fixtures before it all had a keyframe a second.
 - **And what nothing references is not decoded at all.** Reaching the target
   is most of a seek's time: about 8 ms a picture for 4K HEVC on the Apple TV,
   up to a 10 s GOP of them. `UnreferencedPictureReader` reads the NAL headers:
