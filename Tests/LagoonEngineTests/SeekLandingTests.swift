@@ -34,6 +34,34 @@ struct SeekLandingTests {
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
     }
 
+    /// The software decoder takes only so many packets at once, and the
+    /// pictures it makes on the way to the target are dropped, so nothing
+    /// reaches the queue to pull the next packets in. A start or a seek far
+    /// from its keyframe never began. `one-keyframe-444.mkv`: testsrc 96x54,
+    /// thirty seconds at 24 fps on a single keyframe, H.264 4:4:4, which
+    /// every device decodes in software.
+    @MainActor
+    @Test func aTargetFarFromItsKeyframeStillStarts() async throws {
+        let url = try #require(Bundle.module.url(forResource: "SeekLanding/one-keyframe-444.mkv", withExtension: nil))
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
+        let engine = SampleBufferPlayerEngine()
+        let shown = ShownPictures()
+        engine.rendererVideoObserverForTesting = { shown.record($0) }
+        engine.prepare(url: url, startSeconds: 4, initialAudioOrdinal: nil)
+        engine.pause()
+        engine.attach(displayLayer: AVSampleBufferDisplayLayer())
+        try await Self.wait { !engine.isBuffering && !shown.visibleEnds.isEmpty }
+        try #require(!engine.isBuffering, "the start never finished priming")
+        #expect(shown.visibleEnds.allSatisfy { $0 > 4 }, "\(shown.visibleEnds.prefix(3))")
+
+        engine.seek(to: 20)
+        try await Self.wait { !engine.isBuffering && !shown.visibleEnds.isEmpty }
+        try #require(!engine.isBuffering, "the seek never finished priming")
+        #expect(shown.visibleEnds.allSatisfy { $0 > 20 }, "\(shown.visibleEnds.prefix(3))")
+        engine.shutdown()
+        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+    }
+
     private static func wait(until condition: () -> Bool) async throws {
         // Generous: other suites' main-actor tests run while this one waits.
         let deadline = ContinuousClock.now + .seconds(30)
