@@ -359,6 +359,8 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
     )
     @ObservationIgnored nonisolated(unsafe) private var av1PipelineTimer: DispatchSourceTimer?
     @ObservationIgnored nonisolated(unsafe) private var videoDecoder: VideoToolboxDecoder?
+    /// The container is skipping video unread. Demux queue only.
+    @ObservationIgnored nonisolated(unsafe) private var videoIsDiscarded = false
     /// Set at open, before any video is delivered.
     @ObservationIgnored nonisolated(unsafe) private var unreferencedPictures: UnreferencedPictureReader?
     /// Sees each video sample as the renderer takes it, and nil for a flush.
@@ -3054,6 +3056,7 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
             pumpQueue.sync { self.flushVideoPath() }
         }
         progress.appliedVideoOutputSuspended = desiredVideoSuspended
+        videoIsDiscarded = desiredVideoSuspended
     }
 
     nonisolated private func applyPendingSeek(_ progress: inout DemuxLoopProgress) -> DemuxSeekOutcome {
@@ -3329,10 +3332,14 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
         videoQueue.markFinished()
         audioQueue.markFinished()
         let (sampledEnd, generation) = shared.withLock { ($0.mediaEndSeconds, $0.playbackGeneration) }
+        // Suspended video is skipped unread, so without audio nothing was
+        // sampled up to this end: the last picture read before the
+        // suspension is not where the title ends.
+        let endWasSampled = !(videoIsDiscarded && demuxer.audioStreams.isEmpty)
         if let end = PlaybackEndBoundary.endTime(
-            sampledEnd: sampledEnd,
+            sampledEnd: endWasSampled ? sampledEnd : 0,
             declaredDuration: demuxer.durationSeconds
-        ) {
+        ), endWasSampled || end > 0 {
             Task { @MainActor in
                 self.armFinishBoundary(at: end, generation: generation)
             }
