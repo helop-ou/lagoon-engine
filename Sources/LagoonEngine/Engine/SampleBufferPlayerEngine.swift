@@ -3917,6 +3917,11 @@ public final class SampleBufferPlayerEngine: PlayerEngine, PlayerEngineDiagnosti
               inputOpen(),
               !shared.withLock({ $0.cancelled }) {
             if shared.withLock({ $0.pendingSeekSeconds != nil }) { return }
+            // Parked video goes first, as in `readOrWait`. The pump moves it
+            // too, but only once a picture is queued, and those that end
+            // before the target never are: on the way to a target far from
+            // its keyframe the decoder ran dry behind a full intake.
+            drainVideoIntake()
             let pendingDecode = softwareDecodeStage?.pendingCount ?? 0
             recordVideoBacklog(hardLimit: videoHardLimit)
             guard videoQueue.count + pendingDecode >= videoHardLimit else {
