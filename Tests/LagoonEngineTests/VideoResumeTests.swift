@@ -94,6 +94,43 @@ struct VideoResumeTests {
         #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
     }
 
+    /// Suspended video is discarded unread, so a title without audio reaches
+    /// the end of the file at once. It ended where the last picture read
+    /// before the suspension did, seconds later: locking the phone on a
+    /// silent video finished it.
+    @MainActor
+    @Test func aSilentTitleDoesNotEndWhereItsPictureWasSuspended() async throws {
+        let url = try #require(Bundle.module.url(forResource: "no-cues", withExtension: "mkv", subdirectory: "UnindexedSeek"))
+        SampleBufferPlayerEngine.mutesAudioForTesting = true
+        let engine = SampleBufferPlayerEngine()
+        var finished = false
+        engine.onFinished = { finished = true }
+        // Suspended from the demux queue a few packets in, before the loop
+        // has read this small file to its end.
+        var readThrough: Double?
+        let passes = PassCount()
+        engine.afterTrackChangesForTesting = { [weak engine] in
+            guard passes.next() == 30 else { return }
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    engine?.setVideoOutputSuspended(true)
+                    readThrough = engine?.demuxedThroughSeconds
+                }
+            }
+        }
+        engine.prepare(url: url, startSeconds: 0, initialAudioOrdinal: nil)
+        engine.attach(displayLayer: AVSampleBufferDisplayLayer())
+        engine.play()
+        try await Self.wait { readThrough != nil && !engine.isBuffering }
+        let suspendedAt = try #require(readThrough)
+        try #require(suspendedAt < 60, "suspended with most of the title unread, at \(suspendedAt)")
+
+        try await Self.wait { finished || engine.clockPosition > suspendedAt + 1 }
+        #expect(!finished, "a two minute title is not over at \(engine.clockPosition)")
+        engine.shutdown()
+        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+    }
+
     @Test func audioReadAgainIsDroppedOrCutAtTheFloor() throws {
         // 1024 frames at 48 kHz from 1 s: ends at 1.021333 s.
         let pcm = try Self.lpcm(start: 1, frames: 1_024)
@@ -285,6 +322,18 @@ private final class AudioLog: @unchecked Sendable {
 
 /// Starts of the pictures the renderer may show since its last flush, or
 /// since `forget()`.
+private final class PassCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func next() -> Int {
+        lock.withLock {
+            count += 1
+            return count
+        }
+    }
+}
+
 private final class OnceFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var isTaken = false
