@@ -309,6 +309,10 @@ What stops compiling:
   `init(rawValue:)` no longer fails, so drop the `if let`, `guard let`, `??`
   or `!` around it. It now accepts any string, so compare against the values
   you know instead of treating a successful init as a known event.
+- **`MediaSegment`, `PlayerChapter`, `TrickplaySource`, `TrickplayTile`,
+  `PlayerItemInfo` and `NextUpEpisode` are gone.** They described a player's
+  screen and one server's segment types, and the engine never read them.
+  Declare the ones your app uses in your app.
 
 What compiles but behaves differently:
 
