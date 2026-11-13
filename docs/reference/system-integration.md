@@ -135,6 +135,22 @@ the background.
   still in progress. A seek used to be the only way: it flushed the audio
   renderer, a second of silence when an iPhone unlocked, and over AirPlay the
   refilled renderer then stalled.
+- A seek applies the suspension again once it is claimed. The demux loop
+  reads what is suspended and what seek is pending one after the other, and
+  a resume and a seek could both land in between. The seek cancels the
+  resume, and it then primed with the container still discarding video: it
+  read audio to the end of the file, started on that, and the loop idled at
+  the end with the picture gone for the rest of the title. It showed as one
+  full test run in about twelve where a seek right after a resume brought no
+  picture back. An app meets it when a viewer seeks in the instant after the
+  phone unlocks.
+- A title without audio does not end where its picture was suspended. Its
+  discarded video goes unread, so the container reaches its end at once, and
+  the finish boundary was armed at the last picture read before the
+  suspension, a few seconds on: a silent video finished shortly after the
+  phone locked. Nothing was sampled up to that end, so the boundary is the
+  declared duration instead, and none is armed when the container declares
+  none. The resume reads the video again and arms the sampled end.
 - A successor engine started while the previous one was suspended inherits
   the suspension.
 - `setHostInBackground(_:)` says the app is in the background, whether or not
