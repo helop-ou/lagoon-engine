@@ -48,7 +48,7 @@ that have the decoder, and in software before that.
 ## Adding it
 
 ```swift
-.package(url: "https://github.com/helop-ou/lagoon-engine", from: "1.0.0")
+.package(url: "https://github.com/helop-ou/lagoon-engine", from: "2.0.0")
 ```
 
 ```swift
