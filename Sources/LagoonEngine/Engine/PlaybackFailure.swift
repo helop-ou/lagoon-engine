@@ -5,8 +5,24 @@ import Foundation
 /// Carries no message and nothing from `userInfo`, where URLs and file names
 /// live, so nothing in it can identify a viewer or a title.
 public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
-    public enum Stage: String, Sendable {
-        case negotiate, open, seek, read, decode, videoRenderer, audioRenderer, subtitle, cache, start, handoff, unknown
+    /// Where an attempt failed. The engine names the stages it reports, and
+    /// a host adds its own in an extension for what it does around the
+    /// engine. A struct rather than an enum, so a new stage on either side
+    /// is not a breaking change: a switch over it needs a `default`.
+    public nonisolated struct Stage: RawRepresentable, Hashable, Sendable {
+        public let rawValue: String
+
+        public init(rawValue: String) {
+            self.rawValue = rawValue
+        }
+
+        public static let open = Self(rawValue: "open")
+        public static let seek = Self(rawValue: "seek")
+        public static let read = Self(rawValue: "read")
+        public static let decode = Self(rawValue: "decode")
+        public static let videoRenderer = Self(rawValue: "videoRenderer")
+        public static let audioRenderer = Self(rawValue: "audioRenderer")
+        public static let subtitle = Self(rawValue: "subtitle")
     }
 
     public let stage: Stage
@@ -31,9 +47,13 @@ public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
         self.init(stage: stage, domain: nsError.domain, code: nsError.code)
     }
 
-    /// Stage always, domain only if it passes the token rule, code if any.
+    /// Stage and domain only if they pass the token rule, code if any. A
+    /// host names its own stages, so the engine did not choose every one.
     public var fields: [String: DiagnosticValue] {
-        var fields: [String: DiagnosticValue] = ["stage": .string(stage.rawValue)]
+        var fields: [String: DiagnosticValue] = [:]
+        if let stage = DiagnosticToken.token(stage.rawValue) {
+            fields["stage"] = stage
+        }
         if let domain = DiagnosticToken.token(domain) {
             fields["errorDomain"] = domain
         }
@@ -46,10 +66,7 @@ public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
     /// The part of a fingerprint that separates one kind of failure at a
     /// stage from another.
     public var fingerprint: [String] {
-        var parts = [stage.rawValue]
-        if let domain, DiagnosticToken.isToken(domain) {
-            parts.append(domain)
-        }
+        var parts = [stage.rawValue, domain].compactMap(\.self).filter(DiagnosticToken.isToken)
         if let code {
             parts.append(String(code))
         }
