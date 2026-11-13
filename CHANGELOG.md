@@ -8,6 +8,117 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 2.0.0
+
+November 2026. A major version: two public types changed shape and six left,
+so a host has edits to make. They are under Changed and Removed, and
+`docs/usage.md` walks through them in "Moving from 1.x to 2.0". No change to
+the libraries. `PlayerEngine` and `PlayerEngineDiagnostics` gain requirements
+with defaults, so a host's own conformance still compiles.
+
+### Added
+
+- `PlaybackEngineFailure.transport`: what the network last answered when a
+  read failed, an HTTP status or an `NSURLErrorDomain` code. A refused
+  credential or a lost network fails the same way however the media is
+  delivered, so a host can stop instead of asking for it again.
+- `startupPhase`, and two diagnostic events. `playbackStartup` carries the
+  milliseconds to the first byte, the opened container, the probed streams
+  and the first frame. `playbackSlowStart` says nothing came back within a
+  few seconds of the open.
+- `SampleBufferPlayerEngine.startGate`: holds a title's first start, with its
+  first picture up, until the host lets go. Made for a display that is still
+  switching mode and would swallow the first seconds.
+- `AudioShaping`, with `audioShaping` and `setAudioShaping(_:)`: night mode,
+  dialogue boost and a channel limit for audio the engine decodes itself,
+  switchable while a title plays.
+- `subtitleOffset` and `setSubtitleOffset(_:)`, for subtitles that run early
+  or late.
+- `setPictureInPictureSubtitles(_:)` and `BurnedInSubtitleStyle`: the chosen
+  subtitles are drawn into the frames while Picture in Picture shows them.
+- CEA-608 closed captions in H.264, HEVC and MPEG-2 video. They join
+  `subtitleTracks` when the first one is read, under
+  `PlayerTrack.closedCaptionsEngineID`.
+- VP9 in hardware, through VideoToolbox, on devices that have the decoder,
+  from iOS 26.2 and tvOS 26.2. `PlaybackCapabilities.hardwareVP9` says
+  whether this device does.
+- 4:2:2, 4:4:4 and 12-bit video on the software path, converted to 4:2:0 on
+  the GPU. H.264 High 4:2:2 and High 4:4:4 now play.
+- AV1 film grain is added on the GPU where the GPU stage takes the stream,
+  instead of on the CPU inside dav1d.
+- `demuxReadAheadSeconds` and `demuxReadAheadLimit` on
+  `PlayerEngineDiagnostics`, and `foregroundLockWaitSeconds` and
+  `longestForegroundLockWaitSeconds` on `PlaybackCacheMetrics`.
+
+### Changed
+
+- `EngineDiagnosticEvent` and `EngineDiagnosticIncident` are structs, not
+  enums, so a new event is no longer a breaking change. A `switch` over them
+  needs a `default`, and their `init(rawValue:)` no longer fails.
+- `PlaybackFailureDetail.Stage` is a struct that names only the stages the
+  engine reports. A host adds its own in an extension. A stage that could be
+  a URL or a path is left out of `fields` and `fingerprint`, as a domain is.
+- Progressive H.264 is decoded ahead by VideoToolbox instead of inside the
+  display layer, which lost pictures on an Apple TV 4K.
+- Interlaced video plays at field rate, deinterlaced on the GPU.
+  `displayMatchRequest.frameRate` is 50 for 50i and 59.94 for 60i.
+  `EngineTuning.deinterlacesAtFrameRate` brings the old behaviour back.
+- `displayMatchRequest.frameRate` is a standard rate: a container's 23.98
+  becomes 24000/1001.
+- A start is presented 0.25 s after the clock is anchored, not 0.1 s, so the
+  first pictures make their deadline over HDMI. On an AirPlay route a start
+  is not scheduled at all and begins when the receiver is ready.
+- Seeks are quicker. The renderers flush off the main thread, the demux loop
+  picks a seek up sooner, pictures nothing references are not decoded on the
+  way to the target, and pictures before the target are never shown.
+- An uncached stream reads up to 30 s ahead, within the same memory
+  ceilings.
+- The cache sizes its requests from the link's measured rate and first-byte
+  wait, so a distant server fills faster.
+- Switching to a subtitle track no longer seeks. The session's subtitle
+  packets are kept under a byte budget and replayed.
+- A Dolby Vision record that cannot be trusted is corrected. Profile 8.2
+  plays its SDR base without Dolby Vision, a profile 8 record with an
+  out-of-spec base layer id is signalled by the base layer it really has,
+  and a profile 5 record over an HDR10 stream is corrected from its first
+  RPU.
+- When video comes back after being suspended, only the picture restarts.
+  The audio and the clock are left alone.
+- `attach(displayLayer:)` before `prepare` now plays. In 1.x it opened
+  nothing and reported nothing.
+- `subtitleTracks` can grow while a title plays, so an `engineID` is not an
+  index.
+
+### Removed
+
+- `MediaSegment`, `PlayerChapter`, `TrickplaySource`, `TrickplayTile`,
+  `PlayerItemInfo` and `NextUpEpisode`. They described a player's screen and
+  one server's segment types, and the engine never read them. A host
+  declares the ones it uses.
+- `negotiate`, `start`, `cache`, `handoff` and `unknown` from
+  `PlaybackFailureDetail.Stage`. The engine never reported them.
+
+### Fixed
+
+- A Matroska file without cues seeks from a cluster near the target instead
+  of reading there from the start.
+- H.264 B-frames are presented in order when the container lost their order.
+- A Dolby Vision RPU with a wrong CRC is dropped before libdovi can abort on
+  it.
+- A read can no longer wait forever. Demuxer reads time out, a cache request
+  that only trickles is given up on, and one lost before its body is
+  retried. A server's `Retry-After` is honoured within the budget.
+- A PGS track that declares no size takes the video's.
+- After a seek on an AirPlay route the sound comes back.
+- A seek that takes over from a stall's recovery ends it, and a shutdown
+  during an open reports nothing.
+- A silent title whose video was suspended ends at its duration.
+- The engine keeps the display layer until its renderers are gone. A layer
+  released mid-enqueue could deadlock inside AVFoundation, and the start
+  never began.
+- A redirect on a cache request no longer takes a credential header with it
+  to another origin.
+
 ## 1.3.2
 
 November 2026. No API change and no change to the libraries; upgrading is a
