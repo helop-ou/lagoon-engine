@@ -57,6 +57,14 @@ faults (a status, a trickle, a connection lost mid-body or straight after the
 headers). `TransportEndToEndTests` drives the real cache, loader, fill and
 HLS transport against it. A transport change gets a case there.
 
+A test that plays a fixture waits with `waitUntil` and ends with
+`shutdownAndRetire`, both in `EngineWaits.swift`. Neither sleeps for a fixed
+time: a loaded runner can hold a test for seconds, so a fixed sleep is either
+too short there or slow everywhere. A condition names the state the test
+asked for, not one that already held: a wait for "not buffering, a picture
+shown" passes at once on a playing engine, before the seek it was meant to
+follow.
+
 ## Commits
 
 - Subjects are conventional and lowercase imperative, with no scope
