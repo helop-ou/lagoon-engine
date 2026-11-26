@@ -33,6 +33,15 @@ jobs:
           - platform: iOS
             simulator: iPhone 17
             fallback: iPhone 17
+            sample: a
+          - platform: iOS
+            simulator: iPhone 17
+            fallback: iPhone 17
+            sample: b
+          - platform: iOS
+            simulator: iPhone 17
+            fallback: iPhone 17
+            sample: c
     env:
       # Keep in step with the local Xcode.
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
@@ -102,7 +111,7 @@ jobs:
       - name: Keep coverage for the scan
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-${{ matrix.platform }}
+          name: coverage-${{ matrix.platform }}${{ matrix.sample }}
           path: build/coverage-${{ matrix.platform }}.xml
           retention-days: 1
 
@@ -110,7 +119,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results-${{ matrix.platform }}
+          name: test-results-${{ matrix.platform }}${{ matrix.sample }}
           path: |
             build/TestResults.xcresult
             build/xcodebuild.log
