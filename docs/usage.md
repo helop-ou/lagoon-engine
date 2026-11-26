@@ -176,7 +176,10 @@ engine.onError = { failure in
   refused credential or a lost network fails the same way however the media
   is delivered, so check it before asking for the media again.
 - `message` is for the viewer. `detail` is the same failure in codes, for a
-  report, and never carries a URL or a file name.
+  report, and never carries a URL or a file name. When the system's error is
+  a generic one, such as AVFoundation's `-11800`, `underlyingDomain` and
+  `underlyingCode` name the error at the bottom of its chain. They are in
+  `fields` and not in `fingerprint`, so reports keep their groups.
 
 `PlaybackFailureDetail.Stage` names only the stages the engine reports. To
 report a failure of your own in the same shape, such as a server refusing
