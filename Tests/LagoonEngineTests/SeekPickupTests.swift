@@ -18,22 +18,21 @@ struct SeekPickupTests {
         engine.prepare(url: url, startSeconds: 0, initialAudioOrdinal: nil)
         engine.pause()
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
-        try await Self.wait { !engine.isBuffering }
+        try await waitUntil { !engine.isBuffering }
         engine.simulateAudioStarvationForDiagnostics(durationSeconds: 60)
-        try await Self.wait { engine.queuedSamplesForTesting.audio > 0 }
+        try await waitUntil { engine.queuedSamplesForTesting.audio > 0 }
         #expect(engine.queuedSamplesForTesting.audio > 0, "the queues must hold something for the order to matter")
 
         engine.rendererVideoObserverForTesting = { @Sendable [engine] buffer in
             if buffer == nil { flushes.record(engine.queuedSamplesForTesting) }
         }
         engine.seek(to: 5)
-        try await Self.wait { !flushes.all.isEmpty }
+        try await waitUntil { !flushes.all.isEmpty }
         #expect(!flushes.all.isEmpty)
         for queued in flushes.all {
             #expect(queued.intake == 0 && queued.video == 0 && queued.audio == 0, "\(queued)")
         }
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// What is parked when a seek is requested is from before it.
@@ -41,14 +40,6 @@ struct SeekPickupTests {
         #expect(!SampleBufferPlayerEngine.drainsVideoIntake(backlog: 0, hardLimit: 30, seekPending: true))
         #expect(SampleBufferPlayerEngine.drainsVideoIntake(backlog: 0, hardLimit: 30, seekPending: false))
         #expect(!SampleBufferPlayerEngine.drainsVideoIntake(backlog: 30, hardLimit: 30, seekPending: false))
-    }
-
-    private static func wait(until condition: () -> Bool) async throws {
-        // Generous: other suites' main-actor tests run while this one waits.
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !condition(), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
     }
 }
 

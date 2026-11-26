@@ -64,10 +64,7 @@ struct DecodeSessionRecoveryTests {
         engine.prepare(url: url, startSeconds: 0, initialAudioOrdinal: nil)
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         engine.play()
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !started, failure == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        try await waitUntil { started || failure != nil }
         try #require(failure == nil && started)
         let seeks = SeekCount()
         engine.onBufferingChanged = { buffering in

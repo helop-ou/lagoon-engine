@@ -17,7 +17,7 @@ struct StallRecoverySeekTests {
         engine.prepare(url: url, startSeconds: 0, initialAudioOrdinal: nil)
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         engine.play()
-        try await Self.wait { !engine.isBuffering && engine.clockPosition > 0.5 }
+        try await waitUntil { !engine.isBuffering && engine.clockPosition > 0.5 }
 
         engine.beginStallRecoveryForTesting()
         #expect(engine.isBuffering)
@@ -28,13 +28,12 @@ struct StallRecoverySeekTests {
         engine.seek(to: 4)
         #expect(!engine.isRecoveringFromStallForTesting, "the seek owns the restart")
 
-        try await Self.wait { !engine.isBuffering && engine.clockPosition > 4.2 }
+        try await waitUntil { !engine.isBuffering && engine.clockPosition > 4.2 }
         // Long enough for a poll left behind to have acted.
         try await Task.sleep(for: .milliseconds(400))
         #expect(ended == 1, "buffering ended once, with the seek")
         #expect(engine.clockPosition > 4.2)
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// Left alone, the recovery still ends by itself.
@@ -46,22 +45,14 @@ struct StallRecoverySeekTests {
         engine.prepare(url: url, startSeconds: 0, initialAudioOrdinal: nil)
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         engine.play()
-        try await Self.wait { !engine.isBuffering && engine.clockPosition > 0.5 }
+        try await waitUntil { !engine.isBuffering && engine.clockPosition > 0.5 }
 
         engine.beginStallRecoveryForTesting()
         let stalledAt = engine.clockPosition
-        try await Self.wait { !engine.isBuffering && engine.clockPosition > stalledAt + 0.3 }
+        try await waitUntil { !engine.isBuffering && engine.clockPosition > stalledAt + 0.3 }
         #expect(!engine.isBuffering)
         #expect(!engine.isRecoveringFromStallForTesting)
         #expect(engine.clockPosition > stalledAt + 0.3)
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
-    }
-
-    private static func wait(until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(20)
-        while !condition(), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await engine.shutdownAndRetire()
     }
 }
