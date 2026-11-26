@@ -74,16 +74,21 @@ struct VideoResumeTests {
         try await waitUntil { engine.clockPosition > 2.5 }
 
         let between = OnceFlag()
+        // Set with the seek, not when the flag is taken: until the seek is
+        // asked for, the engine is not buffering and the log still holds
+        // the pictures from before the suspension.
+        var asked = false
         engine.afterTrackChangesForTesting = { [weak engine] in
             guard between.take() else { return }
             DispatchQueue.main.sync {
                 MainActor.assumeIsolated {
                     engine?.setVideoOutputSuspended(false)
                     engine?.seek(to: 1)
+                    asked = true
                 }
             }
         }
-        try await waitUntil { between.taken && !engine.isBuffering && !pictures.visibleStarts.isEmpty }
+        try await waitUntil { asked && !engine.isBuffering && !pictures.visibleStarts.isEmpty }
         engine.afterTrackChangesForTesting = nil
 
         let first = try #require(pictures.visibleStarts.min(), "no picture after the seek")
@@ -326,8 +331,6 @@ private final class PassCount: @unchecked Sendable {
 private final class OnceFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var isTaken = false
-
-    var taken: Bool { lock.withLock { isTaken } }
 
     /// True for the first caller only.
     func take() -> Bool {
