@@ -15,8 +15,43 @@ permissions:
   contents: read
 
 jobs:
+  # A pull request that changes only Markdown skips the tests, which could
+  # not fail on it. A push to `main` always runs them, so its coverage
+  # stays current.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      # Two commits deep: a pull request's merge commit and the base it
+      # merges into.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      # A test reads docs/codec-support.md, which must match the engine's
+      # table, so that file counts as code.
+      - name: See whether anything but Markdown changed
+        id: diff
+        env:
+          READ_BY_TESTS: 'docs/codec-support\.md'
+        run: |
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          echo "$changed"
+          other="$(grep -Ev '\.md$' <<< "$changed" || true)"
+          read="$(grep -Ex "$READ_BY_TESTS" <<< "$changed" || true)"
+          code=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ -n "$changed" ] && [ -z "$other$read" ]; then
+            code=false
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   unit-tests:
     name: Unit tests (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # macos-26 tops out at Xcode 26.
     runs-on: xcode-27
     timeout-minutes: 60
@@ -91,10 +126,24 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # `main` requires the two unit test checks by name, and a skipped matrix
+  # job reports neither. This reports them when the tests were skipped.
+  unit-tests-skipped:
+    name: Unit tests (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.code == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        platform: [tvOS, iOS]
+    steps:
+      - run: echo "Only Markdown changed, so the unit tests were skipped."
+
   sonar:
     name: SonarCloud scan
     needs: unit-tests
-    # A fork's pull request gets no secrets.
+    # Skipped with the unit tests. A fork's pull request gets no secrets.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
