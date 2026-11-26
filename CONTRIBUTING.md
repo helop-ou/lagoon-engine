@@ -108,6 +108,14 @@ CI reports after the push, so run the tests before pushing.
   runtime, and every tvOS job failed with "Unable to find a destination".
 - The image lacks the Metal toolchain the engine's shader needs, so each run
   installs it first.
+- A failed test runs again by itself, three times at most. The iOS
+  simulator's first boot keeps the three-core runner saturated through the
+  whole test run (a load average of 100 rising to 590, against a peak of 195
+  on tvOS), and a test that waits on a clock can lose to it. Booting the
+  simulator before the build did not help: eight minutes later the load was
+  still 180 to 370. A test that passed on a retry shows as a warning on the
+  run, titled "Passed on a retry". Read it: a race in a test looks the same
+  as a starved runner, and only the first is ours to fix.
 - A failed run keeps its `.xcresult` and full log for 14 days, under the
   run's artifacts.
 - Both test jobs collect coverage, and `scripts/coverage-to-sonar.py` turns
