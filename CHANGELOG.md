@@ -8,6 +8,19 @@ or reach it from one it can.
 Write them for someone adopting or upgrading the package: one short bullet
 per change, grouped under Added, Changed, Removed and Fixed.
 
+## 2.1.0
+
+November 2026. One addition and nothing for a host to edit. No change to the
+libraries. Upgrading is a version bump.
+
+### Added
+
+- `PlaybackFailureDetail.underlyingDomain` and `underlyingCode`: the error at
+  the bottom of a failure's `NSUnderlyingErrorKey` chain. The error on top is
+  often generic, as AVFoundation's `-11800` is, and the one underneath names
+  the cause. Both are in `fields` and stay out of `fingerprint`, so a host's
+  reports keep the groups they had.
+
 ## 2.0.0
 
 November 2026. A major version: two public types changed shape and six left,
