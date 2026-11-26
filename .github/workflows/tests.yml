@@ -51,14 +51,40 @@ jobs:
         run: |
           destination="$(scripts/pick-simulator.py "${{ matrix.platform }}" "${{ matrix.simulator }}" "${{ matrix.fallback }}")"
           echo "destination=$destination" >> "$GITHUB_OUTPUT"
+          echo "udid=${destination##*id=}" >> "$GITHUB_OUTPUT"
+
+      # A simulator's first boot on a runner takes minutes and keeps the
+      # machine busy. Started here, it has the build's time to come up, so
+      # the tests do not start on a simulator that is still booting. A
+      # failure is left to the wait below, which boots it again and says why.
+      - name: Start the simulator
+        run: xcrun simctl boot "${{ steps.simulator.outputs.udid }}" || true
+
+      - name: Build
+        run: |
+          mkdir -p build
+          status=0
+          xcodebuild build-for-testing \
+            -scheme LagoonEngine \
+            -destination "${{ steps.simulator.outputs.destination }}" \
+            -derivedDataPath build/DerivedData \
+            -enableCodeCoverage YES \
+            > build/xcodebuild.log 2>&1 || status=$?
+          grep -E ": error: |^error: |\*\* (BUILD|TEST) " build/xcodebuild.log || true
+          exit "$status"
+
+      # The load average says how busy the machine was when the tests began.
+      - name: Wait for the simulator
+        run: |
+          xcrun simctl bootstatus "${{ steps.simulator.outputs.udid }}" -b
+          uptime
 
       # Serial: in parallel on the runner's three cores, tests that wait on
       # a clock starve. Collecting diagnostics adds ten minutes to a failure.
       - name: Test
         run: |
-          mkdir -p build
           status=0
-          xcodebuild test \
+          xcodebuild test-without-building \
             -scheme LagoonEngine \
             -destination "${{ steps.simulator.outputs.destination }}" \
             -derivedDataPath build/DerivedData \
@@ -66,7 +92,7 @@ jobs:
             -enableCodeCoverage YES \
             -collect-test-diagnostics never \
             -parallel-testing-enabled NO \
-            > build/xcodebuild.log 2>&1 || status=$?
+            >> build/xcodebuild.log 2>&1 || status=$?
           grep -E ": error: |^error: |✘|\*\* (BUILD|TEST) |Test run with" build/xcodebuild.log || true
           exit "$status"
 
