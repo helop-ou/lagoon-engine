@@ -110,6 +110,10 @@ CI reports after the push, so run the tests before pushing.
   installs it first.
 - A failed run keeps its `.xcresult` and full log for 14 days, under the
   run's artifacts.
+- A pull request that changes only Markdown skips the tests, and a stand-in
+  job reports the two required checks as passed. `docs/codec-support.md` is
+  the exception, because a test reads it. A test that reads another Markdown
+  file adds it to `READ_BY_TESTS` in the workflow.
 - Both test jobs collect coverage, and `scripts/coverage-to-sonar.py` turns
   each result bundle into Sonar's format. A third job then runs the SonarCloud
   scan with both reports, using the `SONAR_TOKEN` secret. The scan action is
