@@ -28,3 +28,5 @@ guide](engine.md) before changing anything in `Sources/LagoonEngine`.
 - Long investigations go in `reference/`.
 - Validation evidence (revision, environment, result, what is still owed)
   belongs where the work is tracked, not in a guide.
+
+A line to try the Markdown skip. Not for merging.
