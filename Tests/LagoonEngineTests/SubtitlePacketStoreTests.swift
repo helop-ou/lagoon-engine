@@ -127,22 +127,15 @@ struct BitmapSubtitleSwitchTests {
         engine.prepare(url: url, startSeconds: 11.5, initialAudioOrdinal: nil)
         engine.pause()
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
-        // Generous: other suites' main-actor tests run while this one waits.
-        let deadline = ContinuousClock.now + .seconds(30)
-        while engine.subtitleTracks.isEmpty || engine.isBuffering, failure == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try await waitUntil { failure != nil || !engine.subtitleTracks.isEmpty && !engine.isBuffering }
         #expect(failure == nil)
         try #require(!engine.isBuffering)
 
         engine.selectSubtitleTrack(id: 1)
         #expect(!engine.isBuffering, "the switch seeked")
-        while engine.currentSubtitleImages.isEmpty, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try await waitUntil { !engine.currentSubtitleImages.isEmpty }
         #expect(!engine.currentSubtitleImages.isEmpty, "the line from 10.958 s never showed")
         #expect(abs(engine.timePosition - 11.5) < 0.5, "position \(engine.timePosition)")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 }

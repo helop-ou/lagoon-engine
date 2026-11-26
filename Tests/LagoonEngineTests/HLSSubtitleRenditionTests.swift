@@ -71,10 +71,7 @@ struct HLSSubtitleRenditionTests {
 
         // Generous: other suites' main-actor tests run while this one waits,
         // and a regression blocks the read for good, not for a while.
-        let deadline = ContinuousClock.now + .seconds(60)
-        while !started, failure == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        try await waitUntil(timeout: .seconds(60)) { started || failure != nil }
         #expect(started, "playback waited on a subtitle rendition")
         #expect(failure == nil)
         #expect(engine.subtitleTracks.count == 2)

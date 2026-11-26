@@ -210,8 +210,7 @@ struct TransportEndToEndTests {
         }
         #expect(started)
         #expect(engine.demuxReadAheadSeconds > 1)
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     // MARK: - Helpers

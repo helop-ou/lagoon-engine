@@ -30,11 +30,10 @@ struct READMEUsageTests {
         engine.attach(displayLayer: displayLayer)
         engine.play()
 
-        try await Self.wait { started || failure != nil }
+        try await waitUntil { started || failure != nil }
         #expect(started, "the documented quick start reaches its first frame")
         #expect(failure == nil)
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// A view often has its layer before it knows what to play. That order
@@ -51,10 +50,9 @@ struct READMEUsageTests {
         engine.prepare(url: url, startSeconds: 0, initialAudioOrdinal: nil)
         engine.play()
 
-        try await Self.wait { started }
+        try await waitUntil { started }
         #expect(started)
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// The calls docs/usage.md names. Never run: compiling is the assertion.
@@ -169,12 +167,5 @@ struct READMEUsageTests {
 
     private static func fixture() throws -> URL {
         try #require(Bundle.module.url(forResource: "av", withExtension: "mp4", subdirectory: "SeekLanding"))
-    }
-
-    private static func wait(until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(20)
-        while !condition(), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
     }
 }

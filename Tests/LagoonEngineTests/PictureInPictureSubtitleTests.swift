@@ -261,17 +261,15 @@ struct PictureInPictureSubtitleTests {
         plain.play()
         try await Task.sleep(for: .milliseconds(600))
         #expect(plain.burnedInSubtitleFrames == 0, "no drawing outside Picture in Picture")
-        plain.shutdown()
-        #expect(await plain.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await plain.shutdownAndRetire()
 
         let engine = try await Self.openFixture(subtitleOrdinal: 1, pictureInPicture: .standard)
         #expect(engine.videoOutputPathDiagnostic == "videotoolbox")
         engine.play()
-        try await Self.wait { engine.burnedInSubtitleFrames > 0 }
+        try await waitUntil { engine.burnedInSubtitleFrames > 0 }
         #expect(engine.burnedInSubtitleFrames > 0)
         #expect(engine.videoOutputPathDiagnostic == "videotoolbox")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// A frame the compositor cannot write goes to the renderer as a drawn
@@ -285,11 +283,10 @@ struct PictureInPictureSubtitleTests {
             engine.rendererVideoObserverForTesting = { copies.record($0) }
         }
         engine.play()
-        try await Self.wait { engine.burnedInSubtitleFrames > 0 }
+        try await waitUntil { engine.burnedInSubtitleFrames > 0 }
         #expect(engine.burnedInSubtitleFrames > 0)
         #expect(copies.count > 0)
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// With no subtitle chosen there is nothing to draw.
@@ -299,8 +296,7 @@ struct PictureInPictureSubtitleTests {
         engine.play()
         try await Task.sleep(for: .milliseconds(600))
         #expect(engine.burnedInSubtitleFrames == 0)
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     // MARK: - Helpers
@@ -443,17 +439,8 @@ struct PictureInPictureSubtitleTests {
         engine.prepare(url: url, startSeconds: 0.4, initialAudioOrdinal: nil, initialSubtitleOrdinal: subtitleOrdinal)
         engine.pause()
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
-        try await wait { !engine.audioTracks.isEmpty && !engine.isBuffering }
+        try await waitUntil { !engine.audioTracks.isEmpty && !engine.isBuffering }
         return engine
-    }
-
-    @MainActor
-    private static func wait(until condition: () -> Bool) async throws {
-        // Generous: other suites' main-actor tests run while this one waits.
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !condition(), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
     }
 }
 

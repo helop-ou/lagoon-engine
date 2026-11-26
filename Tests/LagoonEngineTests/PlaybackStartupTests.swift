@@ -148,10 +148,7 @@ struct PlaybackStartupTests {
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         engine.play()
         #expect(engine.startupPhase == .connecting)
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !started, failure == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        try await waitUntil { started || failure != nil }
 
         #expect(failure == nil)
         #expect(engine.startupPhase == .started)
@@ -182,10 +179,7 @@ struct PlaybackStartupTests {
         engine.prepare(url: fifo, startSeconds: 0, initialAudioOrdinal: nil)
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         engine.play()
-        let deadline = ContinuousClock.now + .seconds(10)
-        while sink.fields(of: .playbackSlowStart).isEmpty, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        try await waitUntil { !sink.fields(of: .playbackSlowStart).isEmpty }
 
         #expect(engine.startupPhase == .connecting)
         let fields = try #require(sink.fields(of: .playbackSlowStart).first)
@@ -198,7 +192,7 @@ struct PlaybackStartupTests {
         // Unblock the open: a writer that closes at once ends it as empty.
         let writer = open(fifo.path(percentEncoded: false), O_WRONLY)
         if writer >= 0 { close(writer) }
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.expectRetired()
     }
 
     /// The viewer backs out while the title is still opening. The open ends
@@ -223,7 +217,7 @@ struct PlaybackStartupTests {
         engine.shutdown()
         let writer = open(fifo.path(percentEncoded: false), O_WRONLY)
         if writer >= 0 { close(writer) }
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.expectRetired()
         try await Task.sleep(for: .milliseconds(200))
         #expect(failures == 0)
     }

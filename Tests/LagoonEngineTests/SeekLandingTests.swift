@@ -21,17 +21,16 @@ struct SeekLandingTests {
         engine.prepare(url: url, startSeconds: 1.8, initialAudioOrdinal: nil)
         engine.pause()
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
-        try await Self.wait { !engine.isBuffering && !shown.visibleEnds.isEmpty }
+        try await waitUntil { !engine.isBuffering && !shown.visibleEnds.isEmpty }
         #expect(shown.visibleEnds.allSatisfy { $0 > 1.8 }, "\(shown.visibleEnds.prefix(3))")
         #expect(shown.hiddenUnreferenced == 0, "a picture nothing references is not decoded before the start")
 
         engine.seek(to: 0.7)
-        try await Self.wait { !engine.isBuffering && !shown.visibleEnds.isEmpty }
+        try await waitUntil { !engine.isBuffering && !shown.visibleEnds.isEmpty }
         #expect(!shown.visibleEnds.isEmpty)
         #expect(shown.visibleEnds.allSatisfy { $0 > 0.7 }, "\(shown.visibleEnds.prefix(3))")
         #expect(shown.hiddenUnreferenced == 0, "a picture nothing references is not decoded before the target")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// The software decoder takes only so many packets at once, and the
@@ -50,24 +49,15 @@ struct SeekLandingTests {
         engine.prepare(url: url, startSeconds: 4, initialAudioOrdinal: nil)
         engine.pause()
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
-        try await Self.wait { !engine.isBuffering && !shown.visibleEnds.isEmpty }
+        try await waitUntil { !engine.isBuffering && !shown.visibleEnds.isEmpty }
         try #require(!engine.isBuffering, "the start never finished priming")
         #expect(shown.visibleEnds.allSatisfy { $0 > 4 }, "\(shown.visibleEnds.prefix(3))")
 
         engine.seek(to: 20)
-        try await Self.wait { !engine.isBuffering && !shown.visibleEnds.isEmpty }
+        try await waitUntil { !engine.isBuffering && !shown.visibleEnds.isEmpty }
         try #require(!engine.isBuffering, "the seek never finished priming")
         #expect(shown.visibleEnds.allSatisfy { $0 > 20 }, "\(shown.visibleEnds.prefix(3))")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
-    }
-
-    private static func wait(until condition: () -> Bool) async throws {
-        // Generous: other suites' main-actor tests run while this one waits.
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !condition(), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await engine.shutdownAndRetire()
     }
 }
 

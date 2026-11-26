@@ -16,7 +16,7 @@ struct StartGateTests {
         engine.onPlaybackStarted = { started += 1 }
         engine.play()
 
-        try await Self.wait { gate.entered == 1 }
+        try await waitUntil { gate.entered == 1 }
         try await Task.sleep(for: .milliseconds(400))
         #expect(pictures.count > 0, "the first picture is up")
         #expect(engine.synchronizerSecondsForTesting < 0.05, "the clock waits: \(engine.synchronizerSecondsForTesting)")
@@ -27,18 +27,17 @@ struct StartGateTests {
         let firstFrame = try #require(engine.startupTimeline?.reached[.firstFrame])
 
         gate.open()
-        try await Self.wait { !engine.isBuffering && engine.clockPosition > 0.3 }
+        try await waitUntil { !engine.isBuffering && engine.clockPosition > 0.3 }
         #expect(started == 1)
         #expect(engine.clockPosition > 0.3, "playback started once released")
         #expect(engine.startupTimeline?.reached[.firstFrame] == firstFrame, "timed once, before the hold")
 
         // Only the first start is held.
         engine.seek(to: 2)
-        try await Self.wait { !engine.isBuffering && engine.clockPosition > 2.2 }
+        try await waitUntil { !engine.isBuffering && engine.clockPosition > 2.2 }
         #expect(engine.clockPosition > 2.2)
         #expect(gate.entered == 1)
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// The hold must not start the title at the place the viewer left.
@@ -49,20 +48,19 @@ struct StartGateTests {
         var anchored = 0
         engine.onSeekReady = { anchored += 1 }
         engine.play()
-        try await Self.wait { gate.entered == 1 }
+        try await waitUntil { gate.entered == 1 }
 
         engine.seek(to: 2)
         gate.open()
         var clocks: [Double] = []
-        try await Self.wait {
+        try await waitUntil {
             clocks.append(engine.clockPosition)
             return !engine.isBuffering && engine.clockPosition > 2.2
         }
         #expect(engine.clockPosition > 2.2)
         #expect(!clocks.contains { (0.1..<1.9).contains($0) }, "never played from the old start: \(clocks.prefix(8))")
         #expect(anchored == 1, "the start the seek replaced never anchored the clock")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     @MainActor
@@ -70,21 +68,20 @@ struct StartGateTests {
         let gate = Gate()
         let engine = try Self.engine(gate: gate, pictures: PictureCount(), startSeconds: 2)
         engine.play()
-        try await Self.wait { gate.entered == 1 }
+        try await waitUntil { gate.entered == 1 }
         // At the start position, or its first picture is not the one shown.
         let held = engine.synchronizerSecondsForTesting
         #expect(abs(held - 2) < 0.05, "the held clock is at the start: \(held)")
 
         engine.pause()
         gate.open()
-        try await Self.wait { !engine.isBuffering }
+        try await waitUntil { !engine.isBuffering }
         try await Task.sleep(for: .milliseconds(300))
         #expect(!engine.isBuffering)
         #expect(engine.isPaused)
         let paused = engine.synchronizerSecondsForTesting
         #expect(abs(paused - 2) < 0.05, "a paused title does not run: \(paused)")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// A host's wait must not keep a dismissed engine, with its demuxer and
@@ -95,12 +92,11 @@ struct StartGateTests {
         var engine: SampleBufferPlayerEngine? = try Self.engine(gate: gate, pictures: PictureCount())
         weak var released = engine
         engine?.play()
-        try await Self.wait { gate.entered == 1 }
+        try await waitUntil { gate.entered == 1 }
 
-        engine?.shutdown()
-        #expect(await engine?.waitForMediaResourcesToRetire(timeout: .seconds(10)) == true)
+        await engine?.shutdownAndRetire()
         engine = nil
-        try await Self.wait { released == nil }
+        try await waitUntil { released == nil }
         #expect(released == nil, "the waiting gate holds the engine")
         gate.open()
     }
@@ -140,13 +136,6 @@ struct StartGateTests {
         engine.prepare(url: url, startSeconds: startSeconds, initialAudioOrdinal: nil)
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         return engine
-    }
-
-    private static func wait(until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(20)
-        while !condition(), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
     }
 }
 

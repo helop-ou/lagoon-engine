@@ -17,7 +17,7 @@ struct VideoResumeTests {
         // Past a keyframe and more than the resume's lead before the next,
         // so the landing keyframe is behind the clock and the decoder has
         // pictures to skip.
-        try await Self.wait {
+        try await waitUntil {
             let clock = engine.clockPosition
             return clock > 2.5 && (0.1..<0.4).contains(clock.truncatingRemainder(dividingBy: 1))
         }
@@ -26,7 +26,7 @@ struct VideoResumeTests {
         pictures.forget()
         engine.setVideoOutputSuspended(false)
         var clocks: [Double] = []
-        try await Self.wait {
+        try await waitUntil {
             clocks.append(engine.clockPosition)
             return !pictures.visibleStarts.isEmpty
         }
@@ -39,8 +39,7 @@ struct VideoResumeTests {
         #expect(zip(clocks, clocks.dropFirst()).allSatisfy { $0 <= $1 }, "the clock never went back")
         #expect((clocks.last ?? 0) > (clocks.first ?? 0) + 0.2, "the clock kept running")
         #expect(audio.overlaps.isEmpty, "audio was queued once: \(audio.overlaps.prefix(3))")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// A seek asked for in the same turn as a resume restarts both from the
@@ -49,19 +48,18 @@ struct VideoResumeTests {
     @Test func aSeekDuringAResumeWins() async throws {
         let (engine, audio, pictures) = try await Self.playingFixture()
         engine.setVideoOutputSuspended(true)
-        try await Self.wait { engine.clockPosition > 2.5 }
+        try await waitUntil { engine.clockPosition > 2.5 }
 
         engine.setVideoOutputSuspended(false)
         engine.seek(to: 1)
-        try await Self.wait { !engine.isBuffering && !pictures.visibleStarts.isEmpty && engine.clockPosition > 1.3 }
+        try await waitUntil { !engine.isBuffering && !pictures.visibleStarts.isEmpty && engine.clockPosition > 1.3 }
 
         // A keyframe, so the target's own picture is the first.
         let first = try #require(pictures.visibleStarts.min())
         #expect(first >= 1 - 0.001 && first < 1 + 0.05, "the first picture after the seek starts at \(first)")
         let afterSeek = audio.startsAfterLastJumpBack
         #expect((afterSeek.min() ?? .infinity) < 1 + 0.05, "audio restarts at the target: \(afterSeek.prefix(3))")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// The demux loop reads what is suspended and what seek is pending one
@@ -73,7 +71,7 @@ struct VideoResumeTests {
     @Test func aSeekTheLoopSeesBeforeTheResumeBringsThePictureBack() async throws {
         let (engine, _, pictures) = try await Self.playingFixture()
         engine.setVideoOutputSuspended(true)
-        try await Self.wait { engine.clockPosition > 2.5 }
+        try await waitUntil { engine.clockPosition > 2.5 }
 
         let between = OnceFlag()
         engine.afterTrackChangesForTesting = { [weak engine] in
@@ -85,13 +83,12 @@ struct VideoResumeTests {
                 }
             }
         }
-        try await Self.wait { between.taken && !engine.isBuffering && !pictures.visibleStarts.isEmpty }
+        try await waitUntil { between.taken && !engine.isBuffering && !pictures.visibleStarts.isEmpty }
         engine.afterTrackChangesForTesting = nil
 
         let first = try #require(pictures.visibleStarts.min(), "no picture after the seek")
         #expect(first >= 1 - 0.001 && first < 1 + 0.05, "the first picture after the seek starts at \(first)")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// Suspended video is discarded unread, so a title without audio reaches
@@ -121,14 +118,13 @@ struct VideoResumeTests {
         engine.prepare(url: url, startSeconds: 0, initialAudioOrdinal: nil)
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         engine.play()
-        try await Self.wait { readThrough != nil && !engine.isBuffering }
+        try await waitUntil { readThrough != nil && !engine.isBuffering }
         let suspendedAt = try #require(readThrough)
         try #require(suspendedAt < 60, "suspended with most of the title unread, at \(suspendedAt)")
 
-        try await Self.wait { finished || engine.clockPosition > suspendedAt + 1 }
+        try await waitUntil { finished || engine.clockPosition > suspendedAt + 1 }
         #expect(!finished, "a two minute title is not over at \(engine.clockPosition)")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     @Test func audioReadAgainIsDroppedOrCutAtTheFloor() throws {
@@ -218,14 +214,13 @@ struct VideoResumeTests {
         engine.setVideoOutputSuspended(false)
 
         var clocks: [Double] = []
-        try await Self.wait {
+        try await waitUntil {
             clocks.append(engine.clockPosition)
             return !engine.isBuffering && engine.clockPosition > 4.3
         }
         #expect(engine.clockPosition > 4.3)
         #expect(!clocks.contains { $0 < 3.9 }, "never played from the beginning: \(clocks.prefix(8))")
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     /// Ten seconds of H.264 and AAC, a keyframe a second (`av.mp4`: testsrc2
@@ -242,16 +237,10 @@ struct VideoResumeTests {
         engine.prepare(url: url, startSeconds: 0, initialAudioOrdinal: nil)
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
         engine.play()
-        try await wait { !engine.isBuffering && engine.clockPosition > 1 }
+        try await waitUntil { !engine.isBuffering && engine.clockPosition > 1 }
         return (engine, audio, pictures)
     }
 
-    private static func wait(until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(20)
-        while !condition(), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-    }
 
     private static func lpcm(
         start: Double,

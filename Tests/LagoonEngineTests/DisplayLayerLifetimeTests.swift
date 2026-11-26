@@ -23,21 +23,13 @@ struct DisplayLayerLifetimeTests {
             engine.attach(displayLayer: attached)
         }
         engine.play()
-        try await Self.wait { !engine.isBuffering && engine.clockPosition > 0.5 }
+        try await waitUntil { !engine.isBuffering && engine.clockPosition > 0.5 }
         CATransaction.flush()
         try await Task.sleep(for: .milliseconds(200))
         #expect(layer != nil, "the layer outlives the caller's reference while the title plays")
 
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
-        try await Self.wait { layer == nil }
+        await engine.shutdownAndRetire()
+        try await waitUntil { layer == nil }
         #expect(layer == nil, "and is let go once the renderers are")
-    }
-
-    private static func wait(until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(20)
-        while !condition(), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
     }
 }

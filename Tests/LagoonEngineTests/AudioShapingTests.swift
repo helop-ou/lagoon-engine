@@ -193,14 +193,13 @@ struct AudioShapingTests {
         engine.pause()
         engine.attach(displayLayer: AVSampleBufferDisplayLayer())
 
-        try await Self.wait(until: { engine.audioOutputPathDiagnostic == "LPCM" && !engine.isBuffering }, failure: { failure })
+        try await waitUntil { failure != nil || engine.audioOutputPathDiagnostic == "LPCM" && !engine.isBuffering }
         #expect(engine.audioOutputPathDiagnostic == "LPCM")
         engine.setAudioShaping(.off)
-        try await Self.wait(until: { engine.audioOutputPathDiagnostic == "compressed" && !engine.isBuffering }, failure: { failure })
+        try await waitUntil { failure != nil || engine.audioOutputPathDiagnostic == "compressed" && !engine.isBuffering }
         #expect(engine.audioOutputPathDiagnostic == "compressed")
         #expect(failure == nil)
-        engine.shutdown()
-        #expect(await engine.waitForMediaResourcesToRetire(timeout: .seconds(10)))
+        await engine.shutdownAndRetire()
     }
 
     // MARK: - Helpers
@@ -333,14 +332,5 @@ struct AudioShapingTests {
             }
         }
         return nil
-    }
-
-    @MainActor
-    private static func wait(until condition: () -> Bool, failure: () -> String?) async throws {
-        // Generous: other suites' main-actor tests run while this one waits.
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !condition(), failure() == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
     }
 }
