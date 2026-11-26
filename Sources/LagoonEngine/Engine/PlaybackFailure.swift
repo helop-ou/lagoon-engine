@@ -2,8 +2,9 @@ import Foundation
 
 /// Where a playback attempt failed, in codes rather than prose.
 ///
-/// Carries no message and nothing from `userInfo`, where URLs and file names
-/// live, so nothing in it can identify a viewer or a title.
+/// Carries no message, and from `userInfo`, where URLs and file names live,
+/// only the domain and code of the error underneath. So nothing in it can
+/// identify a viewer or a title.
 public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
     /// Where an attempt failed. The engine names the stages it reports, and
     /// a host adds its own in an extension for what it does around the
@@ -30,21 +31,56 @@ public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
     /// or `NSURLErrorDomain`. Nil when the layer gave none.
     public let domain: String?
     public let code: Int?
+    /// The error at the bottom of the `NSUnderlyingErrorKey` chain, which
+    /// names the cause when the one on top is generic, as AVFoundation's
+    /// `-11800` is. Nil when nothing lies underneath.
+    public let underlyingDomain: String?
+    public let underlyingCode: Int?
 
-    public init(stage: Stage, domain: String? = nil, code: Int? = nil) {
+    public init(
+        stage: Stage,
+        domain: String? = nil,
+        code: Int? = nil,
+        underlyingDomain: String? = nil,
+        underlyingCode: Int? = nil
+    ) {
         self.stage = stage
         self.domain = domain
         self.code = code
+        self.underlyingDomain = underlyingDomain
+        self.underlyingCode = underlyingCode
     }
 
-    /// Takes only the domain and code from `error`.
+    /// Takes only the domain and code from `error` and from the error at
+    /// the bottom of its chain.
     public init(stage: Stage, error: Error?) {
         guard let error else {
             self.init(stage: stage)
             return
         }
         let nsError = error as NSError
-        self.init(stage: stage, domain: nsError.domain, code: nsError.code)
+        let cause = Self.rootCause(of: nsError)
+        self.init(
+            stage: stage,
+            domain: nsError.domain,
+            code: nsError.code,
+            underlyingDomain: cause?.domain,
+            underlyingCode: cause?.code
+        )
+    }
+
+    /// Bounded, because nothing stops a chain from looping.
+    private static let maximumChainDepth = 8
+
+    private static func rootCause(of error: NSError) -> NSError? {
+        var cause: NSError?
+        var current = error
+        for _ in 0..<maximumChainDepth {
+            guard let next = current.userInfo[NSUnderlyingErrorKey] as? Error else { break }
+            current = next as NSError
+            cause = current
+        }
+        return cause
     }
 
     /// Stage and domain only if they pass the token rule, code if any. A
@@ -60,11 +96,18 @@ public nonisolated struct PlaybackFailureDetail: Equatable, Sendable {
         if let code {
             fields["errorCode"] = .int(code)
         }
+        if let underlyingDomain = DiagnosticToken.token(underlyingDomain) {
+            fields["underlyingDomain"] = underlyingDomain
+        }
+        if let underlyingCode {
+            fields["underlyingCode"] = .int(underlyingCode)
+        }
         return fields
     }
 
     /// The part of a fingerprint that separates one kind of failure at a
-    /// stage from another.
+    /// stage from another. The underlying error stays out, so reports keep
+    /// the groups they had before it was recorded.
     public var fingerprint: [String] {
         var parts = [stage.rawValue, domain].compactMap(\.self).filter(DiagnosticToken.isToken)
         if let code {
